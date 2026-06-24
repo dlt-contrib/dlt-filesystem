@@ -10,7 +10,7 @@ import docker.errors
 import pytest
 import sqlalchemy
 
-from omniload.src.destinations import ClickhouseDestination
+from omniload.target.clickhouse import ClickhouseDestination
 from tests.util.common import get_testdata_path
 from tests.warehouse.settings import DESTINATIONS, SOURCES
 
@@ -169,7 +169,7 @@ def autocreate_db_for_clickhouse():
         dest_engine.dispose()
         return dlt_dest(uri, **kwargs)
 
-    patcher = patch("omniload.src.factory.ClickhouseDestination.dlt_dest")
+    patcher = patch("omniload.core.registry.ClickhouseDestination.dlt_dest")
     mock = patcher.start()
     mock.side_effect = patched_dlt_dest
     yield
