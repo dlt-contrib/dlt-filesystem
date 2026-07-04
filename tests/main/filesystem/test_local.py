@@ -5,12 +5,9 @@ import pytest
 
 from omniload.core.factory import SourceDestinationFactory
 from omniload.error import MissingValueError
+from omniload.source.filesystem.api import LocalFilesystemSource
 from omniload.source.filesystem.format.registry import supported_file_format_message
-from omniload.source.filesystem.local import (
-    LocalFilesystemSource,
-    _is_absolute_local,
-    _url_path_to_local,
-)
+from omniload.source.filesystem.impl.util import _is_absolute_local, _url_path_to_local
 
 # Normalized so the relative-form expectations hold on Windows too (os.getcwd() there
 # returns a backslash drive path).
