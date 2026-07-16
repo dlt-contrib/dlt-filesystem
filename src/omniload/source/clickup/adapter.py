@@ -1,0 +1,94 @@
+"""Simple ClickUp source."""
+
+from datetime import datetime
+from typing import Iterable, Optional
+
+import dlt
+import pendulum
+from dlt.common.time import ensure_pendulum_datetime_utc
+from dlt.sources import DltResource
+
+from omniload.error import MissingValueError
+
+from .helpers import ClickupClient
+
+
+@dlt.source(max_table_nesting=0)
+def clickup_source(
+    api_token: str = dlt.secrets.value,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+) -> Iterable[DltResource]:
+    if start_date is None:
+        raise MissingValueError("start_date", "ClickUp")
+
+    client = ClickupClient(api_token)
+
+    @dlt.resource(
+        name="user",
+        primary_key="id",
+        write_disposition="merge",
+    )
+    def user() -> Iterable[dict]:
+        data = client.get("/user")
+        yield data["user"]
+
+    @dlt.resource(name="teams", primary_key="id", write_disposition="merge")
+    def teams() -> Iterable[dict]:
+        for team in client.get_teams():
+            yield team
+
+    @dlt.resource(name="spaces", primary_key="id", write_disposition="merge")
+    def spaces() -> Iterable[dict]:
+        for space in client.get_spaces():
+            yield space
+
+    @dlt.resource(name="lists", write_disposition="merge", primary_key="id")
+    def lists() -> Iterable[dict]:
+        for clickup_list in client.get_lists():
+            yield clickup_list
+
+    @dlt.resource(
+        name="tasks",
+        write_disposition="merge",
+        primary_key="id",
+        columns={"date_updated": {"data_type": "timestamp"}},
+    )
+    def tasks(
+        date_updated: dlt.sources.incremental[
+            pendulum.DateTime
+        ] = dlt.sources.incremental(
+            "date_updated",
+            initial_value=ensure_pendulum_datetime_utc(start_date).in_timezone("UTC"),
+            range_end="closed",
+            range_start="closed",
+        ),
+    ) -> Iterable[dict]:
+        if date_updated.last_value:
+            start = ensure_pendulum_datetime_utc(date_updated.last_value).in_timezone(
+                "UTC"
+            )
+        else:
+            start = ensure_pendulum_datetime_utc(start_date).in_timezone("UTC")
+
+        if date_updated.end_value is None:
+            end = pendulum.now("UTC")
+        else:
+            end = date_updated.end_value.in_timezone("UTC")
+
+        for list_obj in client.get_lists():
+            for task in client.paginated(
+                f"/list/{list_obj['id']}/task", "tasks", {"page_size": 100}
+            ):
+                task_dt = ensure_pendulum_datetime_utc(int(task["date_updated"]) / 1000)
+                if task_dt >= start and task_dt <= end:
+                    task["date_updated"] = task_dt
+                    yield task
+
+    return (
+        user,
+        teams,
+        spaces,
+        lists,
+        tasks,
+    )
