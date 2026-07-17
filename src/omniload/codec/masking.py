@@ -11,6 +11,13 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
+# Algorithms that draw a fresh value on every run, so one source value does not mask
+# to a stable result across loads. Callers that compare a row against an earlier load
+# of it (the `scd2` strategy) cannot use these, as every row reads as changed.
+# `sequential` is absent: it is stable for a stable extraction order, and only drifts
+# when that order does.
+NON_DETERMINISTIC_ALGORITHMS = frozenset({"date_shift", "noise", "random", "uuid"})
+
 
 class MaskingEngine:
     def __init__(self):
@@ -303,6 +310,24 @@ class MaskingEngine:
             return f"{dt.year}-{dt.month:02d}"
         except Exception:
             return value
+
+
+def non_deterministic_masks(mask_configs: list[str]) -> list[str]:
+    """Those of `mask_configs` whose algorithm draws a fresh value on every run.
+
+    Configurations that do not parse are skipped: `create_masking_mapper` reports them
+    when it builds the filter, and this is only asked which of them are stable.
+    """
+    engine = MaskingEngine()
+    unstable = []
+    for config in mask_configs:
+        try:
+            _, algorithm, _ = engine.parse_mask_config(config)
+        except ValueError:
+            continue
+        if algorithm.lower() in NON_DETERMINISTIC_ALGORITHMS:
+            unstable.append(config)
+    return unstable
 
 
 def create_masking_mapper(mask_configs: list[str]) -> Callable:

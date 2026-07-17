@@ -76,7 +76,9 @@ def run_ingest(**kwargs) -> LoadInfo | None:
         create_masking_filter,
         handle_mysql_empty_dates,
     )
+    from omniload.codec.masking import non_deterministic_masks
     from omniload.core.factory import SourceDestinationFactory
+    from omniload.core.registry import SQL_SOURCE_SCHEMES
     from omniload.source.mongodb.api import MongoDbSource
     from omniload.target.athena import AthenaDestination
     from omniload.target.clickhouse import ClickhouseDestination
@@ -213,6 +215,13 @@ def run_ingest(**kwargs) -> LoadInfo | None:
             else:
                 column_hints[column_name] = {"data_type": column_type}
 
+    # `IncrementalStrategy` flattens dlt's two axes (a write disposition of
+    # skip/append/replace/merge, and a merge strategy of delete-insert/scd2/upsert/
+    # insert-only) onto one, so its two merge-strategy values unflatten back onto dlt's
+    # shape here: both are a `merge` disposition carrying a strategy. `delete+insert` marks
+    # the incremental key as the merge key and relies on dlt's default strategy; `scd2`
+    # names its strategy on the disposition itself, applied below once the sources that own
+    # their own disposition have had their say.
     merge_key = None
     if incremental_strategy == IncrementalStrategy.delete_insert:
         merge_key = jr.incremental_key
@@ -222,6 +231,8 @@ def run_ingest(**kwargs) -> LoadInfo | None:
                 column_hints[jr.incremental_key] = {}
 
             column_hints[jr.incremental_key]["merge_key"] = True
+    elif incremental_strategy == IncrementalStrategy.scd2:
+        incremental_strategy = IncrementalStrategy.merge
 
     # TODO: What is this hash used for?
     #       Arrow test cases are failing if you modify it.
@@ -311,6 +322,74 @@ def run_ingest(**kwargs) -> LoadInfo | None:
     # Resolve the "not explicitly requested" default for every path that reaches the run.
     if incremental_strategy is None:
         incremental_strategy = IncrementalStrategy.create_replace
+
+    # The strategy is final from here, so this is what actually reaches the load: scd2 as
+    # asked for, and not suppressed above by a source that owns its own disposition.
+    runs_scd2 = (
+        original_incremental_strategy == IncrementalStrategy.scd2
+        and incremental_strategy != IncrementalStrategy.none
+    )
+
+    # scd2 has dlt compare the whole source state against the records it holds open, and
+    # retire whatever is missing from it. Anything that hands dlt less than that state, or
+    # rows it cannot hash, corrupts the history rather than failing, so refuse it up front.
+    if runs_scd2:
+        # An incremental key windows the read, and either limit truncates it. Whatever the
+        # run leaves out is absent from the batch and gets retired, though the source still
+        # holds it unchanged.
+        partial_read = next(
+            (
+                option
+                for option, value in (
+                    ("--incremental-key", jr.incremental_key),
+                    ("--sql-limit", jr.sql_limit),
+                    ("--yield-limit", jr.yield_limit),
+                )
+                if value
+            ),
+            None,
+        )
+        if partial_read:
+            raise ValidationError(
+                f"Incremental strategy 'scd2' cannot be combined with '{partial_read}': "
+                "scd2 spots a change by comparing the whole source table against the "
+                "records it holds open, so a run that reads only part of the table retires "
+                "every record it leaves out."
+            )
+        # A mask that draws a fresh value per run rewrites the rows scd2 compares, so an
+        # untouched source row reads as a new version of itself on every load.
+        unstable_masks = non_deterministic_masks(jr.mask) if jr.mask else []
+        if unstable_masks:
+            raise ValidationError(
+                f"Incremental strategy 'scd2' cannot be combined with the mask "
+                f"'{unstable_masks[0]}': its algorithm draws a fresh value on every run, so "
+                "every record would read as changed and be retired and re-inserted on every "
+                "load. Use a deterministic algorithm, such as 'sha256'."
+            )
+        # dlt hashes each row into `_dlt_id` to spot a change, and only does so for rows it
+        # receives as dicts. Arrow data never gets that hash: the column stays empty and the
+        # load dies in `normalize`, where scd2 marks it non-nullable. Filling it in
+        # (`normalize.parquet_normalizer.add_dlt_id`) reads like the fix and is worse than
+        # the crash: those ids are random per run rather than a hash of the row, so every
+        # record would be retired and re-inserted on every load, silently.
+        if factory.source_scheme == "mmap":
+            raise ValidationError(
+                "Incremental strategy 'scd2' cannot read from 'mmap://': it yields Arrow "
+                "tables, for which dlt does not compute the row hash scd2 needs to spot a "
+                "change."
+            )
+        # A `query:` table is read with sqlalchemy whatever the backend says (see
+        # `SqlSourceRouter`), so it is row-oriented already and the backend is moot.
+        is_custom_query = source_table.startswith("query:")
+        if factory.source_scheme in SQL_SOURCE_SCHEMES and not is_custom_query:
+            if sql_backend == SqlBackend.default:
+                sql_backend = SqlBackend.sqlalchemy
+            elif sql_backend in (SqlBackend.pyarrow, SqlBackend.connectorx):
+                raise ValidationError(
+                    f"Incremental strategy 'scd2' cannot use the '{sql_backend.value}' SQL "
+                    "backend: it yields Arrow tables, for which dlt does not compute the "
+                    "row hash scd2 needs to spot a change. Use '--sql-backend sqlalchemy'."
+                )
 
     incremental_strategy_text = (
         incremental_strategy.value
@@ -454,8 +533,10 @@ def run_ingest(**kwargs) -> LoadInfo | None:
         ):
             loader_file_format = None
 
-    write_disposition = None
-    if incremental_strategy != IncrementalStrategy.none:
+    write_disposition: str | dict[str, str] | None = None
+    if runs_scd2:
+        write_disposition = {"disposition": "merge", "strategy": "scd2"}
+    elif incremental_strategy != IncrementalStrategy.none:
         write_disposition = incremental_strategy.value
 
     if factory.source_scheme == "influxdb":
