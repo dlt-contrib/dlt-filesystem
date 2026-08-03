@@ -25,6 +25,25 @@ class UnsupportedEndpointError(Exception):
     pass
 
 
+class WorksheetNameCollisionError(ValueError):
+    """Two distinct worksheet names resolve to the same destination table."""
+
+    def __init__(
+        self,
+        *,
+        table_name: str,
+        first_sheet: str,
+        first_file: str,
+        second_sheet: str,
+        second_file: str,
+    ) -> None:
+        super().__init__(
+            f"Worksheet names {first_sheet!r} in {first_file!r} and "
+            f"{second_sheet!r} in {second_file!r} both resolve to destination "
+            f"table {table_name!r} under the active schema naming convention"
+        )
+
+
 class MissingDecoderError(UnsupportedEndpointError):
     """A routable format resolved to a reader whose decoder package is not installed.
 

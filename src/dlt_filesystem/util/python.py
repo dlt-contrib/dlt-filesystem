@@ -58,6 +58,24 @@ def _cast_value(value: str, target_type: Any) -> Any:
         args = [a for a in typing.get_args(target_type) if a is not type(None)]
         if len(args) == 1:
             return _cast_value(value, args[0])
+
+        # A JSON array intended for ``str | list[...]`` must reach the list arm
+        # before the string arm accepts it unchanged. This is used by spreadsheet
+        # reader hints such as ``#sheet_name=[\"Sales\",\"Inventory\"]``.
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            decoded = None
+        if isinstance(decoded, (list, dict)):
+            for arg in args:
+                arg_origin = typing.get_origin(arg)
+                if (
+                    isinstance(decoded, list) and (arg is list or arg_origin is list)
+                ) or (
+                    isinstance(decoded, dict) and (arg is dict or arg_origin is dict)
+                ):
+                    return decoded
+
         for arg in args:  # ambiguous union, try each candidate
             try:
                 return _cast_value(value, arg)

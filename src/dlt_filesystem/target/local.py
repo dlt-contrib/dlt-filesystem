@@ -41,6 +41,10 @@ class LocalFilesystemDestination:
     dataset_name: str
     table_name: str
 
+    def supports_multiple_tables(self) -> bool:
+        """A single output file cannot represent several worksheet tables."""
+        return False
+
     def dlt_dest(self, uri: str, **kwargs):
 
         import dlt.destinations

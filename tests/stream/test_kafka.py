@@ -2,7 +2,6 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-from confluent_kafka import Producer
 
 from tests.util import invoke_ingest_command
 from tests.util.db import get_query_result
@@ -10,6 +9,12 @@ from tests.warehouse.settings import DESTINATIONS
 
 # Marked explicitly (not auto-marked by path) because this module lives outside tests/warehouse.
 pytestmark = pytest.mark.integration
+
+
+def _producer(address):
+    from confluent_kafka import Producer
+
+    return Producer({"bootstrap.servers": address})
 
 
 @pytest.mark.parametrize(
@@ -24,7 +29,7 @@ def test_kafka_to_db_incremental(kafka, dest, topic):
         dest_uri = dest_future.result()
 
     # Create Kafka producer
-    producer = Producer({"bootstrap.servers": kafka})
+    producer = _producer(kafka)
 
     # Create topic and send messages
     messages = ["message1", "message2", "message3"]
@@ -93,7 +98,7 @@ def test_kafka_to_db_decode_json(kafka, dest, topic):
         dest_uri = dest_future.result()
 
     # Create Kafka producer
-    producer = Producer({"bootstrap.servers": kafka})
+    producer = _producer(kafka)
 
     # Create topic and send messages
     messages = [
@@ -143,7 +148,7 @@ def test_kafka_to_db_include_metadata(kafka, dest, topic):
         dest_uri = dest_future.result()
 
     # Create Kafka producer
-    producer = Producer({"bootstrap.servers": kafka})
+    producer = _producer(kafka)
 
     # Create topic and send messages
     messages = [

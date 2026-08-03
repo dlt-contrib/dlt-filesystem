@@ -1,4 +1,3 @@
-import sys
 from collections import OrderedDict
 from pathlib import Path
 
@@ -60,8 +59,10 @@ def test_spreadsheet_source_with_sheet_name(request, spreadsheet_fixture, tmp_pa
 
 
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
-def test_spreadsheet_source_without_sheet(request, spreadsheet_fixture, tmp_path):
-    """Without worksheet name, read the first worksheet from a workbook file"""
+def test_spreadsheet_source_without_sheet_rejects_file_destination(
+    request, spreadsheet_fixture, tmp_path, caplog
+):
+    """Without a selector, a workbook cannot be written to one output file."""
 
     # Define input and output files.
     spreadsheet_testfile = request.getfixturevalue(spreadsheet_fixture)
@@ -73,12 +74,9 @@ def test_spreadsheet_source_without_sheet(request, spreadsheet_fixture, tmp_path
         dest_uri=f"file://{csv_outfile}",
         print_output=False,
     )
-    assert result.exit_code == 0
-
-    # Validate output file content.
-    content = csv_outfile.read_text().splitlines()
-    assert content[0] == "symbol,date,is_enabled,name"
-    assert content[1] == "A,2024-04-19,True,AGILENT TECHNOLOGIES INC"
+    assert result.exit_code != 0
+    assert "cannot represent multiple worksheet tables" in caplog.text
+    assert not csv_outfile.exists()
 
 
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
@@ -106,9 +104,6 @@ def test_spreadsheet_source_with_unknown_sheet_name(
     assert not csv_outfile.exists(), f"File {csv_outfile} exists but shouldn't"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="requires Python 3.14 or greater"
-)
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
 def test_spreadsheet_source_with_sheet_id(request, spreadsheet_fixture, tmp_path):
     """Read a specific worksheet from a workbook file by id"""
@@ -131,9 +126,6 @@ def test_spreadsheet_source_with_sheet_id(request, spreadsheet_fixture, tmp_path
     assert content[1] == "A,2024-04-19,True,AGILENT TECHNOLOGIES INC"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="requires Python 3.14 or greater"
-)
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
 def test_spreadsheet_source_with_unknown_sheet_id(
     request, spreadsheet_fixture, tmp_path
@@ -157,9 +149,6 @@ def test_spreadsheet_source_with_unknown_sheet_id(
     assert not csv_outfile.exists(), f"File {csv_outfile} exists but shouldn't"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="requires Python 3.14 or greater"
-)
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
 def test_spreadsheet_source_without_header(request, spreadsheet_fixture, tmp_path):
     """Read a specific worksheet from a workbook file using the `has_header=false` option"""
@@ -183,9 +172,6 @@ def test_spreadsheet_source_without_header(request, spreadsheet_fixture, tmp_pat
     assert content[2] == "A,2024-04-19,true,AGILENT TECHNOLOGIES INC"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="requires Python 3.14 or greater"
-)
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
 def test_spreadsheet_source_with_columns(request, spreadsheet_fixture, tmp_path):
     """Read a specific worksheet from a workbook file using the `columns=a,b,c` option"""
@@ -196,7 +182,7 @@ def test_spreadsheet_source_with_columns(request, spreadsheet_fixture, tmp_path)
 
     # Invoke data loading.
     result = invoke_ingest_command(
-        source_uri=f'file://{spreadsheet_testfile}#columns=["symbol","date"]',
+        source_uri=f'file://{spreadsheet_testfile}#sheet_name=ticker-symbols&columns=["symbol","date"]',
         dest_uri=f"file://{csv_outfile}",
         print_output=False,
     )
@@ -208,9 +194,6 @@ def test_spreadsheet_source_with_columns(request, spreadsheet_fixture, tmp_path)
     assert content[1] == "A,2024-04-19"
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 14), reason="requires Python 3.14 or greater"
-)
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
 def test_spreadsheet_source_with_wrong_columns(request, spreadsheet_fixture, tmp_path):
     """Read a specific worksheet from a workbook file using the `columns=a,b,c` option"""
@@ -221,7 +204,7 @@ def test_spreadsheet_source_with_wrong_columns(request, spreadsheet_fixture, tmp
 
     # Invoke data loading.
     result = invoke_ingest_command(
-        source_uri=f'file://{spreadsheet_testfile}#columns=["unknown","date"]',
+        source_uri=f'file://{spreadsheet_testfile}#sheet_name=ticker-symbols&columns=["unknown","date"]',
         dest_uri=f"file://{csv_outfile}",
         print_output=False,
     )

@@ -389,6 +389,7 @@ def test_memory_transport_end_to_end(tmp_path):
         ),
         dest_uri=f"duckdb:///{dest}",
         dest_table="out.orders",
+        loader_file_format="insert_values",
         progress="log",
     )
     assert info is not None

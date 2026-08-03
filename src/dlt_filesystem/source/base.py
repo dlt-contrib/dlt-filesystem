@@ -29,6 +29,29 @@ class FilesystemSource:
         """Return whether the source supports file-level mtime selection."""
         return True
 
+    def produces_multiple_tables(self, uri: str, table: str) -> bool:
+        """Return whether a workbook selection dispatches worksheet tables."""
+        from dlt_filesystem.source.error import UnsupportedEndpointError
+        from dlt_filesystem.source.format.readers import (
+            spreadsheet_selection_is_plural,
+        )
+        from dlt_filesystem.source.router import (
+            blob_hints,
+            determine_endpoint,
+            parse_uri,
+        )
+
+        parsed_uri = urlparse(uri)
+        _, path = parse_uri(parsed_uri, table)
+        try:
+            endpoint = determine_endpoint(table, path)
+        except (UnsupportedEndpointError, ValueError):
+            return False
+        return endpoint in {
+            "read_excel",
+            "read_ods",
+        } and spreadsheet_selection_is_plural(blob_hints(parsed_uri, table))
+
     @staticmethod
     def endpoint_namespace(endpoint: Union[str, None], default: str) -> str:
         """

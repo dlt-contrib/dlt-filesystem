@@ -16,6 +16,10 @@ from dlt_filesystem.util.auth import parse_azure_blob_auth
 
 
 class BlobStorageDestination(abc.ABC):
+    def supports_multiple_tables(self) -> bool:
+        """The current blob destination contract addresses one table path."""
+        return False
+
     @abc.abstractmethod
     def credentials(self, params: dict) -> FileSystemCredentials:
         """Build credentials for the blob storage destination."""

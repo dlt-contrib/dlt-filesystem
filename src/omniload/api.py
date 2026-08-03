@@ -210,6 +210,19 @@ def _run_ingest(
     source = factory.get_source()
     destination = factory.get_destination()
 
+    produces_multiple_tables = getattr(
+        source, "produces_multiple_tables", lambda uri, table: False
+    )(jr.source_uri, source_table)
+    if (
+        produces_multiple_tables
+        and not getattr(destination, "supports_multiple_tables", lambda: True)()
+    ):
+        raise ValidationError(
+            f"The '{factory.destination_scheme}' destination cannot represent multiple "
+            "worksheet tables. Select one worksheet with '#sheet_name=<name>' or "
+            "'#sheet_id=<number>', or use a destination that supports datasets."
+        )
+
     column_hints: dict[str, TColumnSchema] = {}
     original_incremental_strategy = incremental_strategy
 
@@ -596,13 +609,20 @@ def _run_ingest(
     start_time = datetime.now()
 
     def run_pipeline():
+        run_params = destination.dlt_run_params(
+            uri=jr.dest_uri,
+            table=dest_table,
+            staging_bucket=jr.staging_bucket,
+        )
+        if produces_multiple_tables:
+            # Per-item worksheet metadata supplies each table name. Passing the
+            # placeholder table from --dest-table at run level overrides that
+            # metadata in dlt, so retain only the parsed dataset and other
+            # destination-specific parameters.
+            run_params.pop("table_name", None)
         return pipeline.run(
             dlt_source,
-            **destination.dlt_run_params(
-                uri=jr.dest_uri,
-                table=dest_table,
-                staging_bucket=jr.staging_bucket,
-            ),
+            **run_params,
             write_disposition=write_disposition,
             primary_key=(
                 jr.primary_key if jr.primary_key and len(jr.primary_key) > 0 else None

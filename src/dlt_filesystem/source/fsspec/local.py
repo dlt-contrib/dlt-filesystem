@@ -32,6 +32,24 @@ class LocalFilesystemSource(FilesystemSource):
     See #106 for the URI-semantics discussion.
     """
 
+    def produces_multiple_tables(self, uri: str, table: str) -> bool:
+        """Return whether the local source selects worksheet tables."""
+        from dlt_filesystem.source.format.readers import (
+            spreadsheet_selection_is_plural,
+        )
+
+        spec = uri.split("://", 1)[1] if "://" in uri else uri
+        spec = spec.strip() or table.strip()
+        path, _, hints = parse_fragment(spec)
+        try:
+            endpoint = determine_endpoint(spec, path)
+        except (UnsupportedEndpointError, ValueError):
+            return False
+        return endpoint in {
+            "read_excel",
+            "read_ods",
+        } and spreadsheet_selection_is_plural(hints)
+
     def dlt_source(self, uri: str, table: str, **kwargs):
         # The shared filesystem adapter cannot use a caller-supplied row-level
         # incremental key, even though it supports opt-in file selection by

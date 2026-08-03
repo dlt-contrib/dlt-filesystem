@@ -28,14 +28,17 @@ from tests.util import invoke_ingest_command
 # Marked explicitly (not auto-marked by path) because this module lives outside tests/warehouse.
 pytestmark = pytest.mark.integration
 
-# mq-bridge is a core dependency, but guard against a broken/partial install of the native wheel.
-pytest.importorskip("mq_bridge")
-
 MOSQUITTO_IMAGE = "eclipse-mosquitto:2.0.22"
 MOSQUITTO_CONF = Path(__file__).parent / "mosquitto.conf"
 
 ROWS = [{"order_id": i, "amount": i * 10} for i in range(5)]
 EXPECTED = [(r["order_id"], r["amount"]) for r in ROWS]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def require_mq_bridge():
+    """Check the native dependency only when these integration tests run."""
+    pytest.importorskip("mq_bridge")
 
 
 @pytest.fixture(scope="session")

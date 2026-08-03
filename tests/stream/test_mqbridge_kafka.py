@@ -16,7 +16,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 import duckdb
 import pytest
-from confluent_kafka import Producer
 
 from tests.util import invoke_ingest_command
 from tests.util.db import get_query_result
@@ -25,14 +24,19 @@ from tests.warehouse.settings import DESTINATIONS
 # Marked explicitly (not auto-marked by path) because this module lives outside tests/warehouse.
 pytestmark = pytest.mark.integration
 
-# mq-bridge is a core dependency, but guard against a broken/partial install of the native wheel.
-pytest.importorskip("mq_bridge")
-
 ROWS = [{"order_id": i, "amount": i * 10} for i in range(5)]
 EXPECTED = [(r["order_id"], r["amount"]) for r in ROWS]
 
 
+@pytest.fixture(scope="module", autouse=True)
+def require_mq_bridge():
+    """Check the native dependency only when these integration tests run."""
+    pytest.importorskip("mq_bridge")
+
+
 def _produce(address: str, topic: str, rows) -> None:
+    from confluent_kafka import Producer
+
     producer = Producer({"bootstrap.servers": address})
     for row in rows:
         producer.produce(topic, json.dumps(row))

@@ -1,4 +1,4 @@
-from typing import Union
+from typing import Any, Union
 
 import dlt
 from dlt.extract import DltResource, DltSource
@@ -42,11 +42,18 @@ def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResourc
 
     # Apply parameter bindings for certain readers.
     # TODO: Can this be generalized? Why not always loop in column_names into reader hints?
+    reader_kwargs: dict[str, Any] = dict(ref.hints)
+    if ref.reader_name in {"read_excel", "read_ods"}:
+        # The filesystem lister yields pages of files. Keep one collision registry
+        # bound to the reader so distinct worksheet names cannot normalize to the
+        # same table even when the workbooks occur in different pages.
+        reader_kwargs["worksheet_names"] = {}
+
     if ref.reader_name == "read_csv_headless":
         column_names = list(ref.column_types.keys()) if ref.column_types else None
-        reader = reader.bind(column_names=column_names, **ref.hints)
+        reader = reader.bind(column_names=column_names, **reader_kwargs)
     else:
-        reader = reader.bind(**ref.hints)
+        reader = reader.bind(**reader_kwargs)
 
     # Connect and propagate elements.
     return filesystem_resource | reader

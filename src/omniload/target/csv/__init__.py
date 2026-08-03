@@ -24,6 +24,10 @@ class CsvDestination(GenericSqlDestination):
     dataset_name: str
     table_name: str
 
+    def supports_multiple_tables(self) -> bool:
+        """A single CSV output file cannot represent several worksheet tables."""
+        return False
+
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
         """Record table metadata needed to locate the staged dlt output."""
         table_fields = table.split(".")

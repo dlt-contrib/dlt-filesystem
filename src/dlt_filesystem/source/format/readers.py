@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Mapping, Optional
 
+import dlt
 from dlt.common import json
 from dlt.common.typing import copy_sig
 from dlt.sources import DltResource, DltSource, TDataItems
 from dlt.sources.filesystem import FileItemDict
 
+from dlt_filesystem.source.error import WorksheetNameCollisionError, _safe_location
 from dlt_filesystem.source.format.helpers import fetch_arrow, fetch_json
 from dlt_filesystem.source.format.iterable_codec import read_via_iterable
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
@@ -52,6 +54,8 @@ def _polars_csv_symbols() -> Dict[str, Any]:
 
 def _polars_spreadsheet_symbols() -> Dict[str, Any]:
     """Symbols needed to cast reader hint values for `polars.read_excel` and `polars.read_ods`."""
+    from typing import Sequence
+
     from polars._typing import (  # noqa: F401
         ExcelSpreadsheetEngine,
         FileSource,
@@ -65,7 +69,44 @@ def _polars_spreadsheet_symbols() -> Dict[str, Any]:
         "SchemaDict": SchemaDict,
         "DataType": DataType,
         "DataTypeClass": DataTypeClass,
+        # On Python <3.14, evaluating Polars' ``memoryview[int]`` annotation
+        # raises because the built-in is not yet subscriptable. A typing alias
+        # preserves the intended bytes-like shape and lets the remaining reader
+        # hints be resolved and cast.
+        "memoryview": Sequence,
+        "Sequence": Sequence,
     }
+
+
+def spreadsheet_selection_is_plural(hints: Mapping[str, Any]) -> bool:
+    """Return whether spreadsheet reader hints select worksheet tables."""
+
+    if hints.get("table_name"):
+        return False
+
+    sheet_name = hints.get("sheet_name")
+    if sheet_name not in (None, ""):
+        if isinstance(sheet_name, (list, tuple)):
+            return True
+        if isinstance(sheet_name, str):
+            try:
+                return isinstance(json.loads(sheet_name), list)
+            except (ValueError, TypeError):
+                pass
+        return False
+
+    sheet_id = hints.get("sheet_id")
+    if sheet_id not in (None, ""):
+        if isinstance(sheet_id, (list, tuple)):
+            return True
+        if isinstance(sheet_id, str):
+            try:
+                sheet_id = json.loads(sheet_id)
+            except (ValueError, TypeError):
+                return False
+        return sheet_id == 0 or isinstance(sheet_id, list)
+
+    return True
 
 
 def read_csv(
@@ -140,6 +181,7 @@ def read_csv_headless(
 
 def read_excel(
     items: Iterator[FileItemDict],
+    worksheet_names: Optional[dict[str, tuple[str, str]]] = None,
     **kwargs,
 ) -> Iterator[TDataItems]:
     """
@@ -223,11 +265,17 @@ def read_excel(
     """
     import polars as pl
 
-    yield from read_spreadsheet(reader=pl.read_excel, items=items, **kwargs)
+    yield from read_spreadsheet(
+        reader=pl.read_excel,
+        items=items,
+        worksheet_names=worksheet_names,
+        **kwargs,
+    )
 
 
 def read_ods(
     items: Iterator[FileItemDict],
+    worksheet_names: Optional[dict[str, tuple[str, str]]] = None,
     **kwargs,
 ) -> Iterator[TDataItems]:
     """
@@ -282,26 +330,74 @@ def read_ods(
     """
     import polars as pl
 
-    yield from read_spreadsheet(reader=pl.read_ods, items=items, **kwargs)
+    yield from read_spreadsheet(
+        reader=pl.read_ods,
+        items=items,
+        worksheet_names=worksheet_names,
+        **kwargs,
+    )
 
 
 def read_spreadsheet(
     reader: Callable,
     items: Iterator[FileItemDict],
+    worksheet_names: Optional[dict[str, tuple[str, str]]] = None,
     **kwargs,
 ) -> Iterator[TDataItems]:
     """Universal reader for ODS and XLSX spreadsheet / workbook files."""
 
     if "sheet_name" in kwargs and not kwargs["sheet_name"]:
-        kwargs["sheet_name"] = None
+        kwargs.pop("sheet_name")
 
+    plural_selection = spreadsheet_selection_is_plural(kwargs)
     kwargs = cast_kwargs_to_signature(
         reader, kwargs, symbols=_polars_spreadsheet_symbols()
     )
+    if plural_selection:
+        if not any(
+            selector in kwargs and kwargs[selector] is not None
+            for selector in ("sheet_id", "sheet_name", "table_name")
+        ):
+            kwargs["sheet_id"] = 0
+        # Blank worksheets are common and cannot produce a dlt table without an
+        # explicit schema. Read them as empty frames and skip them below.
+        kwargs.setdefault("raise_if_empty", False)
 
+    seen_table_names = worksheet_names if worksheet_names is not None else {}
     for file_obj in items:
         with file_obj.open() as f:
-            yield reader(f.read(), **kwargs).rows(named=True)
+            workbook = reader(f.read(), **kwargs)
+
+        if not isinstance(workbook, dict):
+            yield workbook.rows(named=True)
+            continue
+
+        file_location = _safe_location(
+            str(
+                file_obj.get("file_url")
+                or file_obj.get("relative_path")
+                or file_obj.get("file_name")
+                or "<unknown workbook>"
+            )
+        )
+        naming = dlt.current.source_schema().naming
+        for sheet_name, frame in workbook.items():
+            rows = frame.rows(named=True)
+            if not rows:
+                continue
+
+            normalized_name = naming.normalize_table_identifier(sheet_name)
+            previous = seen_table_names.get(normalized_name)
+            if previous is not None and previous[0] != sheet_name:
+                raise WorksheetNameCollisionError(
+                    table_name=normalized_name,
+                    first_sheet=previous[0],
+                    first_file=previous[1],
+                    second_sheet=sheet_name,
+                    second_file=file_location,
+                )
+            seen_table_names[normalized_name] = (sheet_name, file_location)
+            yield dlt.mark.with_table_name(rows, sheet_name)
 
 
 def read_jsonl(

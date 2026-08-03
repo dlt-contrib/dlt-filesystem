@@ -93,6 +93,35 @@ def test_reader_hints_fragment_is_forwarded():
     assert ref["reader_name"] == "read_excel"
 
 
+@pytest.mark.parametrize(
+    ("uri", "table", "expected"),
+    [
+        (
+            "rsync://host/path/uri.xlsx#sheet_name=UriSheet",
+            "other/table.xlsx",
+            True,
+        ),
+        (
+            "rsync://host/path/uri.xlsx",
+            "other/table.xlsx#sheet_name=TableSheet",
+            False,
+        ),
+        (
+            "rsync://host/path/uri.xlsx#sheet_name=UriSheet",
+            'other/table.xlsx#sheet_name=["A","B"]',
+            True,
+        ),
+        (
+            'rsync://host/path/uri.xlsx#sheet_name=["A","B"]',
+            "other/table.xlsx#sheet_name=TableSheet",
+            False,
+        ),
+    ],
+)
+def test_plural_workbook_detection_uses_effective_table_path(uri, table, expected):
+    assert RsyncSource().produces_multiple_tables(uri, table) is expected
+
+
 def test_remote_path_falls_back_to_uri_path_when_table_empty():
     ref = capture_reader_args("rsync+ssh://host/srv/data/*.csv", "")
     assert ref["file_glob"] == "*.csv"

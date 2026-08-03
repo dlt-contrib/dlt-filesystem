@@ -25,6 +25,9 @@ class SourceProtocol(Protocol):
     ``supports_filesystem_incremental(self) -> bool`` to opt into file selection by
     modification time. It is optional for the same reason and defaults to False when
     absent.
+
+    Sources that may dispatch several tables can optionally define
+    ``produces_multiple_tables(uri, table) -> bool``. It defaults to False when absent.
     """  # noqa: E501
 
     def dlt_source(self, uri: str, table: str, **kwargs):
@@ -37,7 +40,12 @@ class SourceProtocol(Protocol):
 
 
 class DestinationProtocol(Protocol):
-    """Protocol implemented by destination adapters used by the factory."""
+    """Protocol implemented by destination adapters used by the factory.
+
+    Destinations that only represent one table may optionally define
+    ``supports_multiple_tables() -> bool`` and return ``False``. The ingest API
+    treats an absent method as support for dlt's normal multi-table dispatch.
+    """
 
     def dlt_dest(self, uri: str, **kwargs) -> "Destination":
         """Build the dlt destination for the given URI."""

@@ -1,6 +1,4 @@
 import pytest
-from confluent_kafka import KafkaError, KafkaException
-from confluent_kafka.admin import AdminClient
 from testcontainers.kafka import KafkaContainer
 
 from tests.util.common import get_random_string
@@ -39,6 +37,9 @@ def kafka(kafka_service, topic) -> str:
     Returns the `host:port` address of the Kafka container.
     Before invoking the test case, delete all relevant topics completely.
     """
+    from confluent_kafka import KafkaError, KafkaException
+    from confluent_kafka.admin import AdminClient
+
     kafka_address = kafka_service.start()
     admin = AdminClient({"bootstrap.servers": kafka_address})
     for _name, fut in admin.delete_topics([topic]).items():

@@ -69,6 +69,25 @@ class RsyncSource(FilesystemSource):
             )
         )
 
+    def produces_multiple_tables(self, uri: str, table: str) -> bool:
+        """Classify the same effective remote path used by :meth:`dlt_source`."""
+        from dlt_filesystem.source.format.readers import (
+            spreadsheet_selection_is_plural,
+        )
+
+        try:
+            remote_path, _, hints = parse_fragment(
+                self._resolve_remote_path(uri, table)
+            )
+            endpoint = self._resolve_endpoint(table, remote_path)
+        except (InvalidRsyncUriError, ValueError):
+            return False
+
+        return endpoint in {
+            "read_excel",
+            "read_ods",
+        } and spreadsheet_selection_is_plural(hints)
+
     @staticmethod
     def _resolve_remote_path(uri: str, table: str) -> str:
         """Return the remote path/glob, preferring the table over the URI path."""
