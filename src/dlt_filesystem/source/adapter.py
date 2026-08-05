@@ -19,7 +19,7 @@ from typing import Iterator, List, Optional, Tuple, Union
 import dlt
 from dlt.sources import DltResource
 from dlt.sources.credentials import FileSystemCredentials
-from dlt.sources.filesystem import FileItem, FileItemDict, fsspec_filesystem, glob_files
+from dlt.sources.filesystem import FileItem, FileItemDict, fsspec_filesystem
 from fsspec import AbstractFileSystem
 
 from dlt_filesystem.source.error import NoFilesFoundError
@@ -38,6 +38,7 @@ from dlt_filesystem.source.format.readers import (
     read_xml,
     read_yaml,
 )
+from dlt_filesystem.source.lister import glob_files
 
 from .model import FilesystemConfigurationResource
 

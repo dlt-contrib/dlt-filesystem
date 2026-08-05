@@ -295,6 +295,28 @@ def test_remote_glob_concatenates_matching_objects(remote_filesystem, tmp_path):
     assert duckdb_table_cardinality(db_path, "testdrive.data") == 4
 
 
+def test_r2_scheme_reads_s3_compatible_storage(s3_emulator, tmp_path):
+    """`r2://` lists and reads, though dlt's own listing knows no such scheme.
+
+    R2 speaks the S3 API, so the S3 emulator serves it; the scheme is what this
+    covers, because listing resolves each file's modification date per scheme.
+    """
+    s3_emulator.upload("r2/part-1.csv", CSV_ROWS)
+    s3_emulator.upload("r2/part-2.csv", CSV_ROWS)
+
+    db_path = tmp_path / "r2.duckdb"
+    result = run_ingest(
+        source_uri=s3_emulator.source_uri.replace("s3://", "r2://", 1),
+        dest_uri=f"duckdb:///{db_path}",
+        source_table=s3_emulator.source_table("r2/*.csv"),
+        dest_table="testdrive.data",
+        progress="log",
+    )
+
+    assert result is not None
+    assert duckdb_table_cardinality(db_path, "testdrive.data") == 4
+
+
 @pytest.mark.parametrize("remote_filesystem", REMOTE_BACKENDS, indirect=True)
 def test_remote_unmatched_glob_succeeds(remote_filesystem, tmp_path):
     """A wildcard with no remote matches remains a valid empty selection."""
