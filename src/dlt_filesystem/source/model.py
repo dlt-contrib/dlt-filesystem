@@ -36,9 +36,10 @@ class FilesystemConfigurationResource(FilesystemConfiguration):
 #: Run-level parameters omniload passes into every source's ``dlt_source``.
 #:
 #: These name the run, not the storage service: they arrive from CLI flags and
-#: `run_ingest` arguments rather than from the source URI. Kept in one place so
-#: `split_run_options` can subtract them, and pinned against the actual call site
-#: in `omniload.api` by test, so a new run parameter cannot start leaking silently.
+#: `run_ingest` arguments rather than from the source URI. Keeping them in one place
+#: is what lets `split_run_options` subtract them; the set must stay in step with the
+#: keywords `omniload.api` actually passes, or a new run parameter starts leaking
+#: silently, so a test compares the two.
 RUN_OPTION_KEYS: frozenset = frozenset(
     {
         "column_types",
