@@ -1,4 +1,4 @@
-from typing import Any, Union
+from typing import Any, Optional, Union
 
 import dlt
 from dlt.extract import DltResource, DltSource
@@ -7,7 +7,11 @@ from fsspec import AbstractFileSystem
 from dlt_filesystem.source.adapter import filesystem, readers
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
-from dlt_filesystem.source.model import FilesystemLocator, FilesystemReference
+from dlt_filesystem.source.model import (
+    FilesystemLocator,
+    FilesystemReference,
+    ResourceOptions,
+)
 from dlt_filesystem.source.router import determine_endpoint
 
 
@@ -60,11 +64,22 @@ def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResourc
 
 
 def infer_resource(
-    fs: AbstractFileSystem, locator: FilesystemLocator
+    fs: AbstractFileSystem,
+    locator: FilesystemLocator,
+    options: Optional[ResourceOptions] = None,
 ) -> Union[DltSource, DltResource]:
     """
     Infer dlt resource from fsspec filesystem, with reader.
+
+    Args:
+        fs: The filesystem the connector built from its own connection arguments.
+        locator: The parsed source URI.
+        options: The resource options omniload's run contributes, as split out by
+            `split_run_options`. Omitted by callers that have none, which reads the
+            same as a run that enabled nothing.
     """
+
+    options = options or ResourceOptions()
 
     # Decode into base url and url path / file glob, and apply sanity checks.
     locator.validate()
@@ -88,8 +103,15 @@ def infer_resource(
             # concrete file. This keeps wildcard discovery empty-safe.
             require_file_match=locator.require_file_match,
             hints=locator.hints,
+            filesystem_incremental=options.filesystem_incremental,
             # TODO: Can `column_types` be looped into reader|writer hints instead?
             #       We believe it represents a special case handling for `csv_headless`.
-            column_types=locator.options.params.get("column_types"),
+            # The run value (`--columns`) wins; the URI query parameter remains the
+            # fallback for callers that address it there.
+            column_types=(
+                options.column_types
+                if options.column_types is not None
+                else locator.options.params.get("column_types")
+            ),
         )
     )

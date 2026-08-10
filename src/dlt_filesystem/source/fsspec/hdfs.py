@@ -5,7 +5,7 @@ from fsspec import AbstractFileSystem
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
-from dlt_filesystem.source.model import FilesystemLocator
+from dlt_filesystem.source.model import FilesystemLocator, split_run_options
 from dlt_filesystem.util.python import apply_alias, cast_to_dict, cast_to_int
 
 
@@ -33,8 +33,9 @@ class HDFSSource(FilesystemSource):
         )
 
         # Decode individual options (type casting, default values, sanity checks).
+        resource_options, connector_kwargs = split_run_options(kwargs)
         fs_kwargs = locator.options.fs_kwargs
-        fs_kwargs.update(kwargs)
+        fs_kwargs.update(connector_kwargs)
         fs_kwargs["port"] = fs_kwargs.get("port", locator.default_port)
         apply_alias(fs_kwargs, "block_size", "default_block_size")
         cast_to_int(
@@ -48,4 +49,4 @@ class HDFSSource(FilesystemSource):
 
         # Create filesystem and dlt resource wrapper.
         fs = self.fs_class(**fs_kwargs)
-        return infer_resource(fs=fs, locator=locator)
+        return infer_resource(fs=fs, locator=locator, options=resource_options)

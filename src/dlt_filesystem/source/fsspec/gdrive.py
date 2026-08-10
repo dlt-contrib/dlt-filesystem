@@ -4,7 +4,7 @@ from fsspec import AbstractFileSystem
 
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
-from dlt_filesystem.source.model import FilesystemLocator
+from dlt_filesystem.source.model import FilesystemLocator, split_run_options
 from dlt_filesystem.util.python import apply_alias, cast_to_bool, cast_to_dict
 
 
@@ -37,8 +37,9 @@ class GoogleDriveSource(FilesystemSource):
         )
 
         # Decode individual options (type casting, default values, sanity checks).
+        resource_options, connector_kwargs = split_run_options(kwargs)
         fs_kwargs = locator.options.fs_kwargs
-        fs_kwargs.update(kwargs)
+        fs_kwargs.update(connector_kwargs)
         apply_alias(fs_kwargs, "auth", "auth_kwargs")
         cast_to_dict(fs_kwargs, ["creds", "auth_kwargs"])
         if "auth_kwargs" in fs_kwargs:
@@ -46,4 +47,4 @@ class GoogleDriveSource(FilesystemSource):
 
         # Create filesystem and dlt resource wrapper.
         fs = self.fs_class(**fs_kwargs)
-        return infer_resource(fs=fs, locator=locator)
+        return infer_resource(fs=fs, locator=locator, options=resource_options)

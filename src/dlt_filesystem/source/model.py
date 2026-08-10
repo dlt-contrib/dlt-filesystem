@@ -33,6 +33,44 @@ class FilesystemConfigurationResource(FilesystemConfiguration):
         ]
 
 
+#: Run-level parameters omniload passes into every source's ``dlt_source``.
+#:
+#: These name the run, not the storage service: they arrive from CLI flags and
+#: `run_ingest` arguments rather than from the source URI. Kept in one place so
+#: `split_run_options` can subtract them, and pinned against the actual call site
+#: in `omniload.api` by test, so a new run parameter cannot start leaking silently.
+RUN_OPTION_KEYS: frozenset = frozenset(
+    {
+        "column_types",
+        "extract_parallelism",
+        "filesystem_incremental",
+        "incremental_key",
+        "interval_end",
+        "interval_start",
+        "merge_key",
+        "page_size",
+        "requested_incremental_key",
+        "requested_primary_key",
+        "sql_backend",
+        "sql_exclude_columns",
+        "sql_limit",
+        "sql_reflection_level",
+    }
+)
+
+
+def strip_run_options(options: Dict[str, Any]) -> Dict[str, Any]:
+    """Return ``options`` without any name omniload owns.
+
+    The query string is the second carrier a run option can arrive on, so it gets the
+    same ownership rule `split_run_options` applies to the run itself: a name in
+    `RUN_OPTION_KEYS` never reaches a filesystem constructor, whichever carrier it
+    came in on. `column_types` remains readable from `FilesystemOptions.params`,
+    which is where the reference picks it up.
+    """
+    return {key: value for key, value in options.items() if key not in RUN_OPTION_KEYS}
+
+
 @dataclass
 class FilesystemOptions:
     """Bundle filesystem options from URL."""
@@ -49,7 +87,61 @@ class FilesystemOptions:
         response.pop("path", None)
         response.pop("protocol", None)
         response.update(self.params)
-        return response
+        return strip_run_options(response)
+
+
+@dataclass
+class ResourceOptions:
+    """The run options the filesystem package itself consumes.
+
+    Every other run option is none of this package's business, and every field
+    here belongs to the resource rather than to the filesystem: they are read
+    when building the `FilesystemReference`, never when constructing an fsspec
+    filesystem.
+    """
+
+    filesystem_incremental: bool = False
+    column_types: Optional[Dict[str, Any]] = None
+
+
+def split_run_options(kwargs: Dict[str, Any]) -> tuple[ResourceOptions, Dict[str, Any]]:
+    """Separate omniload's run options from the connector's own keyword arguments.
+
+    This is the ownership boundary for the filesystem family. `filesystem_incremental`
+    and `column_types` are **resource** options: they configure how the reader
+    resource is built and must reach `FilesystemReference`. Every other member of
+    `RUN_OPTION_KEYS` is consumed elsewhere in the pipeline and is meaningless to a
+    filesystem. Neither group is a **connector** option, so none of them may reach an
+    fsspec constructor: an unknown keyword there fragments fsspec's instance cache
+    (its key is built from the constructor arguments) and a backend that forwards
+    unknown keywords into a client library, as `SFTPFileSystem` does into
+    `paramiko.SSHClient.connect`, rejects them outright.
+
+    The split is **subtractive**: it removes the pinned omniload keys and returns
+    everything else untouched. A whitelist would be wrong, because a programmatic
+    caller may legitimately pass connector keywords straight through, which GCS
+    supports today by honouring a caller-supplied ``token``.
+
+    S3 (`s3_filesystem_kwargs`), SFTP (its explicit ``params`` dict) and the local
+    source already build their constructor arguments explicitly and take nothing from
+    the run; this generalizes that shape to the connectors that merged the run
+    parameters wholesale instead.
+
+    Args:
+        kwargs: The keyword arguments a `dlt_source` implementation received.
+
+    Returns:
+        The resource options to thread into `FilesystemReference`, and the remaining
+        keyword arguments, which are safe to pass to a filesystem constructor.
+    """
+    resource_options = ResourceOptions(
+        filesystem_incremental=kwargs.get("filesystem_incremental", False),
+        column_types=kwargs.get("column_types"),
+    )
+    connector_kwargs = {
+        key: value for key, value in kwargs.items() if key not in RUN_OPTION_KEYS
+    }
+    return resource_options, connector_kwargs
 
 
 @dataclass
@@ -186,14 +278,19 @@ class FilesystemReference:
             distinguish transports. The bucket URL and glob are added separately
             when deriving the incremental resource-state key.
         filesystem_incremental (bool): Whether to filter files using their
-            modification time and persistent dlt resource state.
+            modification time and persistent dlt resource state. A **resource**
+            option owned by this reference, never an fsspec constructor argument;
+            see `split_run_options` for the boundary that keeps it here.
         require_file_match (bool): Whether extraction must fail when the concrete
             source selection matches no file.
         hints (dict[str, str]): Free-form per-URI reader hints parsed from the
             `#key=value` fragment (e.g. `{"sheet_name": "ticker-symbols"}`). The
             key a reader looks up is that reader's contract; no reader consumes
             hints yet, so this is currently populated but unread.
-        column_types (dict[str, Any], optional): Column name to type mapping, e.g. used by `read_csv_headless`.
+        column_types (dict[str, Any], optional): Column name to type mapping, e.g. used by
+            `read_csv_headless`. A **resource** option like `filesystem_incremental`;
+            it may arrive from the run (`--columns`) or from a URI query parameter, and
+            the run value wins where both are given.
 
     TODO: Zap into / synchronize with the new `FilesystemLocator`?
     """

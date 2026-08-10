@@ -8,6 +8,7 @@ from dlt_filesystem.error import InvalidBlobTableError, MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
+from dlt_filesystem.source.model import split_run_options, strip_run_options
 from dlt_filesystem.source.router import (
     blob_hints,
     determine_endpoint,
@@ -55,7 +56,13 @@ class GCSSource(FilesystemSource):
 
         bucket_url = f"gs://{bucket_name}"
 
-        fs = self.fs_class(**gcs_filesystem_kwargs(params, kwargs))
+        # gcsfs takes the caller's own keyword arguments as the baseline it merges the
+        # URI parameters into, and this connector merges the query string wholesale, so
+        # both carriers get filtered before they reach the constructor.
+        resource_options, connector_kwargs = split_run_options(kwargs)
+        fs = self.fs_class(
+            **gcs_filesystem_kwargs(strip_run_options(params), connector_kwargs)
+        )
 
         try:
             endpoint: str = determine_endpoint(table, path_to_file)
@@ -76,10 +83,10 @@ class GCSSource(FilesystemSource):
                 file_glob=path_to_file,
                 reader_name=endpoint,
                 storage_namespace="gcs",
-                filesystem_incremental=kwargs.get("filesystem_incremental", False),
+                filesystem_incremental=resource_options.filesystem_incremental,
                 require_file_match=source_selects_single_file(uri, table),
                 hints=blob_hints(parsed_uri, table),
-                column_types=kwargs.get("column_types"),
+                column_types=resource_options.column_types,
             )
         )
 
@@ -199,8 +206,9 @@ class AzureSource(FilesystemSource):
 
         bucket_url = f"az://{bucket_name}"
 
-        kwargs.update(azure_blob_filesystem_kwargs(auth))
-        fs = self.fs_class(**kwargs)
+        resource_options, connector_kwargs = split_run_options(kwargs)
+        connector_kwargs.update(azure_blob_filesystem_kwargs(auth))
+        fs = self.fs_class(**connector_kwargs)
 
         try:
             endpoint: str = determine_endpoint(table, path_to_file)
@@ -224,10 +232,10 @@ class AzureSource(FilesystemSource):
                     f"azure:{(auth.account_name or '').lower()}:"
                     f"{self.endpoint_namespace(auth.account_host, 'azure-public')}"
                 ),
-                filesystem_incremental=kwargs.get("filesystem_incremental", False),
+                filesystem_incremental=resource_options.filesystem_incremental,
                 require_file_match=source_selects_single_file(uri, table),
                 hints=blob_hints(parsed_uri, table),
-                column_types=kwargs.get("column_types"),
+                column_types=resource_options.column_types,
             )
         )
 

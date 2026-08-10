@@ -1,7 +1,7 @@
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
-from dlt_filesystem.source.model import FilesystemLocator
+from dlt_filesystem.source.model import FilesystemLocator, split_run_options
 from dlt_filesystem.util.python import asbool, cast_to_int
 
 
@@ -23,8 +23,9 @@ class FTPSource(FilesystemSource):
         )
 
         # Decode individual options (type casting, default values, sanity checks).
+        resource_options, connector_kwargs = split_run_options(kwargs)
         fs_kwargs = locator.options.fs_kwargs
-        fs_kwargs.update(kwargs)
+        fs_kwargs.update(connector_kwargs)
         fs_kwargs["port"] = fs_kwargs.get("port", locator.default_port)
         # Cast values to `int`.
         cast_to_int(fs_kwargs, ["block_size", "port", "timeout"])
@@ -41,4 +42,4 @@ class FTPSource(FilesystemSource):
 
         # Create filesystem and dlt resource wrapper.
         fs = FTPFileSystem(**fs_kwargs)
-        return infer_resource(fs=fs, locator=locator)
+        return infer_resource(fs=fs, locator=locator, options=resource_options)
