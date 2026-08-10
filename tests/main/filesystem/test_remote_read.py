@@ -210,13 +210,15 @@ def fsspec_mock(mocker):
 
     mocker.patch("pyarrow.fs.HadoopFileSystem", MockHadoopFileSystem)
 
-    # It's enough to mock the `_connect` method with SFTP and SMB.
+    # It's enough to mock the `_connect` method with SFTP, SMB and FTP.
     mocker.patch("fsspec.implementations.sftp.SFTPFileSystem._connect")
     mocker.patch("fsspec.implementations.smb.SMBFileSystem._connect")
-
-    # For FTP, let's mock the low-level libraries.
-    mocker.patch("ftplib.FTP")
-    mocker.patch("ftplib.FTP_TLS")
+    # FTP is mocked at the same level rather than at `ftplib`, so the result does not
+    # depend on import order. `fsspec.implementations.ftp` binds `FTP` and `FTP_TLS`
+    # into its own globals when it is imported, and derives `ImplicitFTPTLS` (which a
+    # `?tls=<protocol>` URI selects) from `FTP_TLS` right then, so patching `ftplib`
+    # reaches none of the three once any earlier test has imported that module.
+    mocker.patch("fsspec.implementations.ftp.FTPFileSystem._connect")
 
 
 @pytest.mark.parametrize("source_uri", URIS, ids=[str(item) for item in URIS])
