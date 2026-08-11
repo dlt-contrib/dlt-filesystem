@@ -8,7 +8,7 @@ none of those names, and the two the package does consume must arrive on the
 The spy needs a per-connector patch map because there is no single construction
 hook: most connectors resolve a `fs_class` property, FTP imports its class from
 the fsspec module, SFTP goes through `fsspec.filesystem`, and the local source
-wraps a pyarrow filesystem that takes no arguments at all.
+wraps a pyarrow filesystem, whose constructor is recorded rather than replaced.
 """
 
 import ast
@@ -80,8 +80,6 @@ class Case:
     table: str = ""
     #: Connection arguments this URI carries, which must survive the split.
     expect_kwargs: tuple[str, ...] = field(default_factory=tuple)
-    #: The connector builds its filesystem without forwarding any keyword.
-    takes_no_kwargs: bool = False
 
 
 #: One case per filesystem-family scheme in `omniload.core.registry`.
@@ -107,7 +105,7 @@ CASES = [
         "dropbox://path/to/data.parquet?token=secret",
         expect_kwargs=("token",),
     ),
-    Case("file", "file://__TMP__/data.parquet", takes_no_kwargs=True),
+    Case("file", "file://__TMP__/data.parquet"),
     Case(
         "ftp",
         "ftp://username:password@intranet.example.org/path/to/data.parquet?tls=tls",
@@ -238,8 +236,21 @@ def _spy_on_filesystem(source, scheme: str):
         with mock.patch("fsspec.filesystem", lambda _protocol, **kwargs: spy(**kwargs)):
             yield calls
     elif isinstance(source, LocalFilesystemSource):
-        # Builds `ArrowFSWrapper(LocalFileSystem())` and forwards nothing.
-        yield calls
+        # Wraps a pyarrow filesystem, so record that constructor instead of replacing
+        # it: `ArrowFSWrapper` needs a real arrow filesystem underneath. Recording it
+        # rather than asserting "no spy fired" is what makes the empty-kwargs claim
+        # falsifiable, so forwarding a run option here would fail the same assertion
+        # as everywhere else.
+        import pyarrow.fs
+
+        real_local = pyarrow.fs.LocalFileSystem
+
+        def recording_local(*args, **kwargs):
+            calls.append(dict(kwargs))
+            return real_local(*args, **kwargs)
+
+        with mock.patch("pyarrow.fs.LocalFileSystem", recording_local):
+            yield calls
     else:
         with mock.patch.object(type(source), "fs_class", property(lambda self: spy)):
             yield calls
@@ -269,10 +280,6 @@ def test_filesystem_constructor_receives_no_run_option(case, tmp_path):
     _skip_unsupported(case.scheme)
     _, calls = _drive(case, tmp_path)
 
-    if case.takes_no_kwargs:
-        assert calls == []
-        return
-
     assert calls, f"{case.scheme}: the filesystem spy was never constructed"
     for received in calls:
         leaked = sorted(set(received) & RUN_OPTION_KEYS)
@@ -284,10 +291,6 @@ def test_uri_connection_options_survive_the_split(case, tmp_path):
     """The guardrail: the split must not be tightened into dropping real kwargs."""
     _skip_unsupported(case.scheme)
     _, calls = _drive(case, tmp_path)
-
-    if case.takes_no_kwargs:
-        assert calls == []
-        return
 
     received = calls[-1]
     missing = [key for key in case.expect_kwargs if key not in received]
