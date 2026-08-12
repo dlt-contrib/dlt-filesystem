@@ -31,6 +31,7 @@ from dlt_filesystem.source.format.readers import (
     read_csv_duckdb,
     read_csv_headless,
     read_excel,
+    read_json,
     read_jsonl,
     read_msgpack,
     read_ods,
@@ -51,6 +52,7 @@ def readers(
 ) -> Tuple[DltResource, ...]:
     """This source provides a few resources that are chunked file readers. Readers can be further parametrized before use
        read_csv(chunksize, **pandas_kwargs)
+       read_json(chunksize)
        read_jsonl(chunksize)
        read_parquet(chunksize)
 
@@ -72,6 +74,8 @@ def readers(
         | dlt.transformer(name="read_excel", max_table_nesting=0)(read_excel),
         filesystem_resource
         | dlt.transformer(name="read_ods", max_table_nesting=0)(read_ods),
+        filesystem_resource
+        | dlt.transformer(name="read_json", max_table_nesting=0)(read_json),
         filesystem_resource
         | dlt.transformer(name="read_jsonl", max_table_nesting=0)(read_jsonl),
         filesystem_resource

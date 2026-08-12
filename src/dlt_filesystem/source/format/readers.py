@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import codecs
+import io
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Mapping, Optional
 
 import dlt
@@ -423,6 +425,83 @@ def read_jsonl(
             yield lines_chunk
 
 
+def read_json(
+    items: Iterator[FileItemDict], chunksize: int = 1000
+) -> Iterator[TDataItems]:
+    """JSON reader for a whole document, falling back to line-delimited records.
+
+    A `.json` file carries any of three shapes in the wild, and the extension does not say
+    which: one object, an array of objects, or line-delimited records that were named `.json`
+    rather than `.jsonl`. The whole document is parsed first, so a pretty-printed array or
+    object is read as what it is. Line-delimited parsing is the fallback, tried only when the
+    document does not parse as one value, because a JSONL body's first line parses on its own
+    and would otherwise be mistaken for a complete document.
+
+    Deciding on line count instead would misread every pretty-printed file, and deciding on the
+    first line alone would truncate every JSONL file to its first record.
+
+    Args:
+        chunksize (int, optional): The number of records to load and yield at once.
+
+    Returns:
+        TDataItem: The file content
+    """
+    for file_obj in items:
+        with file_obj.open() as f:
+            data = f.read()
+
+        # A UTF-8 BOM is not part of the document and is not valid JSON, so a file exported
+        # from a tool that writes one would otherwise fail on both the document and the
+        # line-delimited path.
+        if data.startswith(codecs.BOM_UTF8):
+            data = data[len(codecs.BOM_UTF8) :]
+
+        try:
+            document = json.loadb(data)
+        except ValueError:
+            # Only a decode failure means "not one document"; the decoder raises a
+            # `JSONDecodeError`, which is a `ValueError`. A `MemoryError` or a recursion
+            # limit says the body is too big or too deep, and retrying it line by line
+            # would relabel a resource failure as a parse failure.
+            yield from _read_json_lines(data, chunksize)
+            continue
+
+        if isinstance(document, list):
+            for start in range(0, len(document), chunksize):
+                yield document[start : start + chunksize]
+        else:
+            yield [document]
+
+
+def _read_json_lines(data: bytes, chunksize: int) -> Iterator[TDataItems]:
+    """Yield records from a line-delimited JSON body already read into memory.
+
+    Blank lines are skipped, so a trailing newline does not raise. Any other malformed line
+    raises, naming the line number, because silently dropping a record is worse than failing
+    the load.
+
+    The body is iterated as a stream rather than split into a list, so the lines are not all
+    materialized at once on top of the body this already holds. An empty body yields nothing,
+    which is the same zero-row load an empty array gives.
+    """
+    chunk: List[Any] = []
+    for number, line in enumerate(io.BytesIO(data), start=1):
+        if not line.strip():
+            continue
+        try:
+            chunk.append(json.loadb(line))
+        except ValueError as ex:
+            raise ValueError(
+                f"JSON document is neither a single value nor line-delimited records: "
+                f"line {number} does not parse ({ex})"
+            ) from ex
+        if len(chunk) >= chunksize:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
 def read_bson(
     items: Iterator[FileItemDict], chunksize: int = 1000
 ) -> Iterator[TDataItems]:
@@ -629,6 +708,10 @@ if TYPE_CHECKING:
         @copy_sig(read_excel)
         def read_ods(self) -> DltResource:
             """ODS reader resource (Polars)."""
+
+        @copy_sig(read_json)
+        def read_json(self) -> DltResource:
+            """JSON reader resource (whole document or line-delimited)."""
 
         @copy_sig(read_jsonl)
         def read_jsonl(self) -> DltResource:

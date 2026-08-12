@@ -4,6 +4,10 @@ from dlt_filesystem.source.error import UnsupportedEndpointError
 BASE_FILE_FORMATS: dict[str, str] = {
     "csv": "read_csv",
     "csv_headless": "read_csv_headless",
+    # `json` reads a whole document (object or array); `jsonl` stays on the strict
+    # line-delimited reader. A `.json` file carrying line-delimited records is handled by
+    # `read_json`'s fallback, so the two keys never need to route to each other.
+    "json": "read_json",
     "jsonl": "read_jsonl",
     "ods": "read_ods",
     "parquet": "read_parquet",
