@@ -16,6 +16,10 @@ keeping every file the previous connector could read readable:
   signature;
 - a server that cannot serve byte ranges, or reports no size at all, is read whole
   instead of failing, which is what the previous connector did for every server.
+
+Discovery and whole-body reads report a failure without the query. One gap remains:
+an error raised inside fsspec's own ranged-read file object carries the URL aiohttp
+requested, and that object is built by `HTTPFileSystem`, not here.
 """
 
 import io
@@ -42,6 +46,19 @@ from dlt_filesystem.util.web import requote_uri
 DEFAULT_TIMEOUT_SECONDS = 30
 
 
+class HttpReadError(OSError):
+    """An HTTP request failed. Names the address without its query string.
+
+    aiohttp reports the URL it actually requested, which for a signed URL is the
+    signature, and an expired signature is the most likely failure there is. An
+    `OSError`, so a caller catching the IO family still catches this.
+    """
+
+    def __init__(self, status: int, url: str) -> None:
+        super().__init__(f"HTTP {status} reading {url}")
+        self.status = status
+
+
 class HttpFileSystem(HTTPFileSystem):
     """`HTTPFileSystem` with the query as address, and no unreadable servers.
 
@@ -52,6 +69,12 @@ class HttpFileSystem(HTTPFileSystem):
             from a query-free locator on purpose.
     """
 
+    # fsspec keys its instance cache on the constructor arguments and keeps every
+    # instance for the life of the process. Here those arguments are an address and
+    # a credential, so caching would retain both indefinitely and add an entry per
+    # signature. One instance per source costs nothing worth keeping them for.
+    cachable = False
+
     def __init__(self, *args: Any, url_query: str = "", **kwargs: Any) -> None:
         # `encoded` is not optional here: it tells `yarl` the URL is already
         # escaped and must be sent as given. With the default, `yarl` unescapes
@@ -60,7 +83,7 @@ class HttpFileSystem(HTTPFileSystem):
         kwargs["encoded"] = True
         super().__init__(*args, **kwargs)
         self.url_query = url_query
-        self._range_readable: Dict[str, bool] = {}
+        self._range_size_cache: Dict[str, Optional[int]] = {}
 
     def encode_url(self, url: str) -> Any:
         """Return the URL to request: query re-attached, escaped as `requests` did.
@@ -113,7 +136,11 @@ class HttpFileSystem(HTTPFileSystem):
                 size=size,
                 **kwargs,
             )
-        if self._serves_ranges(path):
+        range_size = self._range_size(path)
+        if range_size is not None:
+            # Hand the size along: `HTTPFileSystem._open` would otherwise ask the
+            # server for it again, and would fall back to a non-seekable stream if
+            # that second answer omitted it, which the probe has already ruled out.
             return super()._open(
                 path,
                 mode=mode,
@@ -121,35 +148,52 @@ class HttpFileSystem(HTTPFileSystem):
                 autocommit=autocommit,
                 cache_type=cache_type,
                 cache_options=cache_options,
-                size=size,
+                size=size or range_size,
                 **kwargs,
             )
-        return io.BytesIO(self.cat_file(path))
+        return io.BytesIO(self._read_whole(path))
 
-    def _serves_ranges(self, path: str) -> bool:
-        """Ask the server, once per URL, whether it answers a range request.
+    def _read_whole(self, path: str) -> bytes:
+        """Read a body in one request, reporting a failure without the query.
+
+        fsspec answers a `404` with the path it was given, which is query-free
+        already, and hands every other status to aiohttp, whose error carries the
+        URL it requested -- signature included.
+        """
+        import aiohttp
+
+        try:
+            return self.cat_file(path)
+        except aiohttp.ClientResponseError as error:
+            raise HttpReadError(error.status, path) from None
+
+    def _range_size(self, path: str) -> Optional[int]:
+        """Return the resource's length if it can be read in ranges, else `None`.
 
         One byte is requested and the answer is read from the status: a `206` with
         a numeric total in `Content-Range` means the server both honours ranges and
-        knows how long the resource is, which is exactly what a seekable file needs.
-        A `200` means the range was ignored, and no total means no size, so neither
-        can be read in ranges.
+        knows how long the resource is, which is exactly what a seekable file needs,
+        and the total is that length. A `200` means the range was ignored, and no
+        total means no size, so neither can be read in ranges.
 
         The alternative -- reading `Accept-Ranges` from the `HEAD` the listing
         already made -- does not work: a server that ignores `Range` typically says
         nothing about ranges at all rather than advertising `none`.
+
+        A probe that fails outright answers "no": the failure is not swallowed, it
+        is left to the read that follows, which reports the same condition with the
+        query kept out of the message. Reporting it from here would put the
+        signature in the error instead.
         """
         from fsspec.asyn import sync
 
-        cached = self._range_readable.get(path)
-        if cached is not None:
-            return cached
+        # Asked once per URL. Absence of the key is what "not probed yet" means, so
+        # a probe that answered "no" is not repeated either.
+        if path not in self._range_size_cache:
+            self._range_size_cache[path] = sync(self.loop, self._probe_range, path)
+        return self._range_size_cache[path]
 
-        readable = bool(sync(self.loop, self._probe_range, path))
-        self._range_readable[path] = readable
-        return readable
-
-    async def _probe_range(self, path: str) -> bool:
+    async def _probe_range(self, path: str) -> Optional[int]:
         request_kwargs = {
             key: value for key, value in self.kwargs.items() if key != "headers"
         }
@@ -159,15 +203,21 @@ class HttpFileSystem(HTTPFileSystem):
         # response look like a whole one.
         headers["Accept-Encoding"] = "identity"
 
+        import aiohttp
+
         session = await self.set_session()
-        response = await session.get(
-            self.encode_url(path), headers=headers, **request_kwargs
-        )
+        try:
+            response = await session.get(
+                self.encode_url(path), headers=headers, **request_kwargs
+            )
+        except aiohttp.ClientError:
+            # Unreachable or refused: answer "no ranges" and let the read report it.
+            return None
         async with response:
             if response.status != 206:
-                return False
+                return None
             total = response.headers.get("Content-Range", "").rpartition("/")[2]
-            return total.isdigit()
+            return int(total) if total.isdigit() else None
 
 
 class HttpFilesystemSource(FilesystemSource):

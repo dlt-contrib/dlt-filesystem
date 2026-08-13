@@ -186,18 +186,22 @@ def glob_files(
         # A listing need not carry a size: an HTTP response with neither a
         # `Content-Length` nor a `Content-Range` reports none, which is ordinary
         # chunked transfer rather than an exotic case, and casting it crashed
-        # discovery for a concrete file that reads perfectly well. `FileItem`
-        # declares the field required and no reader consumes it, so an unknown
-        # size is reported as zero rather than dropping the file.
+        # discovery for a concrete file that reads perfectly well.
+        #
+        # `FileItem` declares the field required, but zero would be
+        # indistinguishable from an empty file, so an unknown size is left out
+        # instead and a consumer sees a missing key rather than a wrong number. No
+        # reader consumes it.
         size = md.get("size")
-        file_item = FileItem(
+        file_item = FileItem(  # ty: ignore[missing-typed-dict-key]
             file_name=file_name,
             relative_path=rel_path,
             file_url=file_url,
             mime_type=mime_type,
             modification_date=resolve_modification_date(scheme, md),
-            size_in_bytes=int(size) if size is not None else 0,
         )
+        if size is not None:
+            file_item["size_in_bytes"] = int(size)
         if encoding is not None:
             file_item["encoding"] = encoding
         yield file_item

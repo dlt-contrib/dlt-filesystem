@@ -23,7 +23,11 @@ import pytest
 from fsspec.implementations.memory import MemoryFileSystem
 
 from dlt_filesystem.error import MissingConnectorOption
-from dlt_filesystem.source.fsspec.http import HttpFilesystemSource
+from dlt_filesystem.source.fsspec.http import (
+    HttpFileSystem,
+    HttpFilesystemSource,
+    HttpReadError,
+)
 from dlt_filesystem.source.lister import glob_files
 from dlt_filesystem.source.model import FilesystemReference
 from omniload import ValidationError, run_ingest
@@ -449,13 +453,56 @@ def test_listed_file_url_is_the_query_free_url(range_server):
 
 
 def test_listed_file_survives_a_server_that_reports_no_size(chunked_server):
-    """Discovery must not crash on a response that cannot state a length."""
+    """Discovery must not crash on a response that cannot state a length.
+
+    The size is reported as absent rather than as zero, which would be
+    indistinguishable from an empty file.
+    """
     reference = build_reference(chunked_server.url("people.csv"))
 
     items = list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
 
     assert [item["file_name"] for item in items] == ["people.csv"]
-    assert items[0]["size_in_bytes"] == 0
+    assert "size_in_bytes" not in items[0]
+
+
+def test_filesystem_instances_are_not_retained_between_signatures(range_server):
+    """A credential must not outlive the run in a process-global cache.
+
+    fsspec keys its instance cache on the constructor arguments and keeps every
+    instance for the life of the process, so a caching filesystem would hold one
+    entry per signature, each retaining that signature and any auth header.
+    """
+    HttpFileSystem.clear_instance_cache()
+
+    build_reference(range_server.url("people.csv", query="X-Amz-Signature=one"))
+    build_reference(range_server.url("people.csv", query="X-Amz-Signature=two"))
+
+    assert HttpFileSystem.cachable is False
+    assert HttpFileSystem._cache == {}
+
+
+def test_a_failed_whole_body_read_does_not_leak_the_query(no_range_server):
+    """The likeliest failure a signed URL has, on the path that reads it whole.
+
+    fsspec answers a `404` with the query-free path it was given, but hands every
+    other status to aiohttp, whose error names the URL it requested. This is the
+    read the source performs itself, so it is the one it can report.
+    """
+    filesystem = HttpFileSystem(url_query=SIGNED_QUERY)
+
+    with pytest.raises(HttpReadError) as exception:
+        filesystem.open(no_range_server.url("forbidden/data.csv"))
+
+    message = str(exception.value)
+    assert "403" in message
+    assert "forbidden/data.csv" in message
+    assert "X-Amz-Signature" not in message
+    assert "abc%2Fdef" not in message
+    assert any(
+        request.query == SIGNED_QUERY_ON_THE_WIRE
+        for request in no_range_server.requests
+    ), "the signature never reached the server, so the test proves nothing"
 
 
 def test_filesystem_incremental_is_refused_by_a_run(range_server, tmp_path):

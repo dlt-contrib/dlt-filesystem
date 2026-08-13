@@ -60,6 +60,10 @@ AUTH_PASSWORD_ENCODED = "p%40ss%2Fword"  # noqa: S105 - the same fixture credent
 #: Body bytes per chunk in `ServerMode.CHUNKED`, small enough to produce several.
 CHUNK_SIZE = 4096
 
+#: Any request under this path is answered `403`, whatever the mode. Models the
+#: failure a signed URL actually has: a signature that expired or does not match.
+FORBIDDEN_PREFIX = "/forbidden/"
+
 
 class ServerMode(str, Enum):
     """How a fixture server answers a body request."""
@@ -252,6 +256,10 @@ class _Handler(BaseHTTPRequestHandler):
                 method=method,
                 extra=(("WWW-Authenticate", 'Basic realm="omniload"'),),
             )
+            return
+
+        if raw_path.startswith(FORBIDDEN_PREFIX):
+            self._respond(record, 403, b"<Error>AccessDenied</Error>", method=method)
             return
 
         target = self._target(fixture.document_root, raw_path)
