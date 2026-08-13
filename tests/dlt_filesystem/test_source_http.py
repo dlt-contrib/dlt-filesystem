@@ -37,6 +37,7 @@ from tests.dlt_filesystem.http_server import (
     EVENT_COUNT,
     PEOPLE,
     HttpFixture,
+    closed_port,
 )
 
 #: The rows every document in the fixture root carries, in query order.
@@ -568,3 +569,57 @@ def test_chunksize_argument_reaches_the_reader_not_the_filesystem(range_server):
 def test_missing_host_is_reported(range_server):
     with pytest.raises(MissingConnectorOption, match="host is required"):
         HttpFilesystemSource().dlt_source("http://", "")
+
+
+def test_percent_encoded_document_name_reaches_the_wire_unchanged(
+    range_server, tmp_path
+):
+    """A name that only survives a URL encoded must not be encoded a second time.
+
+    `caf%C3%A9.csv` is already correct; escaping its `%` again asks the server for a
+    file whose name literally contains `%C3%A9`, which is a 404.
+    """
+    destination = load(range_server, "caf%C3%A9.csv", tmp_path)
+
+    assert rows(destination) == EXPECTED
+    assert {request.path for request in range_server.requests} == {"/caf%C3%A9.csv"}
+
+
+def test_a_url_that_carries_its_own_query_keeps_it(range_server):
+    """The source query is re-attached, never appended to a query already there."""
+    filesystem = HttpFileSystem(url_query="X-Amz-Signature=source")
+
+    encoded = str(filesystem.encode_url(range_server.url("people.csv", query="own=1")))
+
+    assert encoded.endswith("?own=1")
+    assert "X-Amz-Signature" not in encoded
+
+
+def test_block_size_zero_streams_without_probing(range_server):
+    """An explicit ask for the streaming interface is honoured as asked.
+
+    No range probe is issued, because nothing about range support would change the
+    answer: the caller has already said it wants a stream.
+    """
+    filesystem = HttpFileSystem()
+
+    with filesystem.open(range_server.url("people.csv"), block_size=0) as file:
+        assert file.read() == range_server.body("people.csv")
+
+    assert [request.range_header for request in range_server.ranged()] == []
+
+
+def test_probe_answers_no_ranges_when_the_server_cannot_be_reached(range_server):
+    """A probe that cannot connect answers "no ranges" instead of raising.
+
+    The failure is not swallowed: the read that follows reports it, and reports it
+    without the query, which is what raising from the probe would have leaked.
+    """
+    filesystem = HttpFileSystem(url_query=SIGNED_QUERY)
+    unreachable = f"http://127.0.0.1:{closed_port()}/people.csv"
+
+    assert filesystem._range_size(unreachable) is None
+
+    with pytest.raises(OSError) as exception:
+        filesystem.open(unreachable)
+    assert "X-Amz-Signature" not in str(exception.value)

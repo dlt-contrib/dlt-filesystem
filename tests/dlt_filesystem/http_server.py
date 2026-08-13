@@ -27,6 +27,7 @@ import binascii
 import gzip
 import json
 import mimetypes
+import socket
 import ssl
 import threading
 from contextlib import contextmanager
@@ -467,6 +468,13 @@ def serve(
         thread.join(timeout=5)
 
 
+def closed_port() -> int:
+    """Return a port nothing is listening on, for the connection-failure path."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def build_document_root(directory: Path) -> Path:
     """Generate every document the HTTP tests read, returning the root.
 
@@ -488,6 +496,8 @@ def build_document_root(directory: Path) -> Path:
     (root / "people-semicolon.csv").write_text(csv_text.replace(",", ";"))
     # No extension a format can be inferred from, so the format has to be named.
     (root / "people.dat").write_text(csv_text)
+    # A name that can only be addressed percent-encoded (`caf%C3%A9.csv`).
+    (root / "café.csv").write_text(csv_text)
 
     array_text = json.dumps(list(PEOPLE))
     (root / "people.json").write_text(array_text)

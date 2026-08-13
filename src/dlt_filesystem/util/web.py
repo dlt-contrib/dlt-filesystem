@@ -1,4 +1,3 @@
-import binascii
 from typing import Any, Dict
 from urllib.parse import quote
 
@@ -21,23 +20,33 @@ _SAFE_WITHOUT_PERCENT = "!#$&'()*+,/:;=?@[]~"
 
 
 def _unquote_unreserved(uri: str) -> str:
-    """Unescape only the escapes that cannot carry meaning.
+    """Unescape only the escapes that cannot carry meaning, leaving the rest alone.
+
+    Anything that is not an unreserved character keeps its escape verbatim,
+    including a sequence that is not an escape at all (`100%`) and one that decodes
+    to a non-ASCII byte (`%C3` in a percent-encoded UTF-8 filename). Treating
+    either as an error would send the whole URL down the escape-the-percent path
+    and double-escape a URL that was already correct.
 
     Raises:
-        ValueError: on a malformed escape sequence, which the caller answers by
-            escaping the stray `%` instead.
+        ValueError: only for two alphanumerics that are not hex (`%zz`), the one
+            case that cannot be interpreted either way. The caller answers it by
+            escaping the stray `%`.
     """
     parts = uri.split("%")
     for index in range(1, len(parts)):
         escape = parts[index][0:2]
-        if len(escape) != 2 or not escape.isalnum():
-            raise ValueError(f"Invalid percent-escape sequence: '{escape}'")
-        try:
-            character = binascii.unhexlify(escape).decode("ascii")
-        except (binascii.Error, UnicodeDecodeError) as error:
-            raise ValueError(f"Invalid percent-escape sequence: '{escape}'") from error
-        if character in UNRESERVED:
-            parts[index] = character + parts[index][2:]
+        if len(escape) == 2 and escape.isalnum():
+            try:
+                character = chr(int(escape, 16))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid percent-escape sequence: '{escape}'"
+                ) from None
+            if character in UNRESERVED:
+                parts[index] = character + parts[index][2:]
+            else:
+                parts[index] = f"%{parts[index]}"
         else:
             parts[index] = f"%{parts[index]}"
     return "".join(parts)

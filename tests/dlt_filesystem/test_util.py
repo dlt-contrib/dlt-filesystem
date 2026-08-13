@@ -97,3 +97,54 @@ def test_strip_protocol_suffix_success():
 def test_strip_protocol_suffix_no_suffix():
     """Validate the `strip_protocol_suffix` utility function."""
     assert strip_protocol_suffix("http+dav://") == "http+dav://"
+
+
+#: URLs that exercise every branch of the escaping rule, including the malformed
+#: ones. The expected values are what `requests.utils.requote_uri` produces, since
+#: reproducing that rule byte for byte is the point of the function: an HTTP URL has
+#: to keep meaning what it meant to the connector that used to send it.
+REQUOTE_CASES = [
+    # A meaning-carrying escape survives: `%2F` is not the same as `/` inside a
+    # signature, and decoding it would void one.
+    ("http://h/f.csv?sig=a%2Fb&x=1", "http://h/f.csv?sig=a%2Fb&x=1"),
+    # An escape of an unreserved character is decoded, because the two forms are
+    # defined to be equal.
+    ("http://h/f.csv?sig=a%7Eb", "http://h/f.csv?sig=a~b"),
+    # What a URL cannot carry literally gets escaped.
+    ("http://h/a b.csv", "http://h/a%20b.csv"),
+    ("http://h/café.csv", "http://h/caf%C3%A9.csv"),
+    # Already percent-encoded UTF-8: left exactly as it is. Escaping it again would
+    # ask the server for a file whose name literally contains "%C3%A9".
+    ("http://h/caf%C3%A9.csv", "http://h/caf%C3%A9.csv"),
+    # A `+` is left alone: in a query it already means something.
+    ("http://h/f.csv?q=a+b", "http://h/f.csv?q=a+b"),
+    # Userinfo is escaped-as-found, not decoded.
+    ("http://user:p%40ss%2Fword@h/f.csv", "http://user:p%40ss%2Fword@h/f.csv"),
+    # Malformed: `zz` is not hex, so nothing can be unescaped and the stray `%`
+    # is escaped as one.
+    ("http://h/f.csv?sig=%zz", "http://h/f.csv?sig=%25zz"),
+    # Not an escape at all: the `%` is literal and stays literal.
+    ("http://h/f.csv?x=100%", "http://h/f.csv?x=100%"),
+    # Valid hex that is not an unreserved character: the escape is kept as written.
+    ("http://h/f.csv?sig=%80", "http://h/f.csv?sig=%80"),
+]
+
+
+@pytest.mark.parametrize(("uri", "expected"), REQUOTE_CASES)
+def test_requote_uri(uri, expected):
+    from dlt_filesystem.util.web import requote_uri
+
+    assert requote_uri(uri) == expected
+
+
+@pytest.mark.parametrize(("uri", "expected"), REQUOTE_CASES)
+def test_requote_uri_matches_requests(uri, expected):
+    """The claim is parity with `requests`, so it is asserted against `requests`.
+
+    Skips rather than fails if `requests` is ever dropped as a dependency: the
+    literal expectations above still pin the behaviour on their own.
+    """
+    requests_utils = pytest.importorskip("requests.utils")
+    from dlt_filesystem.util.web import requote_uri
+
+    assert requote_uri(uri) == requests_utils.requote_uri(uri) == expected
