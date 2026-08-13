@@ -77,10 +77,14 @@ URIS = [
         uri="hdfs://example.com:8020?user=test",
         table="path/to/data.parquet",
     ),
+    # A signed URL: the query is the address, so it must not stop the URI from
+    # resolving to a reader.
+    "http://public.example.org/path/to/data.parquet?X-Amz-Signature=abc%2Fdef",
     Item(
         uri="http+webdav://public.example.org/path/to/data.parquet",
         table="",
     ),
+    "https://public.example.org/path/to/data.parquet",
     Item(
         uri="https+webdav://username:password@cloud.example.org:4443/remote.php/webdav",
         table="path/to/data.parquet",
@@ -127,10 +131,12 @@ URIS_UNKNOWN_FORMAT = [
         uri="hdfs://example.com:8020/path/to/data.unknown?user=test",
         table="",
     ),
+    "http://public.example.org/path/to/data.unknown",
     Item(
         uri="http+webdav://public.example.org/path/to/data.unknown",
         table="",
     ),
+    "https://public.example.org/path/to/data.unknown",
     Item(
         uri="https+webdav://username:password@cloud.example.org:4443/remote.php/webdav",
         table="path/to/data.unknown",
@@ -170,6 +176,7 @@ SCHEMES_WITH_HOST = [
     "hdfs://",
     "http://",
     "http+webdav://",
+    "https://",
     "sftp://",
     "smb://",
     "webhdfs://",
@@ -288,21 +295,6 @@ def test_touch_filesystems_incremental_key(source_uri, fsspec_mock):
             incremental_key="foobar",
         )
     assert exc_info.match("you should not provide incremental_key")
-
-
-def test_touch_http_filesystem():
-    """Initialize HTTP filesystem implementation without table parameter"""
-    source_uri = "http://example.org/path/to/data.parquet"
-    factory = SourceDestinationFactory(source_uri, "file://")
-    source = factory.get_source()
-    dlt_source = source.dlt_source(
-        uri=source_uri,
-        # TODO: Make `table` parameter optional.
-        #       AzureSource.dlt_source() missing 1 required positional argument: 'table'
-        table="",
-    )
-    assert dlt_source.name == "http_source"
-    assert dlt_source.section == "adapter"
 
 
 def test_touch_unknown_filesystem():

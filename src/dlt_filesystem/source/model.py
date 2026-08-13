@@ -2,6 +2,7 @@ import hashlib
 import json
 from copy import deepcopy
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Dict, Optional, Type, Union
 from urllib.parse import parse_qs
 
@@ -72,6 +73,28 @@ def strip_run_options(options: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in options.items() if key not in RUN_OPTION_KEYS}
 
 
+class QueryMode(str, Enum):
+    """What a source URI's query string means.
+
+    Two transports disagree about this, and no rule derived from the URI can tell
+    them apart, so each source states which it is.
+
+    - `CONNECTOR_OPTIONS` reads the query as arguments for the connection:
+      `s3://bucket/data.csv?access_key_id=...` names a credential, not a file. This
+      is the family default and every existing scheme keeps it.
+    - `ADDRESS` reads the query as part of the resource's address, to be sent
+      verbatim: an HTTP URL's `?X-Amz-Signature=...` *is* the authorization, and
+      dropping it or reading it as a constructor argument makes the URL unusable.
+
+    The distinction cannot be made by inspecting the parsed protocol, because
+    WebDAV rewrites `http+webdav` to `http` (`fsspec/webdav.py`) and deliberately
+    wants its query read as connector options.
+    """
+
+    CONNECTOR_OPTIONS = "connector_options"
+    ADDRESS = "address"
+
+
 @dataclass
 class FilesystemOptions:
     """Bundle filesystem options from URL."""
@@ -103,6 +126,10 @@ class ResourceOptions:
 
     filesystem_incremental: bool = False
     column_types: Optional[Dict[str, Any]] = None
+    #: Reader arguments a source derived from something other than the URI
+    #: fragment, e.g. a programmatic `chunksize=`. Merged over `locator.hints`,
+    #: so a per-URI hint stays the more specific of the two.
+    reader_hints: Optional[Dict[str, Any]] = None
 
 
 def split_run_options(kwargs: Dict[str, Any]) -> tuple[ResourceOptions, Dict[str, Any]]:
@@ -160,6 +187,11 @@ class FilesystemLocator:
     options: FilesystemOptions = field(default_factory=FilesystemOptions)
     accept_no_bucket_name: Optional[bool] = False
     accept_no_host_name: Optional[bool] = False
+    query_mode: QueryMode = QueryMode.CONNECTOR_OPTIONS
+    #: The URI query, verbatim, when `query_mode` is `ADDRESS`; empty otherwise.
+    #: Never merged into `fs_kwargs`, and never part of `file_glob`, so identity,
+    #: reader selection and error messages all stay free of it.
+    query: str = field(init=False, default="")
 
     def __post_init__(self):
         """Decode fundamental options right away."""
@@ -175,10 +207,16 @@ class FilesystemLocator:
 
         self.address = infer_storage_options(self.uri)
 
-        # URL query parameters.
-        params = shrink_qs_dict(parse_qs(self.address.pop("url_query", "")))
+        # URL query parameters, read as whichever of the two things they are.
+        url_query = self.address.pop("url_query", "")
         # TODO: Why not compute hints right here instead of doing it at runtime?
         self.address.pop("url_fragment", None)
+
+        if self.query_mode is QueryMode.ADDRESS:
+            self.query = url_query
+            params: Dict[str, Any] = {}
+        else:
+            params = shrink_qs_dict(parse_qs(url_query))
 
         # Reader or writer hints.
         self.options = FilesystemOptions(
@@ -244,6 +282,19 @@ class FilesystemLocator:
         from dlt_filesystem.source.router import source_selects_single_file
 
         return source_selects_single_file(self.uri, self.path)
+
+    @property
+    def format_hint(self) -> Optional[str]:
+        """The ``#format`` token the source selection names, if it names one.
+
+        Read off the same carrier as :attr:`hints`, so a URI-borne ``#csv`` and a
+        URI-borne ``#sheet_name=foo`` are honoured on the same terms.
+        """
+        from urllib.parse import urlparse
+
+        from dlt_filesystem.source.router import blob_directives
+
+        return blob_directives(urlparse(self.uri), self.path)[0]
 
     @property
     def hints(self) -> Dict[str, Any]:

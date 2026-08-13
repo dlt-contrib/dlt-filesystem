@@ -6,7 +6,10 @@ from fsspec import AbstractFileSystem
 
 from dlt_filesystem.source.adapter import filesystem, readers
 from dlt_filesystem.source.error import UnsupportedEndpointError
-from dlt_filesystem.source.format.registry import supported_file_format_message
+from dlt_filesystem.source.format.registry import (
+    reader_for_format,
+    supported_file_format_message,
+)
 from dlt_filesystem.source.model import (
     FilesystemLocator,
     FilesystemReference,
@@ -86,7 +89,15 @@ def infer_resource(
 
     # TODO: Naming things: Rename `determine_endpoint` to `infer_reader`.
     try:
-        endpoint = determine_endpoint(locator.path, locator.file_glob)
+        # A `#format` the selection names wins over the file extension, whichever
+        # carrier it rode in on. `determine_endpoint` reads it from the table form
+        # itself; this also honours it on the URI, which for an HTTP URL is the
+        # only place it can be written.
+        endpoint = (
+            reader_for_format(locator.format_hint)
+            if locator.format_hint
+            else determine_endpoint(locator.path, locator.file_glob)
+        )
     except UnsupportedEndpointError:
         raise ValueError(supported_file_format_message(locator.name)) from None
 
@@ -102,7 +113,9 @@ def infer_resource(
             # Require a match only when the locator's unparsed carrier names one
             # concrete file. This keeps wildcard discovery empty-safe.
             require_file_match=locator.require_file_match,
-            hints=locator.hints,
+            # A URI fragment addresses one file, so it wins over a hint the source
+            # derived for the whole run.
+            hints={**(options.reader_hints or {}), **locator.hints},
             filesystem_incremental=options.filesystem_incremental,
             # TODO: Can `column_types` be looped into reader|writer hints instead?
             #       We believe it represents a special case handling for `csv_headless`.

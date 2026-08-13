@@ -173,7 +173,11 @@ def read_csv_headless(
                 file.seek(0)  # Reset file pointer after reading first row
 
             kwargs: Dict[str, Any] = {
-                **{"has_header": False, "columns": names, "batch_size": chunksize},
+                # `new_columns` names the columns; `columns` *selects* them, and
+                # selecting by name from a file that has no header asks Polars for
+                # names it generated itself, which it rejects outright on some
+                # inputs and answers with shifted values on others.
+                **{"has_header": False, "new_columns": names, "batch_size": chunksize},
                 **polars_kwargs,
             }
 

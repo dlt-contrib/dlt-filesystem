@@ -44,8 +44,10 @@ PEOPLE: Tuple[dict, ...] = (
     {"name": "Charlie", "age": 25},
 )
 
-#: A parquet document large enough that reading one batch is visibly not reading
-#: all of it, written in many row groups so pyarrow can seek to just the first.
+#: Enough records that reading the first batch of one is visibly not reading all
+#: of it. The parquet form is written in many row groups; the line-delimited form
+#: is what a reader can genuinely stream, since pyarrow asks for a file's whole
+#: data section in one read whatever the transport offers.
 EVENT_COUNT = 20_000
 EVENT_ROW_GROUP_SIZE = 1_000
 
@@ -474,6 +476,10 @@ def build_document_root(directory: Path) -> Path:
     (root / "people.csv").write_text(csv_text)
     (root / "people-no-header.csv").write_text(headless_text)
     (root / "people.csv.gz").write_bytes(gzip.compress(csv_text.encode()))
+    # Semicolon-separated, readable only with a `#separator=;` reader hint.
+    (root / "people-semicolon.csv").write_text(csv_text.replace(",", ";"))
+    # No extension a format can be inferred from, so the format has to be named.
+    (root / "people.dat").write_text(csv_text)
 
     array_text = json.dumps(list(PEOPLE))
     (root / "people.json").write_text(array_text)
@@ -490,6 +496,12 @@ def build_document_root(directory: Path) -> Path:
 
     _write_parquet(root / "people.parquet", PEOPLE)
     _write_events_parquet(root / "events.parquet")
+    (root / "events.jsonl").write_text(
+        "".join(
+            json.dumps({"id": index, "payload": f"event-{index:07d}"}) + "\n"
+            for index in range(EVENT_COUNT)
+        )
+    )
 
     return root
 

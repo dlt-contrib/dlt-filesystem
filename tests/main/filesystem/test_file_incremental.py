@@ -391,7 +391,7 @@ def test_replace_and_non_filesystem_sources_are_rejected(tmp_path):
     with pytest.raises(ValidationError, match="requires append loading"):
         _load(source / "*.csv", dest, incremental_strategy="replace")
 
-    with pytest.raises(ValidationError, match="only supported by filesystem"):
+    with pytest.raises(ValidationError, match="does not support the"):
         run_ingest(
             source_uri="csv://tests/assets/create_replace.csv",
             dest_uri=f"duckdb:///{dest}",

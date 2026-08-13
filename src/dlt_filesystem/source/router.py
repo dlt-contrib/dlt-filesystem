@@ -185,6 +185,30 @@ def split_format_hint(table: str) -> Tuple[str, Optional[str]]:
     return path, format_hint
 
 
+def blob_directives(
+    parsed_uri: ParseResult, table: str
+) -> Tuple[Optional[str], Dict[str, str]]:
+    """Extract the ``#format`` token and ``#key=value`` hints a source URI carries.
+
+    Both come out of the same fragment and off the same carrier, so they are read
+    together: reading only the hints left a URI-borne ``#csv`` silently ignored
+    while ``#sheet_name=foo`` beside it worked. That asymmetry is invisible for a
+    blob source, whose fragment conventionally rides ``--source-table``, and
+    unavoidable for an HTTP URL, where the URI is the only carrier there is.
+
+    See :func:`blob_hints` for how the carrier is chosen.
+    """
+    if parsed_uri.path.strip() or not table.strip():
+        if parsed_uri.fragment:
+            _, format_hint, hints = parse_fragment(
+                f"{parsed_uri.path}#{parsed_uri.fragment}"
+            )
+            return format_hint, hints
+        return None, {}
+    _, format_hint, hints = parse_fragment(table)
+    return format_hint, hints
+
+
 def blob_hints(parsed_uri: ParseResult, table: str) -> Dict[str, str]:
     """Extract ``#key=value`` reader hints for a blob (S3/GCS) source URI.
 
@@ -200,13 +224,7 @@ def blob_hints(parsed_uri: ParseResult, table: str) -> Dict[str, str]:
     hints to the ``a`` file that ``parse_uri`` actually loads. The bucket and
     glob still come from :func:`parse_uri`.
     """
-    if parsed_uri.path.strip() or not table.strip():
-        if parsed_uri.fragment:
-            _, _, hints = parse_fragment(f"{parsed_uri.path}#{parsed_uri.fragment}")
-            return hints
-        return {}
-    _, _, hints = parse_fragment(table)
-    return hints
+    return blob_directives(parsed_uri, table)[1]
 
 
 def determine_endpoint(table: str, path: str) -> str:

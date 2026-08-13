@@ -109,6 +109,24 @@ def resolve_modification_date(scheme: str, file_info: Mapping[str, Any]) -> Any:
     )
 
 
+def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
+    """Compose the URL a reader opens for one listed file.
+
+    dlt composes this through a per-scheme table (`MAKE_URI_DISPATCH`) and falls
+    back to `f"{scheme}://{fs_path}"` for a scheme it does not know. That fallback
+    assumes the client reports a path relative to the bucket, which is true of
+    every object store but not of HTTP, whose paths *are* absolute URLs: the
+    fallback then doubles the scheme (`http://http://host/f.csv`). Listing still
+    succeeds, so the mistake only surfaces when a reader opens the file.
+
+    A path that already carries the scheme is therefore taken as the URL it is.
+    Every other case is left to dlt, so no scheme it does know changes shape.
+    """
+    if fs_path.startswith(f"{scheme}://"):
+        return fs_path
+    return make_fsspec_url(scheme, fs_path, bucket_url)
+
+
 def glob_files(
     fs_client: AbstractFileSystem, bucket_url: str, file_glob: str = "**"
 ) -> Iterator[FileItem]:
@@ -162,16 +180,23 @@ def glob_files(
         else:
             file_name = posixpath.basename(file)
             rel_path = posixpath.relpath(file, root_dir)
-            file_url = make_fsspec_url(scheme, file, bucket_url)
+            file_url = file_url_for(scheme, file, bucket_url)
 
         mime_type, encoding = guess_mime_type(rel_path)
+        # A listing need not carry a size: an HTTP response with neither a
+        # `Content-Length` nor a `Content-Range` reports none, which is ordinary
+        # chunked transfer rather than an exotic case, and casting it crashed
+        # discovery for a concrete file that reads perfectly well. `FileItem`
+        # declares the field required and no reader consumes it, so an unknown
+        # size is reported as zero rather than dropping the file.
+        size = md.get("size")
         file_item = FileItem(
             file_name=file_name,
             relative_path=rel_path,
             file_url=file_url,
             mime_type=mime_type,
             modification_date=resolve_modification_date(scheme, md),
-            size_in_bytes=int(md["size"]),
+            size_in_bytes=int(size) if size is not None else 0,
         )
         if encoding is not None:
             file_item["encoding"] = encoding

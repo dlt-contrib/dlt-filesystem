@@ -14,14 +14,24 @@ Every server is a local `http.server` thread: no Docker, no credentials, no
 network.
 """
 
+import ssl
+from contextlib import contextmanager
+from unittest.mock import patch
+
 import duckdb
 import pytest
+from fsspec.implementations.memory import MemoryFileSystem
 
-from omniload import run_ingest
+from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.source.fsspec.http import HttpFilesystemSource
+from dlt_filesystem.source.lister import glob_files
+from dlt_filesystem.source.model import FilesystemReference
+from omniload import ValidationError, run_ingest
 from tests.dlt_filesystem.http_server import (
     AUTH_PASSWORD_ENCODED,
     AUTH_USERNAME,
     EVENT_COUNT,
+    PEOPLE,
     HttpFixture,
 )
 
@@ -56,6 +66,14 @@ def load(
         **options,
     )
     return destination
+
+
+def records(source) -> list:
+    """Flatten the data items a source yields into one list of rows."""
+    collected: list = []
+    for item in source:
+        collected.extend(item) if isinstance(item, list) else collected.append(item)
+    return collected
 
 
 def rows(
@@ -178,20 +196,17 @@ def test_percent_encoded_password_authenticates(auth_server, tmp_path):
     assert [request.status for request in auth_server.requests].count(401) <= 2
 
 
-def test_reader_pulls_the_whole_body_in_one_unranged_request(range_server, tmp_path):
-    """How much of a document a read costs, on a server that can serve ranges.
+def test_reader_reads_in_ranges(range_server, tmp_path):
+    """A read is composed of range requests, not one download of the whole body.
 
-    Baseline, and the thing the migration changes: the connector behind `http://`
-    fetches the entire body with a single unranged `GET` and buffers it, so a
-    range-serving server buys nothing and a large document is read in full even
-    when the reader only needs part of it. Pinned rather than described, because
-    "it streams now" is otherwise unfalsifiable: rows come back either way.
+    The shape the migration buys, and it needs pinning because rows come back
+    either way. Listing probes the URL with one unranged `GET` before any reader
+    opens it, and range support is established with a one-byte request, so those
+    two are the only unranged reads the exchange may contain.
     """
-    body = range_server.body("events.parquet")
-
     destination = tmp_path / "warehouse.duckdb"
     run_ingest(
-        source_uri=range_server.url("events.parquet"),
+        source_uri=range_server.url("events.jsonl"),
         dest_uri=f"duckdb:///{destination}",
         source_table="",
         dest_table="out.events",
@@ -199,8 +214,43 @@ def test_reader_pulls_the_whole_body_in_one_unranged_request(range_server, tmp_p
     )
 
     assert rows(destination, "select count(*) from out.events") == [(EVENT_COUNT,)]
-    assert range_server.ranged() == []
-    assert range_server.bytes_served() >= len(body)
+
+    body_reads = [
+        request
+        for request in range_server.requests
+        if request.method == "GET" and request.range_header != "bytes=0-0"
+    ]
+    assert len(body_reads) > 1, "no reader request was made at all"
+    assert [request.is_ranged for request in body_reads] == [False] + [True] * (
+        len(body_reads) - 1
+    ), "the reader fell back to downloading the whole body"
+
+
+def test_first_records_arrive_before_the_whole_body_is_served(range_server):
+    """The first batch yields while most of the document is still on the server.
+
+    Driven through the source rather than `run_ingest` because `block_size` is a
+    connection argument, and an HTTP URL's query string is its address, so the
+    only way to set one is programmatically. It has to be set at all: fsspec's
+    default block is 5 MB, larger than any fixture here, and one block covering
+    the whole file is indistinguishable from a download.
+
+    Only a line-oriented reader can demonstrate this. pyarrow asks for a parquet
+    file's entire data section in one read (measured: 20 row groups, one range
+    covering all of them, and more bytes than the file when the block is small
+    enough to make it re-read), so parquet is not a stream over any transport.
+    """
+    source = HttpFilesystemSource().dlt_source(
+        range_server.url("events.jsonl"), "", block_size=16384
+    )
+
+    assert next(iter(source)), "the reader yielded nothing"
+
+    body = range_server.body("events.jsonl")
+    served = range_server.bytes_served(ranged_only=True)
+    assert 0 < served < len(body) // 2, (
+        f"first batch cost {served} of {len(body)} bytes"
+    )
 
 
 def test_missing_document_fails_loudly(range_server, tmp_path):
@@ -217,18 +267,18 @@ def test_missing_document_fails_loudly(range_server, tmp_path):
     assert str(exception.value)
 
 
-@pytest.mark.xfail(
-    reason="the connector behind http:// reports a 404 by interpolating the whole "
-    "requested URL, signature included; moving the failure into the family's own "
-    "error is what redacts it",
-    strict=True,
-)
 def test_missing_document_does_not_leak_the_query(range_server, tmp_path):
     """The message for an absent document must not carry the signature.
 
     Deliberately does not require an exception: whether one is raised at all is
     the previous test's contract, so this one reads whatever message came back
     (none, if nothing raised) and only judges what is in it.
+
+    Redaction here is structural rather than scrubbed: the query is carried beside
+    the file selection instead of inside it, so no string an error interpolates has
+    ever held it. Neutering the family's own location-scrubbing does not make this
+    test fail (measured), which is the point -- but it does mean the absence
+    assertions need the positive one beside them to mean anything.
     """
     try:
         load(range_server, "absent.csv", tmp_path, query=SIGNED_QUERY)
@@ -237,5 +287,226 @@ def test_missing_document_does_not_leak_the_query(range_server, tmp_path):
     else:
         message = ""
 
+    assert "absent.csv" in message, "the failure does not name the file it looked for"
     assert "X-Amz-Signature" not in message
     assert "abc%2Fdef" not in message
+
+
+# -- what the filesystem family adds that the previous connector did not have ---
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param("people.csv.gz", EXPECTED, id="csv-gz"),
+        pytest.param("people.json.gz", EXPECTED, id="json-gz"),
+        pytest.param("people-pretty.json", EXPECTED, id="json-pretty"),
+        pytest.param("people-object.json", EXPECTED[:1], id="json-object"),
+    ],
+)
+def test_compressed_and_whole_document_formats_load(
+    range_server, tmp_path, document, expected
+):
+    """Formats the shared reader stack brings with it.
+
+    A gzipped document is the one case Polars cannot rescue on its own: the
+    compression is read from the file name during listing and applied when the
+    file is opened, which is family machinery the previous reader had no part in.
+    """
+    destination = load(range_server, document, tmp_path)
+
+    assert rows(destination) == expected
+
+
+def test_format_named_by_a_uri_fragment(range_server, tmp_path):
+    """`#format` on the URI selects the reader, for a name that cannot say so."""
+    destination = load(range_server, "people.dat", tmp_path, fragment="csv")
+
+    assert rows(destination) == EXPECTED
+
+
+def test_reader_hint_named_by_a_uri_fragment(range_server, tmp_path):
+    """`#key=value` reaches the reader, so a dialect can be named per URL."""
+    destination = load(
+        range_server, "people-semicolon.csv", tmp_path, fragment="separator=;"
+    )
+
+    assert rows(destination) == EXPECTED
+
+
+def test_https_loads_over_tls(tls_server, http_certificate):
+    """`https://` end to end, against a certificate that is verified rather than skipped."""
+    context = ssl.create_default_context(cafile=str(http_certificate[0]))
+    source = HttpFilesystemSource().dlt_source(
+        tls_server.url("people.csv"), "", ssl=context
+    )
+
+    assert records(source) == list(PEOPLE)
+    assert tls_server.requests, "nothing reached the TLS server"
+
+
+# -- guardrails: what must never happen to a query, a credential, or an identity -
+
+
+def build_reference(uri: str, table: str = "", **kwargs) -> FilesystemReference:
+    """Capture the reference a source builds, without reading a byte."""
+    captured: dict = {}
+
+    def fake_reader(ref: FilesystemReference):
+        captured["ref"] = ref
+        return "SENTINEL"
+
+    with patch("dlt_filesystem.source.core.resource_for_reader", fake_reader):
+        assert HttpFilesystemSource().dlt_source(uri, table, **kwargs) == "SENTINEL"
+
+    return captured["ref"]
+
+
+@contextmanager
+def constructor_spy():
+    """Record the keywords the filesystem class is constructed with.
+
+    `cachable` is off because fsspec keys its instance cache on the constructor
+    arguments and skips `__init__` on a hit, so a cachable spy records nothing for
+    the second equal construction and the assertion would pass vacuously.
+    """
+    calls: list[dict] = []
+
+    class SpyFileSystem(MemoryFileSystem):
+        cachable = False
+        protocol = "http"
+
+        def __init__(self, *args, **kwargs):
+            calls.append(dict(kwargs))
+            super().__init__()
+
+    with patch.object(
+        HttpFilesystemSource, "fs_class", property(lambda self: SpyFileSystem)
+    ):
+        yield calls
+
+
+def test_no_query_parameter_reaches_the_filesystem_constructor(range_server):
+    """The query is an address, so it is carried, never spread into arguments.
+
+    A signature that arrived as a constructor keyword would be forwarded into
+    aiohttp as a request argument and fragment fsspec's instance cache, one entry
+    per signature.
+    """
+    with constructor_spy() as calls:
+        build_reference(range_server.url("people.csv", query=SIGNED_QUERY))
+
+    assert calls, "the filesystem was never constructed"
+    received = calls[-1]
+    assert set(received) == {"url_query", "client_kwargs"}
+    assert received["url_query"] == SIGNED_QUERY
+
+
+def test_credentials_do_not_reach_the_bucket_url_or_the_identity(auth_server):
+    """A URL's userinfo becomes one request header and appears nowhere else."""
+    url = auth_server.url("people.csv")
+    scheme, _, remainder = url.partition("://")
+    credentialed = f"{scheme}://{AUTH_USERNAME}:{AUTH_PASSWORD_ENCODED}@{remainder}"
+
+    with constructor_spy() as calls:
+        reference = build_reference(credentialed)
+
+    received = calls[-1]
+    assert "username" not in received
+    assert "password" not in received
+    authorization = received["client_kwargs"]["headers"]["Authorization"]
+    assert authorization.startswith("Basic ")
+    assert AUTH_USERNAME not in reference.bucket_url
+    assert AUTH_PASSWORD_ENCODED not in reference.bucket_url
+    assert AUTH_USERNAME not in reference.incremental_resource_name
+
+
+def test_identity_is_derived_from_the_query_free_url(range_server):
+    """Rotating a signature must not re-key the data or the incremental state."""
+    first = build_reference(range_server.url("people.csv", query="X-Amz-Signature=one"))
+    second = build_reference(
+        range_server.url("people.csv", query="X-Amz-Signature=two")
+    )
+
+    assert first.file_glob == second.file_glob == "people.csv"
+    assert first.bucket_url == second.bucket_url
+    assert first.incremental_resource_name == second.incremental_resource_name
+    assert "X-Amz-Signature" not in first.file_glob + first.bucket_url
+
+
+def test_listed_file_url_is_the_query_free_url(range_server):
+    """The record's primary key is `file_url`, so the query must not be in it.
+
+    Also the plaintext-`http` composition, at the level where it is wrong: a URL
+    built through dlt's fallback would read `http://http://host/...` here.
+    """
+    reference = build_reference(range_server.url("people.csv", query=SIGNED_QUERY))
+
+    items = list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
+
+    assert [item["file_url"] for item in items] == [range_server.url("people.csv")]
+    assert items[0]["size_in_bytes"] == len(range_server.body("people.csv"))
+
+
+def test_listed_file_survives_a_server_that_reports_no_size(chunked_server):
+    """Discovery must not crash on a response that cannot state a length."""
+    reference = build_reference(chunked_server.url("people.csv"))
+
+    items = list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
+
+    assert [item["file_name"] for item in items] == ["people.csv"]
+    assert items[0]["size_in_bytes"] == 0
+
+
+def test_filesystem_incremental_is_refused_by_a_run(range_server, tmp_path):
+    with pytest.raises(ValidationError, match="does not support the"):
+        load(range_server, "people.csv", tmp_path, filesystem_incremental=True)
+
+
+def test_filesystem_incremental_is_refused_by_a_dry_run(range_server, tmp_path):
+    """The dry run validates before a source is built, so it needs the same answer."""
+    with pytest.raises(ValidationError, match="does not support the"):
+        load(
+            range_server,
+            "people.csv",
+            tmp_path,
+            filesystem_incremental=True,
+            dry_run=True,
+        )
+
+
+def test_filesystem_incremental_is_refused_by_the_source_itself(range_server):
+    """A caller reaching past the CLI gets the reason, not silent reload-everything."""
+    with pytest.raises(ValueError, match="Last-Modified"):
+        HttpFilesystemSource().dlt_source(
+            range_server.url("people.csv"), "", filesystem_incremental=True
+        )
+
+
+def test_incremental_key_is_refused(range_server):
+    """Consistent with the rest of the family: the source owns incrementality."""
+    with pytest.raises(ValueError, match="should not provide incremental_key"):
+        HttpFilesystemSource().dlt_source(
+            range_server.url("people.csv"), "", incremental_key="modified_at"
+        )
+
+
+def test_file_format_argument_names_the_reader(range_server):
+    """A programmatic `file_format=` is a reader choice, not a connection argument."""
+    reference = build_reference(range_server.url("people.dat"), file_format="csv")
+
+    assert reference.reader_name == "read_csv"
+
+
+def test_chunksize_argument_reaches_the_reader_not_the_filesystem(range_server):
+    """The same for `chunksize=`, which aiohttp would reject as a request keyword."""
+    with constructor_spy() as calls:
+        reference = build_reference(range_server.url("people.csv"), chunksize=7)
+
+    assert reference.hints == {"chunksize": 7}
+    assert set(calls[-1]) == {"url_query", "client_kwargs"}
+
+
+def test_missing_host_is_reported(range_server):
+    with pytest.raises(MissingConnectorOption, match="host is required"):
+        HttpFilesystemSource().dlt_source("http://", "")

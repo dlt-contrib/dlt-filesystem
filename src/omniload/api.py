@@ -272,9 +272,13 @@ def _run_ingest(
         source, "supports_filesystem_incremental", lambda: False
     )()
     if jr.filesystem_incremental and not supports_filesystem_incremental:
+        # Names the scheme rather than the family, because a filesystem-family
+        # source can decline it too: file selection by modification time needs a
+        # transport that reports one, and HTTP need not.
         raise ValidationError(
-            "The '--filesystem-incremental' option is only supported by "
-            "filesystem-family sources."
+            f"The '{factory.source_scheme}' source does not support the "
+            "'--filesystem-incremental' option, which selects files by their "
+            "modification time."
         )
     if jr.filesystem_incremental and factory.destination_scheme in {"csv", "file"}:
         raise ValidationError(
