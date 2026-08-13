@@ -27,11 +27,10 @@ import binascii
 import gzip
 import json
 import mimetypes
-import socket
 import ssl
 import threading
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -86,12 +85,32 @@ class Request:
 
 @dataclass
 class HttpFixture:
-    """A running server, its document root, and the requests it has answered."""
+    """A running server, its document root, and the requests it has answered.
+
+    The request log is read and written from different threads, so every access
+    to it goes through the lock: handler threads record, the test thread reads.
+    `requests` hands back a copy for that reason, which also means a test cannot
+    accidentally mutate the log it is asserting on.
+    """
 
     base_url: str
     document_root: Path
     mode: ServerMode
-    requests: List[Request] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._requests: List[Request] = []
+        self._lock = threading.Lock()
+
+    @property
+    def requests(self) -> List[Request]:
+        """Return a snapshot of the requests answered so far, in order."""
+        with self._lock:
+            return list(self._requests)
+
+    def record(self, request: Request) -> None:
+        """Add a request to the log, called from a handler thread."""
+        with self._lock:
+            self._requests.append(request)
 
     def url(self, name: str, query: str = "", fragment: str = "") -> str:
         """Return the URL for a document, with an optional raw query and fragment."""
@@ -108,7 +127,8 @@ class HttpFixture:
 
     def clear(self) -> None:
         """Forget every recorded request, so one test does not read another's."""
-        self.requests.clear()
+        with self._lock:
+            self._requests.clear()
 
     def ranged(self) -> List[Request]:
         """Return only the requests that carried a `Range` header.
@@ -146,7 +166,6 @@ class _Server(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.fixture = fixture
         self.auth = auth
-        self.lock = threading.Lock()
 
 
 def _content_type(name: str) -> str:
@@ -164,18 +183,32 @@ def _content_type(name: str) -> str:
 
 
 def _requested_range(header: Optional[str], size: int) -> Optional[Tuple[int, int]]:
-    """Return the inclusive byte offsets a `Range` header selects, or `None`."""
+    """Return the inclusive byte offsets a `Range` header selects, or `None`.
+
+    A header that cannot be parsed yields `None`, which the handler answers with
+    the whole body: RFC 9110 has an origin server ignore a `Range` it does not
+    understand rather than fail the request. A parsed but *unsatisfiable* range
+    is returned as-is, because that one owes a `416`, and fsspec depends on it
+    (it reads a `416` as "past the end of the file", not as an error).
+    """
     if not header or not header.startswith("bytes="):
         return None
     spec = header[len("bytes=") :].split(",")[0].strip()
-    start_text, _, end_text = spec.partition("-")
-    if not start_text:
-        # Suffix range: the last N bytes, which is how pyarrow reads a footer.
-        length = int(end_text)
-        return max(size - length, 0), size - 1
-    start = int(start_text)
-    end = int(end_text) if end_text else size - 1
-    return start, min(end, size - 1)
+    start_text, separator, end_text = spec.partition("-")
+    if not separator:
+        return None
+    try:
+        if not start_text:
+            # Suffix range, the last N bytes. Measured: fsspec and pyarrow both
+            # request explicit offsets, so nothing under test takes this branch.
+            # It is here because ordinary clients do send it (curl `--range -N`,
+            # media players), and a fixture that broke on it would be lying.
+            return max(size - int(end_text), 0), size - 1
+        start = int(start_text)
+        end = min(int(end_text) if end_text else size - 1, size - 1)
+    except ValueError:
+        return None
+    return start, end
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -207,8 +240,7 @@ class _Handler(BaseHTTPRequestHandler):
             query=raw_query if separator else "",
             range_header=self.headers.get("Range"),
         )
-        with server.lock:
-            fixture.requests.append(record)
+        fixture.record(record)
 
         if not self._authorized(server.auth):
             self._respond(
@@ -239,7 +271,9 @@ class _Handler(BaseHTTPRequestHandler):
         )
         if selection is not None:
             start, end = selection
-            if start >= len(body):
+            # `end` is already clamped to the last byte, so this covers both an
+            # offset past the end of the file and a reversed range.
+            if start > end:
                 self._respond(
                     record,
                     416,
@@ -316,17 +350,13 @@ class _Handler(BaseHTTPRequestHandler):
     ) -> None:
         """Answer without a `Content-Length`, so the client learns no size.
 
-        `HEAD` gets neither `Content-Length` nor `Transfer-Encoding`: a HEAD
-        response never carries a body, and advertising chunked framing on one
-        invites a client to look for chunks that will not come.
+        `HEAD` advertises the same chunked framing as `GET`, which is what nginx
+        and object-store gateways do, and is measured to be read correctly (a
+        client never looks for a body on a HEAD response).
         """
         self.send_response(200)
         self.send_header("Content-Type", content_type)
-        if method == "GET":
-            self.send_header("Transfer-Encoding", "chunked")
-        else:
-            self.send_header("Connection", "close")
-            self.close_connection = True
+        self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         record.status = 200
         if method != "GET":
@@ -343,6 +373,7 @@ def self_signed_certificate(directory: Path) -> Tuple[Path, Path]:
     # Fixed timestamps: a generated certificate must not make the fixture depend
     # on the clock, and validity is only ever checked against "now".
     import datetime
+    import ipaddress
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes, serialization
@@ -368,7 +399,7 @@ def self_signed_certificate(directory: Path) -> Tuple[Path, Path]:
             x509.SubjectAlternativeName(
                 [
                     x509.DNSName("localhost"),
-                    x509.IPAddress(__import__("ipaddress").IPv4Address("127.0.0.1")),
+                    x509.IPAddress(ipaddress.IPv4Address("127.0.0.1")),
                 ]
             ),
             critical=False,
@@ -424,13 +455,6 @@ def serve(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-
-
-def free_port() -> int:
-    """Return a port that was free a moment ago, for negative-path tests."""
-    with socket.socket() as probe:
-        probe.bind(("127.0.0.1", 0))
-        return probe.getsockname()[1]
 
 
 def build_document_root(directory: Path) -> Path:
