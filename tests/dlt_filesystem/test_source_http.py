@@ -538,6 +538,17 @@ def test_incremental_key_is_refused(range_server):
         )
 
 
+def test_incremental_key_is_refused_through_a_run(range_server, tmp_path):
+    """The path a user actually takes, which the direct call cannot stand in for.
+
+    `run_ingest` nulls `incremental_key` before calling a source that manages its
+    own incrementality, keeping the request in `requested_incremental_key`, so a
+    source reading only the first one accepts the option and ignores it.
+    """
+    with pytest.raises(ValueError, match="should not provide incremental_key"):
+        load(range_server, "people.csv", tmp_path, incremental_key="modified_at")
+
+
 def test_file_format_argument_names_the_reader(range_server):
     """A programmatic `file_format=` is a reader choice, not a connection argument."""
     reference = build_reference(range_server.url("people.dat"), file_format="csv")

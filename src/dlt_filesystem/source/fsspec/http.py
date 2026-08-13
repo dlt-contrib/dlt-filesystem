@@ -242,7 +242,11 @@ class HttpFilesystemSource(FilesystemSource):
         return False
 
     def dlt_source(self, uri: str, table: str, **kwargs):
-        if kwargs.get("incremental_key"):
+        # `run_ingest` nulls `incremental_key` before calling any source that manages
+        # its own incrementality, and preserves the request as
+        # `requested_incremental_key`. Reading only the nulled one would accept
+        # `--incremental-key` from the CLI and ignore it, so both are read.
+        if kwargs.get("requested_incremental_key") or kwargs.get("incremental_key"):
             raise ValueError(
                 "HTTP takes care of incrementality on its own, you should not provide incremental_key"
             )
