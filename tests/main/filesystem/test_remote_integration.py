@@ -320,6 +320,27 @@ def test_r2_scheme_reads_s3_compatible_storage(s3_emulator, tmp_path):
     assert duckdb_table_cardinality(db_path, "testdrive.data") == 4
 
 
+@pytest.mark.parametrize("scheme", ["s3", "r2"])
+def test_s3_compatible_glob_reads_keys_with_url_delimiters(
+    s3_emulator, tmp_path, scheme
+):
+    """Discovered object keys keep literal URL delimiters when they are opened."""
+    s3_emulator.upload("delimiters/part#1.csv", CSV_ROWS)
+    s3_emulator.upload("delimiters/part?2.csv", CSV_ROWS)
+
+    db_path = tmp_path / f"{scheme}-url-delimiters.duckdb"
+    result = run_ingest(
+        source_uri=s3_emulator.source_uri.replace("s3://", f"{scheme}://", 1),
+        dest_uri=f"duckdb:///{db_path}",
+        source_table=s3_emulator.source_table("delimiters/*.csv"),
+        dest_table="testdrive.data",
+        progress="log",
+    )
+
+    assert result is not None
+    assert duckdb_table_cardinality(db_path, "testdrive.data") == 4
+
+
 @pytest.mark.parametrize("remote_filesystem", REMOTE_BACKENDS, indirect=True)
 def test_remote_unmatched_glob_succeeds(remote_filesystem, tmp_path):
     """A wildcard with no remote matches remains a valid empty selection."""

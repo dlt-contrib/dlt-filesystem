@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, Type
-from urllib.parse import parse_qs, urlparse, urlsplit
+from urllib.parse import parse_qs, urlparse
 
 from fsspec import AbstractFileSystem
 from fsspec.implementations.arrow import ArrowFSWrapper
@@ -27,17 +27,23 @@ if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
 
 
-class _R2ArrowFSWrapper(ArrowFSWrapper):
-    """Expose an Arrow S3 client through R2's public URI scheme."""
+class _S3CompatibleArrowFSWrapper(ArrowFSWrapper):
+    """Keep S3-compatible object keys intact while stripping their URI scheme."""
 
-    protocol = "r2"
+    protocol = "s3"
 
     @classmethod
     def _strip_protocol(cls, path: str) -> str:
-        if path.startswith("r2://"):
-            parsed = urlsplit(path)
-            return f"{parsed.netloc}{parsed.path}"
+        prefix = f"{cls.protocol}://"
+        if path.startswith(prefix):
+            return path[len(prefix) :]
         return super()._strip_protocol(path)
+
+
+class _R2ArrowFSWrapper(_S3CompatibleArrowFSWrapper):
+    """Expose an Arrow S3 client through R2's public URI scheme."""
+
+    protocol = "r2"
 
 
 class GCSSource(FilesystemSource):
@@ -125,7 +131,11 @@ class S3CompatibleSource(FilesystemSource):
 
     def _filesystem(self, fs_kwargs: dict[str, Any]) -> AbstractFileSystem:
         arrow_fs = self.fs_class(**fs_kwargs)
-        wrapper = _R2ArrowFSWrapper if self.fs_protocol == "r2" else ArrowFSWrapper
+        wrapper = (
+            _R2ArrowFSWrapper
+            if self.fs_protocol == "r2"
+            else _S3CompatibleArrowFSWrapper
+        )
         return wrapper(arrow_fs)
 
     def dlt_source(self, uri: str, table: str, **kwargs):

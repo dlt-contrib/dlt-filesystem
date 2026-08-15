@@ -7,7 +7,11 @@ import pytest
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.fsspec.r2 import R2Source
-from dlt_filesystem.source.impl.remote import S3Source, _R2ArrowFSWrapper
+from dlt_filesystem.source.impl.remote import (
+    S3Source,
+    _R2ArrowFSWrapper,
+    _S3CompatibleArrowFSWrapper,
+)
 from dlt_filesystem.source.router import (
     determine_endpoint,
     parse_endpoint,
@@ -294,9 +298,14 @@ def test_s3_source_rejects_endpoint_with_path_prefix():
         )
 
 
-def test_r2_wrapper_strips_query_and_fragment_from_paths():
-    fs = _R2ArrowFSWrapper(FakeArrowS3Filesystem())
+@pytest.mark.parametrize(
+    ("wrapper_class", "scheme"),
+    [(_S3CompatibleArrowFSWrapper, "s3"), (_R2ArrowFSWrapper, "r2")],
+)
+@pytest.mark.parametrize("key", ["vendor#1/data.csv", "odd?name.csv"])
+def test_s3_compatible_wrapper_preserves_url_delimiters_in_keys(
+    wrapper_class, scheme, key
+):
+    fs = wrapper_class(FakeArrowS3Filesystem())
 
-    assert fs._strip_protocol("r2://bucket/data.csv?token=hidden#part") == (
-        "bucket/data.csv"
-    )
+    assert fs._strip_protocol(f"{scheme}://bucket/{key}") == f"bucket/{key}"

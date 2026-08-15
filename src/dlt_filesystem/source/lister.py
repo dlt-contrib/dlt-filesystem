@@ -48,7 +48,7 @@ def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
     if not isinstance(fs_client, ArrowFSWrapper):
         return None
 
-    from pyarrow.fs import FileSelector
+    from pyarrow.fs import FileSelector, FileType
 
     if glob.has_magic(path):
         magic_at = min(path.find(char) for char in "*?[" if char in path)
@@ -68,10 +68,20 @@ def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
 
     entries = {}
     for file_info in file_infos:
-        try:
-            entry = fs_client._make_entry(file_info)
-        except FileNotFoundError:
+        if file_info.type is FileType.NotFound:
             continue
+        if file_info.type is FileType.Directory:
+            entry_type = "directory"
+        elif file_info.type is FileType.File:
+            entry_type = "file"
+        else:
+            entry_type = "other"
+        entry = {
+            "name": file_info.path,
+            "size": file_info.size,
+            "type": entry_type,
+            "mtime": file_info.mtime,
+        }
         if pattern is None or pattern.match(entry["name"]):
             entries[entry["name"]] = entry
     return dict(sorted(entries.items()))

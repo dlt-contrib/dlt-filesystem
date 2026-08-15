@@ -26,7 +26,7 @@ from fsspec.implementations.memory import MemoryFileSystem
 
 from dlt_filesystem.source.fsspec.ftp import FTPSource
 from dlt_filesystem.source.fsspec.local import LocalFilesystemSource
-from dlt_filesystem.source.impl.remote import SFTPSource
+from dlt_filesystem.source.impl.remote import S3CompatibleSource, SFTPSource
 from dlt_filesystem.source.model import RUN_OPTION_KEYS, FilesystemReference
 from omniload.core.factory import SourceDestinationFactory
 
@@ -243,7 +243,8 @@ def _spy_class(calls: list[dict[str, Any]], protocol: str):
 def _spy_on_filesystem(source, scheme: str):
     """Patch whatever construction hook this connector actually uses."""
     calls: list[dict[str, Any]] = []
-    spy = _spy_class(calls, scheme)
+    native_protocol = "s3" if isinstance(source, S3CompatibleSource) else scheme
+    spy = _spy_class(calls, native_protocol)
 
     if isinstance(source, FTPSource):
         # Imported into the function body from the fsspec module, not via `fs_class`.
