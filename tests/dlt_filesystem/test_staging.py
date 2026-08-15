@@ -52,10 +52,13 @@ def test_filesystem_for_serves_an_s3_compatible_alias_through_s3fs():
         "r2://bucket/path/database.duckdb"
         "?access_key_id=access&secret_access_key=secret"
         "&endpoint_url=https://account.r2.cloudflarestorage.com"
+        "&region=auto"
     )
 
     assert remote.backend == "s3"
-    assert isinstance(_filesystem_for(remote), S3FileSystem)
+    filesystem = _filesystem_for(remote)
+    assert isinstance(filesystem, S3FileSystem)
+    assert filesystem.client_kwargs["region_name"] == "auto"
 
 
 def test_materialize_remote_object_lives_for_context_and_is_removed(

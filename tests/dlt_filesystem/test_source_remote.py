@@ -7,7 +7,7 @@ import pytest
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.fsspec.r2 import R2Source
-from dlt_filesystem.source.impl.remote import S3Source
+from dlt_filesystem.source.impl.remote import S3Source, _R2ArrowFSWrapper
 from dlt_filesystem.source.router import (
     determine_endpoint,
     parse_endpoint,
@@ -283,3 +283,20 @@ def test_s3_source_rejects_endpoint_without_http_scheme():
             "&endpoint_url=localhost:9000",
             "",
         )
+
+
+def test_s3_source_rejects_endpoint_with_path_prefix():
+    with pytest.raises(ValueError, match="must not include a path"):
+        S3Source().dlt_source(
+            "s3://bucket/data.csv?access_key_id=KEY&secret_access_key=SECRET"
+            "&endpoint_url=https://gateway.example.com/s3/",
+            "",
+        )
+
+
+def test_r2_wrapper_strips_query_and_fragment_from_paths():
+    fs = _R2ArrowFSWrapper(FakeArrowS3Filesystem())
+
+    assert fs._strip_protocol("r2://bucket/data.csv?token=hidden#part") == (
+        "bucket/data.csv"
+    )

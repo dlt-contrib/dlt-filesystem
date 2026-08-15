@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from typing import TYPE_CHECKING, Any, Dict, Type
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from fsspec import AbstractFileSystem
 from fsspec.implementations.arrow import ArrowFSWrapper
@@ -35,7 +35,8 @@ class _R2ArrowFSWrapper(ArrowFSWrapper):
     @classmethod
     def _strip_protocol(cls, path: str) -> str:
         if path.startswith("r2://"):
-            return path[len("r2://") :]
+            parsed = urlsplit(path)
+            return f"{parsed.netloc}{parsed.path}"
         return super()._strip_protocol(path)
 
 

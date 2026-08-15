@@ -139,7 +139,7 @@ class RecordingArrowFilesystem:
 
     def get_file_info(self, selector):
         self.calls.append(selector)
-        return [
+        entries = [
             FileInfo("bucket/data", FileType.Directory),
             FileInfo("bucket/data/part-1.csv", FileType.File, mtime=MODIFIED, size=12),
             FileInfo(
@@ -154,6 +154,13 @@ class RecordingArrowFilesystem:
                 mtime=MODIFIED,
                 size=14,
             ),
+        ]
+        if isinstance(selector, list):
+            return [entry for entry in entries if entry.path in selector]
+        if selector.recursive:
+            return entries
+        return [
+            entry for entry in entries if "/" not in entry.path[len("bucket/data/") :]
         ]
 
 
@@ -174,3 +181,27 @@ def test_arrow_glob_uses_one_recursive_native_listing_request():
     assert selector.base_dir == "bucket/data"
     assert selector.recursive is True
     assert selector.allow_not_found is True
+
+
+def test_arrow_shallow_glob_does_not_enumerate_nested_prefixes():
+    """A one-directory glob stays one native request without scanning descendants."""
+    arrow_fs = RecordingArrowFilesystem()
+    fs = ArrowFSWrapper(arrow_fs)
+
+    files = list(glob_files(fs, "s3://bucket", "data/*.csv"))
+
+    assert [file["relative_path"] for file in files] == ["data/part-1.csv"]
+    assert len(arrow_fs.calls) == 1
+    selector = arrow_fs.calls[0]
+    assert selector.base_dir == "bucket/data"
+    assert selector.recursive is False
+
+
+def test_arrow_concrete_path_uses_one_native_metadata_request():
+    arrow_fs = RecordingArrowFilesystem()
+    fs = ArrowFSWrapper(arrow_fs)
+
+    files = list(glob_files(fs, "s3://bucket", "data/part-1.csv"))
+
+    assert [file["relative_path"] for file in files] == ["data/part-1.csv"]
+    assert arrow_fs.calls == [["bucket/data/part-1.csv"]]

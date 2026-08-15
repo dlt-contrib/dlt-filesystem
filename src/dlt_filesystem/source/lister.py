@@ -54,10 +54,11 @@ def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
         magic_at = min(path.find(char) for char in "*?[" if char in path)
         fixed_prefix = path[:magic_at]
         base_dir = fixed_prefix.rsplit("/", 1)[0] if "/" in fixed_prefix else ""
+        relative_pattern = path[len(base_dir) :].lstrip("/")
         selector = FileSelector(
             base_dir,
             allow_not_found=True,
-            recursive=True,
+            recursive="/" in relative_pattern or "**" in relative_pattern,
         )
         file_infos = fs_client.fs.get_file_info(selector)
         pattern = re.compile(glob_translate(path))

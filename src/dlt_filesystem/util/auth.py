@@ -36,6 +36,9 @@ def s3_filesystem_kwargs(
     endpoint_url = _first(params, "endpoint_url")
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
+    region = _first(params, "region")
+    if region:
+        kwargs["client_kwargs"] = {"region_name": region}
     return kwargs
 
 
@@ -59,12 +62,27 @@ def s3_arrow_filesystem_kwargs(
     endpoint_url = _first(params, "endpoint_url")
     if endpoint_url:
         endpoint = urlparse(endpoint_url)
-        if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+        if (
+            endpoint.scheme not in {"http", "https"}
+            or not endpoint.hostname
+            or endpoint.username is not None
+            or endpoint.password is not None
+        ):
             raise ValueError(
                 "Invalid endpoint_url. Must be an HTTP or HTTPS URL with a host."
             )
+        if (
+            endpoint.path.rstrip("/")
+            or endpoint.params
+            or endpoint.query
+            or endpoint.fragment
+        ):
+            raise ValueError(
+                "Invalid endpoint_url. Arrow S3 endpoints must not include a path, "
+                "query, or fragment."
+            )
         kwargs["scheme"] = endpoint.scheme
-        kwargs["endpoint_override"] = f"{endpoint.netloc}{endpoint.path.rstrip('/')}"
+        kwargs["endpoint_override"] = endpoint.netloc
 
     region = _first(params, "region")
     if region:
