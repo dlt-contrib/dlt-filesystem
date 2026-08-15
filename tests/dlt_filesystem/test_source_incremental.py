@@ -144,7 +144,7 @@ def test_filesystem_sources_thread_incremental_identity_without_auth_material(tm
 
     with (
         patch("dlt_filesystem.source.core.resource_for_reader") as build,
-        patch("s3fs.S3FileSystem"),
+        patch("pyarrow.fs.S3FileSystem"),
     ):
         S3Source().dlt_source(
             "s3://?access_key_id=KEY&secret_access_key=SECRET&endpoint_url=https://minio.example:9000",

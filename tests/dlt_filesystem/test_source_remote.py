@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 import pytest
 
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
+from dlt_filesystem.source.fsspec.r2 import R2Source
+from dlt_filesystem.source.impl.remote import S3Source
 from dlt_filesystem.source.router import (
     determine_endpoint,
     parse_endpoint,
@@ -226,3 +229,57 @@ def test_supported_file_format_message():
     assert "S3 Source only supports file formats:" in supported_file_format_message(
         "S3"
     )
+
+
+class FakeArrowS3Filesystem:
+    """Enough of a native Arrow filesystem for construction-only source tests."""
+
+    type_name = "s3"
+
+
+@pytest.mark.parametrize(
+    ("source", "scheme"),
+    [(S3Source(), "s3"), (R2Source(), "r2")],
+)
+def test_s3_compatible_sources_map_uri_options_to_arrow(source, scheme):
+    captured_kwargs = []
+
+    def build_filesystem(**kwargs):
+        captured_kwargs.append(kwargs)
+        return FakeArrowS3Filesystem()
+
+    with (
+        patch("pyarrow.fs.S3FileSystem", side_effect=build_filesystem),
+        patch("dlt_filesystem.source.core.resource_for_reader") as build_resource,
+    ):
+        source.dlt_source(
+            f"{scheme}://bucket/data.csv?access_key_id=KEY"
+            "&secret_access_key=SECRET&endpoint_url=http://localhost:9000"
+            "&region=us-west-1",
+            "",
+        )
+
+    assert captured_kwargs == [
+        {
+            "access_key": "KEY",
+            "secret_key": "SECRET",
+            "scheme": "http",
+            "endpoint_override": "localhost:9000",
+            "region": "us-west-1",
+        }
+    ]
+    reference = build_resource.call_args.args[0]
+    assert reference.bucket_url == f"{scheme}://bucket/"
+    assert reference.fs.protocol == scheme
+    assert reference.fs._strip_protocol(f"{scheme}://bucket/data.csv") == (
+        "bucket/data.csv"
+    )
+
+
+def test_s3_source_rejects_endpoint_without_http_scheme():
+    with pytest.raises(ValueError, match="Invalid endpoint_url"):
+        S3Source().dlt_source(
+            "s3://bucket/data.csv?access_key_id=KEY&secret_access_key=SECRET"
+            "&endpoint_url=localhost:9000",
+            "",
+        )

@@ -72,7 +72,7 @@ def test_gcs_threads_hints(table: str, expected_hints: dict[str, str]):
 def test_s3_threads_hints(table: str, expected_hints: dict[str, str]):
     with (
         patch(RESOURCE_FOR_READER) as rfr,
-        patch("s3fs.S3FileSystem"),
+        patch("pyarrow.fs.S3FileSystem"),
     ):
         S3Source().dlt_source(S3_URI, table)
     assert _captured_ref(rfr).hints == expected_hints
@@ -83,7 +83,7 @@ def test_s3_threads_hints_from_uri_path_form():
     URI-path's `fragment`; blob_hints reconstructs it so hints still thread."""
     with (
         patch(RESOURCE_FOR_READER) as rfr,
-        patch("s3fs.S3FileSystem"),
+        patch("pyarrow.fs.S3FileSystem"),
     ):
         S3Source().dlt_source(
             "s3://bucket/book.xlsx?access_key_id=KEY&secret_access_key=SECRET#sheet_name=foo",
@@ -98,7 +98,7 @@ def test_s3_blob_hints_track_the_loaded_file_when_both_forms_given():
     the URI fragment, not the ignored table's."""
     with (
         patch(RESOURCE_FOR_READER) as rfr,
-        patch("s3fs.S3FileSystem"),
+        patch("pyarrow.fs.S3FileSystem"),
     ):
         S3Source().dlt_source(
             "s3://bucket/loaded.xlsx?access_key_id=KEY&secret_access_key=SECRET#sheet_name=uri",

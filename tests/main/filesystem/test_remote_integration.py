@@ -115,7 +115,10 @@ def s3_emulator() -> RemoteFilesystemEmulator:
             for item in response.get("Contents", [])
         }
 
-    uri = f"s3://?endpoint_url={endpoint_url}&access_key_id=test&secret_access_key=test"
+    uri = (
+        f"s3://?endpoint_url={endpoint_url}&access_key_id=test"
+        "&secret_access_key=test&region=us-west-1"
+    )
     return RemoteFilesystemEmulator("s3", uri, uri, bucket, upload, objects)
 
 
@@ -458,18 +461,16 @@ def test_s3_filesystem_incremental_uses_persistent_cursor(
     s3_emulator, tmp_path, monkeypatch
 ):
     """Only new S3 objects load, and run options stay out of the S3 constructor."""
-    import s3fs
+    import pyarrow.fs
 
     captured_constructor_kwargs = []
-    original_class = s3fs.S3FileSystem
+    original_class = pyarrow.fs.S3FileSystem
 
-    class CapturingS3FileSystem(original_class):
-        def __init__(self, *args, **kwargs):
-            captured_constructor_kwargs.append(kwargs.copy())
-            super().__init__(*args, **kwargs)
+    def capturing_s3_filesystem(*args, **kwargs):
+        captured_constructor_kwargs.append(kwargs.copy())
+        return original_class(*args, **kwargs)
 
-    CapturingS3FileSystem.clear_instance_cache()
-    monkeypatch.setattr(s3fs, "S3FileSystem", CapturingS3FileSystem)
+    monkeypatch.setattr(pyarrow.fs, "S3FileSystem", capturing_s3_filesystem)
 
     opened = []
     original_open = FileItemDict.open

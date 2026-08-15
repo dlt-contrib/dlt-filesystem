@@ -24,6 +24,7 @@ because its own table is consulted first.
 import glob
 import pathlib
 import posixpath
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Mapping, Tuple
 from urllib.parse import urlparse
@@ -37,6 +38,42 @@ from dlt.common.storages.fsspec_filesystem import (
 )
 from dlt.common.time import ensure_pendulum_datetime_utc
 from fsspec import AbstractFileSystem
+from fsspec.utils import glob_translate
+
+
+def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
+    """List an Arrow-backed glob with one native filesystem request."""
+    from fsspec.implementations.arrow import ArrowFSWrapper
+
+    if not isinstance(fs_client, ArrowFSWrapper):
+        return None
+
+    from pyarrow.fs import FileSelector
+
+    if glob.has_magic(path):
+        magic_at = min(path.find(char) for char in "*?[" if char in path)
+        fixed_prefix = path[:magic_at]
+        base_dir = fixed_prefix.rsplit("/", 1)[0] if "/" in fixed_prefix else ""
+        selector = FileSelector(
+            base_dir,
+            allow_not_found=True,
+            recursive=True,
+        )
+        file_infos = fs_client.fs.get_file_info(selector)
+        pattern = re.compile(glob_translate(path))
+    else:
+        file_infos = fs_client.fs.get_file_info([path])
+        pattern = None
+
+    entries = {}
+    for file_info in file_infos:
+        try:
+            entry = fs_client._make_entry(file_info)
+        except FileNotFoundError:
+            continue
+        if pattern is None or pattern.match(entry["name"]):
+            entries[entry["name"]] = entry
+    return dict(sorted(entries.items()))
 
 
 def _from_epoch_millis(value: Any) -> Any:
@@ -158,7 +195,9 @@ def glob_files(
         filter_url = posixpath.join(root_dir, file_glob)
         # dlt's copy invalidates the listing cache for the `hf` protocol here.
         # No HuggingFace scheme is registered, so that branch is left out.
-        glob_result = fs_client.glob(filter_url, detail=True)
+        glob_result = _arrow_glob(fs_client, filter_url)
+        if glob_result is None:
+            glob_result = fs_client.glob(filter_url, detail=True)
         if isinstance(glob_result, list):
             raise NotImplementedError(
                 "Cannot request details when using fsspec.glob. For adlfs (Azure)"

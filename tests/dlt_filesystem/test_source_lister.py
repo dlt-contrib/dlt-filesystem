@@ -3,6 +3,8 @@ import datetime as dt
 import pytest
 from dlt.common.storages.fsspec_filesystem import MTIME_DISPATCH
 from fsspec import AbstractFileSystem
+from fsspec.implementations.arrow import ArrowFSWrapper
+from pyarrow.fs import FileInfo, FileSelector, FileType
 
 from dlt_filesystem.source.lister import glob_files, resolve_modification_date
 
@@ -125,3 +127,50 @@ def test_glob_files_lists_arrow_backed_clients():
     files = list(glob_files(fs, "s3://bucket/data", "*.csv"))
 
     assert [file["modification_date"] for file in files] == [MODIFIED]
+
+
+class RecordingArrowFilesystem:
+    """Return a fixed recursive listing and record each native Arrow request."""
+
+    type_name = "s3"
+
+    def __init__(self):
+        self.calls = []
+
+    def get_file_info(self, selector):
+        self.calls.append(selector)
+        return [
+            FileInfo("bucket/data", FileType.Directory),
+            FileInfo("bucket/data/part-1.csv", FileType.File, mtime=MODIFIED, size=12),
+            FileInfo(
+                "bucket/data/nested/part-2.csv",
+                FileType.File,
+                mtime=MODIFIED,
+                size=13,
+            ),
+            FileInfo(
+                "bucket/data/ignored.jsonl",
+                FileType.File,
+                mtime=MODIFIED,
+                size=14,
+            ),
+        ]
+
+
+def test_arrow_glob_uses_one_recursive_native_listing_request():
+    """A recursive Arrow glob does not inherit fsspec's level-by-level walk."""
+    arrow_fs = RecordingArrowFilesystem()
+    fs = ArrowFSWrapper(arrow_fs)
+
+    files = list(glob_files(fs, "s3://bucket", "data/**/*.csv"))
+
+    assert [file["relative_path"] for file in files] == [
+        "data/nested/part-2.csv",
+        "data/part-1.csv",
+    ]
+    assert len(arrow_fs.calls) == 1
+    selector = arrow_fs.calls[0]
+    assert isinstance(selector, FileSelector)
+    assert selector.base_dir == "bucket/data"
+    assert selector.recursive is True
+    assert selector.allow_not_found is True

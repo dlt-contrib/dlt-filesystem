@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, Any, Dict, Type
 from urllib.parse import parse_qs, urlparse
 
 from fsspec import AbstractFileSystem
+from fsspec.implementations.arrow import ArrowFSWrapper
 
 from dlt_filesystem.error import InvalidBlobTableError, MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -19,11 +20,23 @@ from dlt_filesystem.util.auth import (
     azure_blob_filesystem_kwargs,
     gcs_filesystem_kwargs,
     parse_azure_blob_auth,
-    s3_filesystem_kwargs,
+    s3_arrow_filesystem_kwargs,
 )
 
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
+
+
+class _R2ArrowFSWrapper(ArrowFSWrapper):
+    """Expose an Arrow S3 client through R2's public URI scheme."""
+
+    protocol = "r2"
+
+    @classmethod
+    def _strip_protocol(cls, path: str) -> str:
+        if path.startswith("r2://"):
+            return path[len("r2://") :]
+        return super()._strip_protocol(path)
 
 
 class GCSSource(FilesystemSource):
@@ -92,12 +105,7 @@ class GCSSource(FilesystemSource):
 
 
 class S3CompatibleSource(FilesystemSource):
-    """
-    Access S3 and compatible filesystems.
-
-    TODO: Forward more parameters than `access_key_id` and `secret_access_key`
-          (key/secret/endpoint_url) only, like `region`.
-    """
+    """Access S3 and compatible filesystems through ``pyarrow.fs``."""
 
     @property
     @abstractmethod
@@ -105,16 +113,19 @@ class S3CompatibleSource(FilesystemSource):
         raise NotImplementedError("Need to implement abstract property")
 
     @property
-    def fs_class(self) -> Type["AbstractFileSystem"]:
-        import s3fs
+    def fs_class(self) -> Type[Any]:
+        from pyarrow.fs import S3FileSystem
 
-        return s3fs.S3FileSystem
+        return S3FileSystem
 
     @property
     def fs_protocol(self) -> str:
-        if isinstance(self.fs_class.protocol, (list, tuple)):
-            return self.fs_class.protocol[0]
-        return self.fs_class.protocol
+        return "s3"
+
+    def _filesystem(self, fs_kwargs: dict[str, Any]) -> AbstractFileSystem:
+        arrow_fs = self.fs_class(**fs_kwargs)
+        wrapper = _R2ArrowFSWrapper if self.fs_protocol == "r2" else ArrowFSWrapper
+        return wrapper(arrow_fs)
 
     def dlt_source(self, uri: str, table: str, **kwargs):
         if kwargs.get("incremental_key"):
@@ -125,7 +136,7 @@ class S3CompatibleSource(FilesystemSource):
 
         parsed_uri = urlparse(uri)
         source_fields = parse_qs(parsed_uri.query)
-        fs_kwargs = s3_filesystem_kwargs(source_fields, self.fs_name)
+        fs_kwargs = s3_arrow_filesystem_kwargs(source_fields, self.fs_name)
         bucket_name, path_to_file = parse_uri(parsed_uri, table)
         if not bucket_name or not path_to_file:
             raise InvalidBlobTableError(self.fs_name)
@@ -134,7 +145,7 @@ class S3CompatibleSource(FilesystemSource):
 
         endpoint_url = source_fields.get("endpoint_url")
 
-        fs = self.fs_class(**fs_kwargs)
+        fs = self._filesystem(fs_kwargs)
 
         try:
             endpoint: str = determine_endpoint(table, path_to_file)

@@ -629,7 +629,7 @@ def test_gcs(dest, test_case):
     "test_case",
     fs_test_cases(
         "s3",
-        "s3fs.S3FileSystem",
+        "dlt_filesystem.source.impl.remote.S3CompatibleSource._filesystem",
         "access_key_id=KEY&secret_access_key=SECRET",
     ),
 )

@@ -2,6 +2,7 @@ import base64
 import json
 from dataclasses import dataclass
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 from dlt_filesystem.error import MissingConnectorOption
 
@@ -35,6 +36,39 @@ def s3_filesystem_kwargs(
     endpoint_url = _first(params, "endpoint_url")
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
+    return kwargs
+
+
+def s3_arrow_filesystem_kwargs(
+    params: dict[str, list[str]], connector: str = "S3"
+) -> dict[str, Any]:
+    """Translate omniload S3 URI parameters into ``pyarrow.fs`` arguments."""
+    access_key_id = _first(params, "access_key_id")
+    if not access_key_id:
+        raise MissingConnectorOption("access_key_id", connector)
+
+    secret_access_key = _first(params, "secret_access_key")
+    if not secret_access_key:
+        raise MissingConnectorOption("secret_access_key", connector)
+
+    kwargs: dict[str, Any] = {
+        "access_key": access_key_id,
+        "secret_key": secret_access_key,
+    }
+
+    endpoint_url = _first(params, "endpoint_url")
+    if endpoint_url:
+        endpoint = urlparse(endpoint_url)
+        if endpoint.scheme not in {"http", "https"} or not endpoint.netloc:
+            raise ValueError(
+                "Invalid endpoint_url. Must be an HTTP or HTTPS URL with a host."
+            )
+        kwargs["scheme"] = endpoint.scheme
+        kwargs["endpoint_override"] = f"{endpoint.netloc}{endpoint.path.rstrip('/')}"
+
+    region = _first(params, "region")
+    if region:
+        kwargs["region"] = region
     return kwargs
 
 

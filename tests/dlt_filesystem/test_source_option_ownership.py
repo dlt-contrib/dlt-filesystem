@@ -179,12 +179,12 @@ CASES = [
     Case(
         "r2",
         "r2://bucket/path/to/data.parquet?access_key_id=foo&secret_access_key=bar",
-        expect_kwargs=("key", "secret"),
+        expect_kwargs=("access_key", "secret_key"),
     ),
     Case(
         "s3",
         "s3://bucket/path/to/data.parquet?access_key_id=foo&secret_access_key=bar",
-        expect_kwargs=("key", "secret"),
+        expect_kwargs=("access_key", "secret_key"),
     ),
     Case(
         "sftp",
@@ -228,8 +228,7 @@ def _spy_class(calls: list[dict[str, Any]], protocol: str):
 
     class SpyFileSystem(MemoryFileSystem):
         cachable = False
-        # `ArrowFSWrapper` reads `type_name`, and `S3CompatibleSource` derives its
-        # bucket URL from `protocol`.
+        # `ArrowFSWrapper` reads `type_name` from the native filesystem it wraps.
         type_name = protocol
 
         def __init__(self, *args, **kwargs):
