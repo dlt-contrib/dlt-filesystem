@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from unittest.mock import patch
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import pytest
 
@@ -8,6 +8,7 @@ from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.fsspec.r2 import R2Source
 from dlt_filesystem.source.impl.remote import (
+    AzureSource,
     S3Source,
     _R2ArrowFSWrapper,
     _S3CompatibleArrowFSWrapper,
@@ -20,6 +21,7 @@ from dlt_filesystem.source.router import (
     source_selects_single_file,
     split_format_hint,
 )
+from dlt_filesystem.util.auth import parse_azure_blob_auth
 
 
 @dataclass
@@ -309,3 +311,112 @@ def test_s3_compatible_wrapper_preserves_url_delimiters_in_keys(
     fs = wrapper_class(FakeArrowS3Filesystem())
 
     assert fs._strip_protocol(f"{scheme}://bucket/{key}") == f"bucket/{key}"
+
+
+@pytest.mark.parametrize(
+    ("connection_string", "expected_account", "expected_host"),
+    [
+        (
+            "AccountName=keyaccount;AccountKey=a2V5",
+            "keyaccount",
+            "https://keyaccount.blob.core.windows.net/",
+        ),
+        (
+            "DefaultEndpointsProtocol=https;AccountName=sasaccount;"
+            "SharedAccessSignature=sv=2023-01-03&ss=b&sig=a%2Fb%2Bc%3D;"
+            "EndpointSuffix=core.windows.net",
+            "sasaccount",
+            "https://sasaccount.blob.core.windows.net/",
+        ),
+        (
+            "AccountName=customaccount;AccountKey=a2V5;"
+            "BlobEndpoint=http://127.0.0.1:10000/customaccount;",
+            "customaccount",
+            "http://127.0.0.1:10000/customaccount/",
+        ),
+        (
+            "AccountName=customsas;SharedAccessSignature=sv=2023-01-03&sig=SECRET;"
+            "BlobEndpoint=http://127.0.0.1:10000/customsas;",
+            "customsas",
+            "http://127.0.0.1:10000/customsas/",
+        ),
+        (
+            "SharedAccessSignature=sv=2023-01-03&sig=SECRET;"
+            "BlobEndpoint=https://custom.example/accounts/anonymous;",
+            None,
+            "https://custom.example/accounts/anonymous/",
+        ),
+        (
+            "UseDevelopmentStorage=true",
+            "devstoreaccount1",
+            "http://127.0.0.1:10000/devstoreaccount1/",
+        ),
+        (
+            "defaultendpointsprotocol=https;accountname=lowercase;"
+            "accountkey=a2V5;endpointsuffix=core.windows.net;",
+            "lowercase",
+            "https://lowercase.blob.core.windows.net/",
+        ),
+    ],
+)
+def test_azure_connection_string_resolves_storage_identity(
+    connection_string, expected_account, expected_host
+):
+    auth = parse_azure_blob_auth({"connection_string": [connection_string]})
+
+    assert auth.account_name == expected_account
+    assert auth.account_host == expected_host
+    assert auth.connection_string == connection_string
+    assert auth.account_host is not None
+    assert "SECRET" not in auth.account_host
+    assert "SECRET" not in repr(auth)
+
+
+@pytest.mark.parametrize(
+    "connection_string",
+    [
+        "AccountName=account;AccountKey=SECRET;Malformed",
+        "AccountName=first;accountname=second;AccountKey=SECRET",
+    ],
+)
+def test_azure_connection_string_rejects_malformed_or_conflicting_fields(
+    connection_string,
+):
+    with pytest.raises(ValueError, match="Invalid Azure connection_string") as exc_info:
+        parse_azure_blob_auth({"connection_string": [connection_string]})
+
+    assert "SECRET" not in str(exc_info.value)
+
+
+def _azure_connection_string_reference(connection_string):
+    with (
+        patch("adlfs.AzureBlobFileSystem") as filesystem,
+        patch("dlt_filesystem.source.core.resource_for_reader") as build_resource,
+    ):
+        AzureSource().dlt_source(
+            f"az://?connection_string={quote(connection_string, safe='')}",
+            "container/*.csv",
+            filesystem_incremental=True,
+        )
+
+    assert filesystem.call_args.kwargs == {
+        "account_name": None,
+        "connection_string": connection_string,
+    }
+    return build_resource.call_args.args[0]
+
+
+def test_azure_connection_string_accounts_use_distinct_incremental_resources():
+    first = _azure_connection_string_reference(
+        "AccountName=first;AccountKey=FIRST_SECRET"
+    )
+    second = _azure_connection_string_reference(
+        "AccountName=second;AccountKey=SECOND_SECRET"
+    )
+
+    assert first.storage_namespace == "azure:first:first.blob.core.windows.net"
+    assert second.storage_namespace == "azure:second:second.blob.core.windows.net"
+    assert first.incremental_resource_name != second.incremental_resource_name
+    assert first.storage_namespace != "azure::azure-public"
+    assert "SECRET" not in first.storage_namespace
+    assert "SECRET" not in second.storage_namespace

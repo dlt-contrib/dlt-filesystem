@@ -1,8 +1,8 @@
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 from dlt_filesystem.error import MissingConnectorOption
 
@@ -121,19 +121,20 @@ class AzureBlobAuth:
     Holds the ingestr-style short names (``account_name`` / ``account_key`` /
     ``sas_token`` / ``tenant_id`` / ``client_id`` / ``client_secret`` /
     ``account_host``). These names match ``adlfs.AzureBlobFileSystem`` kwargs
-    exactly, so the source can pass them straight through; the destination maps
-    them onto dlt's ``AzureCredentials`` / ``AzureServicePrincipalCredentials``
-    spec fields.
+    for field-based authentication. A connection string also resolves account
+    and endpoint identity, but adlfs still receives only the original string.
+    The destination maps credentials onto dlt's ``AzureCredentials`` /
+    ``AzureServicePrincipalCredentials`` spec fields.
     """
 
     account_name: Optional[str] = None
-    account_key: Optional[str] = None
-    sas_token: Optional[str] = None
+    account_key: Optional[str] = field(default=None, repr=False)
+    sas_token: Optional[str] = field(default=None, repr=False)
     tenant_id: Optional[str] = None
     client_id: Optional[str] = None
-    client_secret: Optional[str] = None
+    client_secret: Optional[str] = field(default=None, repr=False)
     account_host: Optional[str] = None
-    connection_string: Optional[str] = None
+    connection_string: Optional[str] = field(default=None, repr=False)
     api_version: Optional[str] = None
 
     @property
@@ -148,6 +149,30 @@ class AzureBlobAuth:
             and self.client_id is not None
             and self.client_secret is not None
         )
+
+
+def _azure_connection_string_identity(
+    connection_string: str,
+) -> tuple[Optional[str], str]:
+    """Resolve a secret-free account and endpoint through Azure's public SDK APIs."""
+    from azure.core.utils import parse_connection_string
+    from azure.storage.blob import BlobServiceClient
+
+    try:
+        settings = parse_connection_string(connection_string)
+        client = BlobServiceClient.from_connection_string(connection_string)
+    except ValueError:
+        raise ValueError("Invalid Azure connection_string.") from None
+
+    try:
+        account_name = client.account_name or settings.get("accountname")
+        endpoint = urlsplit(client.url)._replace(query="", fragment="").geturl()
+    finally:
+        client.close()
+
+    if not endpoint:
+        raise ValueError("Invalid Azure connection_string.")
+    return account_name, endpoint
 
 
 def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
@@ -171,7 +196,7 @@ def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
             supplied, or if the service-principal triplet is only partially
             supplied (naming the missing field(s)).
         ValueError: if mutually exclusive credentials are supplied together,
-            rather than silently picking one.
+            or if a connection string is malformed.
     """
 
     connection_string = _first(params, "connection_string")
@@ -201,7 +226,12 @@ def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
                 "Conflicting Azure credentials: connection_string cannot be "
                 f"combined with {', '.join(conflicting_fields)}."
             )
+        connection_account_name, connection_account_host = (
+            _azure_connection_string_identity(connection_string)
+        )
         return AzureBlobAuth(
+            account_name=connection_account_name,
+            account_host=connection_account_host,
             connection_string=connection_string,
             api_version=api_version,
         )
@@ -250,6 +280,15 @@ def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
 
 def azure_blob_filesystem_kwargs(auth: AzureBlobAuth) -> dict[str, Any]:
     """Translate parsed Azure credentials into ``adlfs`` arguments."""
+    if auth.connection_string is not None:
+        kwargs: dict[str, Any] = {
+            "account_name": None,
+            "connection_string": auth.connection_string,
+        }
+        if auth.api_version is not None:
+            kwargs["api_version"] = auth.api_version
+        return kwargs
+
     kwargs: dict[str, Any] = {"account_name": auth.account_name}
     if auth.account_key is not None:
         kwargs["account_key"] = auth.account_key
@@ -263,8 +302,6 @@ def azure_blob_filesystem_kwargs(auth: AzureBlobAuth) -> dict[str, Any]:
         kwargs["client_secret"] = auth.client_secret
     if auth.account_host is not None:
         kwargs["account_host"] = auth.account_host
-    if auth.connection_string is not None:
-        kwargs["connection_string"] = auth.connection_string
     if auth.api_version is not None:
         kwargs["api_version"] = auth.api_version
     return kwargs

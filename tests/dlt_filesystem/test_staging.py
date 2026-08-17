@@ -1,5 +1,6 @@
 import logging
 from typing import Any, ClassVar
+from urllib.parse import quote
 
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
@@ -59,6 +60,23 @@ def test_filesystem_for_serves_an_s3_compatible_alias_through_s3fs():
     filesystem = _filesystem_for(remote)
     assert isinstance(filesystem, S3FileSystem)
     assert filesystem.client_kwargs["region_name"] == "auto"
+
+
+def test_filesystem_for_preserves_azure_connection_string(mocker):
+    connection_string = "AccountName=account;AccountKey=do-not-log"
+    filesystem = mocker.patch("adlfs.AzureBlobFileSystem")
+    remote = RemoteObject.from_uri(
+        "az://container/path/database.duckdb"
+        f"?connection_string={quote(connection_string, safe='')}"
+    )
+
+    assert remote.backend == "az"
+    _filesystem_for(remote)
+
+    filesystem.assert_called_once_with(
+        account_name=None,
+        connection_string=connection_string,
+    )
 
 
 def test_materialize_remote_object_lives_for_context_and_is_removed(
