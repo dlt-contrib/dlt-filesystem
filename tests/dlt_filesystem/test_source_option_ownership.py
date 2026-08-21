@@ -7,8 +7,9 @@ none of those names, and the two the package does consume must arrive on the
 
 The spy needs a per-connector patch map because there is no single construction
 hook: most connectors resolve a `fs_class` property, FTP imports its class from
-the fsspec module, SFTP goes through `fsspec.filesystem`, and the local source
-wraps a pyarrow filesystem, whose constructor is recorded rather than replaced.
+the fsspec module, SFTP goes through `fsspec.filesystem`, and the local and Azure
+sources wrap a pyarrow filesystem, whose constructor is recorded rather than
+replaced.
 """
 
 import ast
@@ -26,7 +27,11 @@ from fsspec.implementations.memory import MemoryFileSystem
 
 from dlt_filesystem.source.fsspec.ftp import FTPSource
 from dlt_filesystem.source.fsspec.local import LocalFilesystemSource
-from dlt_filesystem.source.impl.remote import S3CompatibleSource, SFTPSource
+from dlt_filesystem.source.impl.remote import (
+    AzureSource,
+    S3CompatibleSource,
+    SFTPSource,
+)
 from dlt_filesystem.source.model import RUN_OPTION_KEYS, FilesystemReference
 from omniload.core.factory import SourceDestinationFactory
 
@@ -253,21 +258,25 @@ def _spy_on_filesystem(source, scheme: str):
     elif isinstance(source, SFTPSource):
         with mock.patch("fsspec.filesystem", lambda _protocol, **kwargs: spy(**kwargs)):
             yield calls
-    elif isinstance(source, LocalFilesystemSource):
+    elif isinstance(source, (AzureSource, LocalFilesystemSource)):
         # Wraps a pyarrow filesystem, so record that constructor instead of replacing
         # it: `ArrowFSWrapper` needs a real arrow filesystem underneath. Recording it
         # rather than asserting "no spy fired" is what makes the empty-kwargs claim
         # falsifiable, so forwarding a run option here would fail the same assertion
-        # as everywhere else.
+        # as everywhere else. It also pins the keywords against Arrow itself, which
+        # rejects an unknown one where a stand-in would have accepted it.
         import pyarrow.fs
 
-        real_local = pyarrow.fs.LocalFileSystem
+        native_name = (
+            "AzureFileSystem" if isinstance(source, AzureSource) else "LocalFileSystem"
+        )
+        real_class = getattr(pyarrow.fs, native_name)
 
-        def recording_local(*args, **kwargs):
+        def recording_native(*args, **kwargs):
             calls.append(dict(kwargs))
-            return real_local(*args, **kwargs)
+            return real_class(*args, **kwargs)
 
-        with mock.patch("pyarrow.fs.LocalFileSystem", recording_local):
+        with mock.patch.object(pyarrow.fs, native_name, recording_native):
             yield calls
     else:
         with mock.patch.object(type(source), "fs_class", property(lambda self: spy)):

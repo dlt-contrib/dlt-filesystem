@@ -7,6 +7,9 @@ from urllib.parse import urlparse, urlsplit
 from dlt_filesystem.error import MissingConnectorOption
 
 AZURE_SERVICE_PRINCIPAL_FIELDS = ("tenant_id", "client_id", "client_secret")
+#: The service labels an Azure endpoint suffix carries, which arrow keeps apart.
+AZURE_BLOB_LABEL = ".blob."
+AZURE_DFS_LABEL = ".dfs."
 
 
 def _first(params: dict[str, list[str]], key: str) -> Optional[str]:
@@ -120,11 +123,14 @@ class AzureBlobAuth:
 
     Holds the ingestr-style short names (``account_name`` / ``account_key`` /
     ``sas_token`` / ``tenant_id`` / ``client_id`` / ``client_secret`` /
-    ``account_host``). These names match ``adlfs.AzureBlobFileSystem`` kwargs
-    for field-based authentication. A connection string also resolves account
-    and endpoint identity, but adlfs still receives only the original string.
-    The destination maps credentials onto dlt's ``AzureCredentials`` /
-    ``AzureServicePrincipalCredentials`` spec fields.
+    ``account_host``), which three consumers then map their own way: the source
+    onto ``pyarrow.fs.AzureFileSystem`` arguments, remote-database staging onto
+    ``adlfs.AzureBlobFileSystem`` kwargs (whose names these match), and the
+    destination onto dlt's ``AzureCredentials`` /
+    ``AzureServicePrincipalCredentials`` spec fields. A connection string also
+    resolves account and endpoint identity here; the credential it carries is
+    read where a client needs it as a field, and adlfs keeps receiving the
+    original string.
     """
 
     account_name: Optional[str] = None
@@ -134,6 +140,10 @@ class AzureBlobAuth:
     client_id: Optional[str] = None
     client_secret: Optional[str] = field(default=None, repr=False)
     account_host: Optional[str] = None
+    #: The Data Lake endpoint a connection string names, when it names one. It is
+    #: never a URI parameter, and it stays out of the storage namespace, which
+    #: identifies an account by its Blob endpoint.
+    dfs_host: Optional[str] = None
     connection_string: Optional[str] = field(default=None, repr=False)
     api_version: Optional[str] = None
 
@@ -151,10 +161,31 @@ class AzureBlobAuth:
         )
 
 
-def _azure_connection_string_identity(
-    connection_string: str,
-) -> tuple[Optional[str], str]:
-    """Resolve a secret-free account and endpoint through Azure's public SDK APIs."""
+@dataclass(frozen=True)
+class _AzureConnectionString:
+    """What one Azure connection string resolves to, read through public SDK APIs.
+
+    The account and endpoints identify the storage the string addresses, and are
+    secret-free; the credential is read here too, because a client that takes no
+    connection string needs it as a field.
+    """
+
+    account_name: Optional[str]
+    blob_endpoint: str
+    dfs_endpoint: Optional[str] = None
+    account_key: Optional[str] = field(default=None, repr=False)
+    sas_token: Optional[str] = field(default=None, repr=False)
+
+
+def _parse_azure_connection_string(connection_string: str) -> _AzureConnectionString:
+    """Resolve one connection string through Azure's public SDK APIs, once.
+
+    ``BlobServiceClient.from_connection_string`` performs no network I/O and is
+    authoritative for the composed endpoint and the credential;
+    ``parse_connection_string`` supplies the case-insensitive field mapping,
+    which carries the account name for the endpoint forms the client leaves it
+    unset on, and the Data Lake endpoint the client models no other way.
+    """
     from azure.core.utils import parse_connection_string
     from azure.storage.blob import BlobServiceClient
 
@@ -166,13 +197,21 @@ def _azure_connection_string_identity(
 
     try:
         account_name = client.account_name or settings.get("accountname")
-        endpoint = urlsplit(client.url)._replace(query="", fragment="").geturl()
+        composed = urlsplit(client.url)
+        blob_endpoint = composed._replace(query="", fragment="").geturl()
+        resolved = _AzureConnectionString(
+            account_name=account_name,
+            blob_endpoint=blob_endpoint,
+            dfs_endpoint=settings.get("dfsendpoint"),
+            account_key=getattr(client.credential, "account_key", None),
+            sas_token=composed.query or None,
+        )
     finally:
         client.close()
 
-    if not endpoint:
+    if not resolved.blob_endpoint:
         raise ValueError("Invalid Azure connection_string.")
-    return account_name, endpoint
+    return resolved
 
 
 def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
@@ -226,12 +265,13 @@ def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
                 "Conflicting Azure credentials: connection_string cannot be "
                 f"combined with {', '.join(conflicting_fields)}."
             )
-        connection_account_name, connection_account_host = (
-            _azure_connection_string_identity(connection_string)
-        )
+        resolved = _parse_azure_connection_string(connection_string)
         return AzureBlobAuth(
-            account_name=connection_account_name,
-            account_host=connection_account_host,
+            account_name=resolved.account_name,
+            account_key=resolved.account_key,
+            sas_token=resolved.sas_token,
+            account_host=resolved.blob_endpoint,
+            dfs_host=resolved.dfs_endpoint,
             connection_string=connection_string,
             api_version=api_version,
         )
@@ -279,7 +319,12 @@ def parse_azure_blob_auth(params: dict) -> AzureBlobAuth:
 
 
 def azure_blob_filesystem_kwargs(auth: AzureBlobAuth) -> dict[str, Any]:
-    """Translate parsed Azure credentials into ``adlfs`` arguments."""
+    """Translate parsed Azure credentials into ``adlfs`` arguments.
+
+    The source reads through ``pyarrow.fs``, so this now serves the staging
+    download that materializes a remote database file, which is neither source
+    nor destination and has no Arrow client to build.
+    """
     if auth.connection_string is not None:
         kwargs: dict[str, Any] = {
             "account_name": None,
@@ -304,4 +349,163 @@ def azure_blob_filesystem_kwargs(auth: AzureBlobAuth) -> dict[str, Any]:
         kwargs["account_host"] = auth.account_host
     if auth.api_version is not None:
         kwargs["api_version"] = auth.api_version
+    return kwargs
+
+
+def _azure_service_authorities(authority: str) -> tuple[str, str]:
+    """Pair one endpoint authority with the sibling authority of the other service.
+
+    Arrow addresses Blob and Data Lake Gen2 through separate endpoints, and
+    resolves a hierarchical-namespace account through the Data Lake one, so
+    naming only the Blob endpoint would send half the requests to the public
+    cloud.
+
+    A domain suffix (which Arrow reads as the part following the account name)
+    yields its sibling by substituting the service label wherever it sits, since
+    a Private Link name carries it a label in: `.privatelink.blob.core.windows.net`
+    pairs with `.privatelink.dfs.core.windows.net`. A suffix naming no service, and
+    a fully qualified host (an emulator, a gateway), serve both as they are.
+    """
+    if authority.startswith("."):
+        for label, sibling in (
+            (AZURE_BLOB_LABEL, AZURE_DFS_LABEL),
+            (AZURE_DFS_LABEL, AZURE_BLOB_LABEL),
+        ):
+            head, found, tail = authority.partition(label)
+            if found:
+                swapped = f"{head}{sibling}{tail}"
+                if label == AZURE_BLOB_LABEL:
+                    return authority, swapped
+                return swapped, authority
+    return authority, authority
+
+
+def _azure_authority_and_scheme(
+    account_name: str, endpoint_value: str, field_name: str
+) -> tuple[str, str]:
+    """Read one Azure endpoint as the authority-and-scheme pair arrow takes.
+
+    Arrow reads an authority that starts with a dot as a domain suffix to prepend
+    the account name to, and any other authority as a fully qualified host the
+    account name follows in the URL path. Both forms are derivable from an
+    endpoint that names the account, which is the only shape any carrier
+    produces: a bare ``account_host`` host, or an endpoint a connection string
+    names or composes.
+    """
+    endpoint = urlsplit(
+        endpoint_value if "://" in endpoint_value else f"//{endpoint_value}",
+        scheme="https",
+    )
+    if (
+        endpoint.scheme not in {"http", "https"}
+        or not endpoint.hostname
+        or endpoint.username is not None
+        or endpoint.password is not None
+    ):
+        raise ValueError(
+            f"Invalid {field_name}. Must be a hostname[:port], optionally "
+            "prefixed with http:// or https://."
+        )
+    if endpoint.query or endpoint.fragment:
+        raise ValueError(
+            f"Invalid {field_name}. Azure endpoints must not include a query "
+            "or fragment."
+        )
+
+    netloc = endpoint.netloc.lower()
+    path = endpoint.path.strip("/")
+    if path:
+        parent, _, account_segment = path.rpartition("/")
+        if account_segment.lower() != account_name.lower():
+            raise ValueError(
+                f"Invalid {field_name}. A path-style Azure endpoint must end in "
+                f"the storage account name, but {account_segment!r} is not "
+                f"{account_name!r}."
+            )
+        # Arrow composes `scheme://{authority}/{account}`, so carrying the
+        # leading path segments in the authority reproduces the endpoint that
+        # was given, whatever its depth.
+        return (f"{netloc}/{parent}" if parent else netloc), endpoint.scheme
+
+    prefix = f"{account_name.lower()}."
+    if not netloc.startswith(prefix):
+        raise ValueError(
+            f"Invalid {field_name}. A host-style Azure endpoint must start in "
+            f"the storage account name, but {netloc!r} does not start with "
+            f"{prefix!r}."
+        )
+    return netloc[len(account_name) :], endpoint.scheme
+
+
+def _azure_endpoint_kwargs(
+    account_name: str, account_host: str, dfs_host: Optional[str] = None
+) -> dict[str, Any]:
+    """Translate an Azure account's endpoints into arrow's two authority pairs.
+
+    A connection string may name the Data Lake endpoint outright, in which case
+    it is used as given; otherwise it is derived from the Blob endpoint, which is
+    all a single ``account_host`` can offer.
+    """
+    authority, blob_scheme = _azure_authority_and_scheme(
+        account_name, account_host, "account_host"
+    )
+    blob_authority, derived_dfs_authority = _azure_service_authorities(authority)
+    if dfs_host is not None:
+        dfs_authority, dfs_scheme = _azure_authority_and_scheme(
+            account_name, dfs_host, "DfsEndpoint"
+        )
+    else:
+        dfs_authority, dfs_scheme = derived_dfs_authority, blob_scheme
+    return {
+        "blob_storage_authority": blob_authority,
+        "blob_storage_scheme": blob_scheme,
+        "dfs_storage_authority": dfs_authority,
+        "dfs_storage_scheme": dfs_scheme,
+    }
+
+
+def _azure_sas_query(sas_token: str) -> str:
+    """Return a SAS token in the leading-`?` form arrow requires.
+
+    Arrow appends the token to the account URL verbatim, so a token without the
+    delimiter lands in the URL path and every request fails as a malformed
+    resource name. adlfs added the delimiter itself, and both carriers here yield
+    the token without one: a URI parameter is the bare token, and a connection
+    string's is read off the composed URL's query.
+    """
+    return f"?{sas_token.removeprefix('?')}"
+
+
+def azure_arrow_filesystem_kwargs(auth: AzureBlobAuth) -> dict[str, Any]:
+    """Translate parsed Azure credentials into ``pyarrow.fs`` arguments."""
+    if auth.api_version is not None:
+        raise ValueError(
+            "api_version is not supported by the Azure source, which reads "
+            "through pyarrow.fs. Arrow offers no API-version override, so "
+            "remove the parameter from the URI."
+        )
+    if not auth.account_name:
+        raise ValueError(
+            "Azure needs an account name, which pyarrow.fs takes as the root of "
+            "the filesystem. A connection string that omits AccountName "
+            "identifies its account by endpoint alone, which arrow cannot "
+            "address; name the account in the connection string, or supply "
+            "account_name with account_key or sas_token."
+        )
+
+    kwargs: dict[str, Any] = {"account_name": auth.account_name}
+    if auth.account_key is not None:
+        kwargs["account_key"] = auth.account_key
+    if auth.sas_token is not None:
+        kwargs["sas_token"] = _azure_sas_query(auth.sas_token)
+    if auth.tenant_id is not None:
+        kwargs["tenant_id"] = auth.tenant_id
+    if auth.client_id is not None:
+        kwargs["client_id"] = auth.client_id
+    if auth.client_secret is not None:
+        kwargs["client_secret"] = auth.client_secret
+    if auth.account_host is not None:
+        kwargs.update(
+            _azure_endpoint_kwargs(auth.account_name, auth.account_host, auth.dfs_host)
+        )
     return kwargs

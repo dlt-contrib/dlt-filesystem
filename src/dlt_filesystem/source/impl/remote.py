@@ -17,7 +17,7 @@ from dlt_filesystem.source.router import (
     source_selects_single_file,
 )
 from dlt_filesystem.util.auth import (
-    azure_blob_filesystem_kwargs,
+    azure_arrow_filesystem_kwargs,
     gcs_filesystem_kwargs,
     parse_azure_blob_auth,
     s3_arrow_filesystem_kwargs,
@@ -44,6 +44,29 @@ class _R2ArrowFSWrapper(_S3CompatibleArrowFSWrapper):
     """Expose an Arrow S3 client through R2's public URI scheme."""
 
     protocol = "r2"
+
+
+class _AzureArrowFSWrapper(ArrowFSWrapper):
+    """Keep Azure blob names intact while stripping their URI scheme.
+
+    Arrow addresses a blob as ``container/name`` with the storage account as the
+    filesystem root, so stripping is a prefix removal. The generic wrapper reads
+    the rest of the path as a URL instead, and a blob name may contain ``?`` or
+    ``#`` literally.
+    """
+
+    protocol = "az"
+    #: Every Azure user-scheme is a registry alias onto one client, so all three
+    #: reach this wrapper even though discovery composes ``az://`` URLs.
+    schemes = ("az", "adls", "abfss")
+
+    @classmethod
+    def _strip_protocol(cls, path: str) -> str:
+        for scheme in cls.schemes:
+            prefix = f"{scheme}://"
+            if path.startswith(prefix):
+                return path[len(prefix) :]
+        return super()._strip_protocol(path)
 
 
 class GCSSource(FilesystemSource):
@@ -194,22 +217,21 @@ class S3Source(S3CompatibleSource):
 class AzureSource(FilesystemSource):
     """Azure Blob Storage / ADLS Gen2 source (``az://``, ``adls://``, ``abfss://``).
 
-    adlfs serves both Blob and ADLS Gen2 through one ``AzureBlobFileSystem`` and
-    the ``az://`` bucket-url scheme, so every Azure user-scheme reads through the
-    same ``az://`` backend; the ``adls://`` / ``abfss://`` schemes are registry
-    aliases onto this class.
+    Reads through ``pyarrow.fs.AzureFileSystem``, which serves both Blob and
+    ADLS Gen2 from one client and detects a hierarchical namespace itself, so
+    every Azure user-scheme reads through the same ``az://`` backend; the
+    ``adls://`` / ``abfss://`` schemes are registry aliases onto this class.
     """
 
     @property
-    def fs_class(self) -> Type["AbstractFileSystem"]:
-        """Return AzureBlobFileSystem class"""
-        # adlfs annotates its credential params as `str` (defaulting to None) and
-        # mixes in non-str params (blocksize: int, ...), so ty can't check a
-        # conditional str-kwargs splat against the signature. The kwargs are all
-        # valid adlfs credential arguments by construction.
-        from adlfs import AzureBlobFileSystem
+    def fs_class(self) -> Type[Any]:
+        from pyarrow.fs import AzureFileSystem
 
-        return AzureBlobFileSystem
+        return AzureFileSystem
+
+    def _filesystem(self, fs_kwargs: dict[str, Any]) -> AbstractFileSystem:
+        """Wrap the native client, which does not speak the fsspec contract."""
+        return _AzureArrowFSWrapper(self.fs_class(**fs_kwargs))
 
     def dlt_source(self, uri: str, table: str, **kwargs):
         if kwargs.get("incremental_key"):
@@ -229,8 +251,8 @@ class AzureSource(FilesystemSource):
         bucket_url = f"az://{bucket_name}"
 
         resource_options, connector_kwargs = split_run_options(kwargs)
-        connector_kwargs.update(azure_blob_filesystem_kwargs(auth))
-        fs = self.fs_class(**connector_kwargs)
+        connector_kwargs.update(azure_arrow_filesystem_kwargs(auth))
+        fs = self._filesystem(connector_kwargs)
 
         try:
             endpoint: str = determine_endpoint(table, path_to_file)

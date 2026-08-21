@@ -12,6 +12,27 @@ from tests.util.container.model import DockerService
 from tests.warehouse.model import ServiceRegistry
 
 AZURITE_IMAGE = "mcr.microsoft.com/azure-storage/azurite:3.36.0"
+#: Azurite rejects any `x-ms-version` newer than the release it ships with, and
+#: three clients reach it with their own: the Python SDK arranging fixtures can be
+#: pinned to a version Azurite knows (`AZURE_API_VERSION` in the tests), while
+#: Arrow's bundled C++ SDK and adlfs (which still serves remote-database staging)
+#: cannot, so the emulator is told to serve the request anyway. Repeats the image
+#: default, which naming a command replaces.
+#: Reachable from the host only when the in-container service binds every
+#: interface, which is what the image default does.
+AZURITE_HOST = "0.0.0.0"  # noqa: S104
+AZURITE_COMMAND = [
+    "azurite",
+    "-l",
+    "/data",
+    "--blobHost",
+    AZURITE_HOST,
+    "--queueHost",
+    AZURITE_HOST,
+    "--tableHost",
+    AZURITE_HOST,
+    "--skipApiVersionCheck",
+]
 CLICKHOUSE_IMAGE = "docker.io/clickhouse/clickhouse-server:26.5"
 COUCHBASE_IMAGE = "docker.io/couchbase:7.6.9"
 FLOCI_IMAGE = "docker.io/floci/floci:1.5.25"
@@ -55,7 +76,9 @@ def get_remote_filesystem_services() -> dict[str, DockerService]:
             ),
             "azure": DockerService(
                 "remote-filesystem-azure",
-                lambda: AzuriteContainer(image=AZURITE_IMAGE),
+                lambda: AzuriteContainer(image=AZURITE_IMAGE).with_command(
+                    AZURITE_COMMAND
+                ),
                 connection_getter=_azurite_connection_string,
             ),
             "gcs": DockerService(

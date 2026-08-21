@@ -10,6 +10,7 @@ from dlt_filesystem.source.fsspec.r2 import R2Source
 from dlt_filesystem.source.impl.remote import (
     AzureSource,
     S3Source,
+    _AzureArrowFSWrapper,
     _R2ArrowFSWrapper,
     _S3CompatibleArrowFSWrapper,
 )
@@ -388,22 +389,35 @@ def test_azure_connection_string_rejects_malformed_or_conflicting_fields(
     assert "SECRET" not in str(exc_info.value)
 
 
-def _azure_connection_string_reference(connection_string):
+class FakeArrowAzureFilesystem:
+    """Enough of a native Arrow filesystem for construction-only source tests."""
+
+    type_name = "abfs"
+
+
+def _azure_source_reference(uri: str, table: str = "container/*.csv"):
+    """Build one Azure source, capturing the Arrow constructor keywords."""
+    captured_kwargs = []
+
+    def build_filesystem(**kwargs):
+        captured_kwargs.append(kwargs)
+        return FakeArrowAzureFilesystem()
+
     with (
-        patch("adlfs.AzureBlobFileSystem") as filesystem,
+        patch("pyarrow.fs.AzureFileSystem", side_effect=build_filesystem),
         patch("dlt_filesystem.source.core.resource_for_reader") as build_resource,
     ):
-        AzureSource().dlt_source(
-            f"az://?connection_string={quote(connection_string, safe='')}",
-            "container/*.csv",
-            filesystem_incremental=True,
-        )
+        AzureSource().dlt_source(uri, table, filesystem_incremental=True)
 
-    assert filesystem.call_args.kwargs == {
-        "account_name": None,
-        "connection_string": connection_string,
-    }
-    return build_resource.call_args.args[0]
+    assert len(captured_kwargs) == 1
+    return build_resource.call_args.args[0], captured_kwargs[0]
+
+
+def _azure_connection_string_reference(connection_string):
+    reference, _ = _azure_source_reference(
+        f"az://?connection_string={quote(connection_string, safe='')}"
+    )
+    return reference
 
 
 def test_azure_connection_string_accounts_use_distinct_incremental_resources():
@@ -420,3 +434,343 @@ def test_azure_connection_string_accounts_use_distinct_incremental_resources():
     assert first.storage_namespace != "azure::azure-public"
     assert "SECRET" not in first.storage_namespace
     assert "SECRET" not in second.storage_namespace
+
+
+AZURITE_KEY = (
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr"
+    "/KBHBeksoGMGw=="
+)
+
+
+@pytest.mark.parametrize(
+    ("connection_string", "expected"),
+    [
+        pytest.param(
+            "AccountName=keyaccount;AccountKey=a2V5",
+            {
+                "account_name": "keyaccount",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".blob.core.windows.net",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".dfs.core.windows.net",
+                "dfs_storage_scheme": "https",
+            },
+            id="shared-key",
+        ),
+        pytest.param(
+            "DefaultEndpointsProtocol=https;AccountName=sasaccount;"
+            "SharedAccessSignature=sv=2023-01-03&ss=b&sig=a%2Fb%2Bc%3D;"
+            "EndpointSuffix=core.windows.net",
+            {
+                "account_name": "sasaccount",
+                "sas_token": "?sv=2023-01-03&ss=b&sig=a%2Fb%2Bc%3D",
+                "blob_storage_authority": ".blob.core.windows.net",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".dfs.core.windows.net",
+                "dfs_storage_scheme": "https",
+            },
+            id="sas",
+        ),
+        pytest.param(
+            "AccountName=sovereign;AccountKey=a2V5;EndpointSuffix=core.chinacloudapi.cn",
+            {
+                "account_name": "sovereign",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".blob.core.chinacloudapi.cn",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".dfs.core.chinacloudapi.cn",
+                "dfs_storage_scheme": "https",
+            },
+            id="sovereign-suffix",
+        ),
+        pytest.param(
+            "UseDevelopmentStorage=true",
+            {
+                "account_name": "devstoreaccount1",
+                "account_key": AZURITE_KEY,
+                "blob_storage_authority": "127.0.0.1:10000",
+                "blob_storage_scheme": "http",
+                "dfs_storage_authority": "127.0.0.1:10000",
+                "dfs_storage_scheme": "http",
+            },
+            id="development-storage",
+        ),
+        pytest.param(
+            "AccountName=emulated;SharedAccessSignature=sv=2023-01-03&sig=SECRET;"
+            "BlobEndpoint=http://127.0.0.1:10000/emulated;",
+            {
+                "account_name": "emulated",
+                "sas_token": "?sv=2023-01-03&sig=SECRET",
+                "blob_storage_authority": "127.0.0.1:10000",
+                "blob_storage_scheme": "http",
+                "dfs_storage_authority": "127.0.0.1:10000",
+                "dfs_storage_scheme": "http",
+            },
+            id="path-style-sas",
+        ),
+    ],
+)
+def test_azure_connection_string_credentials_reach_arrow(connection_string, expected):
+    """Arrow takes no connection string, so its fields are handed over instead."""
+    _, kwargs = _azure_source_reference(
+        f"az://?connection_string={quote(connection_string, safe='')}"
+    )
+
+    assert kwargs == expected
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        pytest.param(
+            "account_name=acct&account_key=a2V5",
+            {"account_name": "acct", "account_key": "a2V5"},
+            id="account-key",
+        ),
+        pytest.param(
+            "account_name=acct&sas_token=sv%3D2023-01-03%26sig%3Dabc",
+            {"account_name": "acct", "sas_token": "?sv=2023-01-03&sig=abc"},
+            id="sas-token",
+        ),
+        pytest.param(
+            "account_name=acct&tenant_id=TENANT&client_id=CLIENT&client_secret=SECRET",
+            {
+                "account_name": "acct",
+                "tenant_id": "TENANT",
+                "client_id": "CLIENT",
+                "client_secret": "SECRET",
+            },
+            id="service-principal",
+        ),
+        pytest.param(
+            "account_name=acct&account_key=a2V5&account_host=acct.blob.core.chinacloudapi.cn",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".blob.core.chinacloudapi.cn",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".dfs.core.chinacloudapi.cn",
+                "dfs_storage_scheme": "https",
+            },
+            id="account-host-suffix",
+        ),
+        pytest.param(
+            # A Private Link name carries the service label a label in, so the
+            # sibling is a substitution rather than a prefix.
+            "account_name=acct&account_key=a2V5"
+            "&account_host=acct.privatelink.blob.core.windows.net",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".privatelink.blob.core.windows.net",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".privatelink.dfs.core.windows.net",
+                "dfs_storage_scheme": "https",
+            },
+            id="account-host-private-link",
+        ),
+        pytest.param(
+            "account_name=acct&account_key=a2V5"
+            "&account_host=acct.privatelink.dfs.core.windows.net",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".privatelink.blob.core.windows.net",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".privatelink.dfs.core.windows.net",
+                "dfs_storage_scheme": "https",
+            },
+            id="account-host-private-link-gen2",
+        ),
+        pytest.param(
+            # A suffix naming no service serves both as it is.
+            "account_name=acct&account_key=a2V5&account_host=acct.storage.example.com",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".storage.example.com",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".storage.example.com",
+                "dfs_storage_scheme": "https",
+            },
+            id="account-host-unlabelled-suffix",
+        ),
+        pytest.param(
+            # A Gen2 host names the Data Lake service, whose Blob sibling arrow
+            # still needs, because it reaches a flat-namespace account there.
+            "account_name=acct&account_key=a2V5&account_host=acct.dfs.core.windows.net",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": ".blob.core.windows.net",
+                "blob_storage_scheme": "https",
+                "dfs_storage_authority": ".dfs.core.windows.net",
+                "dfs_storage_scheme": "https",
+            },
+            id="account-host-gen2",
+        ),
+        pytest.param(
+            "account_name=acct&account_key=a2V5&account_host=http%3A%2F%2F127.0.0.1%3A10000%2Facct",
+            {
+                "account_name": "acct",
+                "account_key": "a2V5",
+                "blob_storage_authority": "127.0.0.1:10000",
+                "blob_storage_scheme": "http",
+                "dfs_storage_authority": "127.0.0.1:10000",
+                "dfs_storage_scheme": "http",
+            },
+            id="account-host-path-style",
+        ),
+    ],
+)
+def test_azure_uri_fields_reach_arrow(query, expected):
+    """Every credential mode the connector accepts maps onto an arrow keyword."""
+    _, kwargs = _azure_source_reference(f"az://?{query}")
+
+    assert kwargs == expected
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "account_name=acct&account_key=a2V5",
+        "account_name=acct&sas_token=sv%3D2023-01-03%26sig%3Dabc",
+        "account_name=acct&tenant_id=TENANT&client_id=CLIENT&client_secret=SECRET",
+        "account_name=acct&account_key=a2V5&account_host=acct.blob.core.chinacloudapi.cn",
+        "account_name=acct&account_key=a2V5"
+        "&account_host=acct.privatelink.blob.core.windows.net",
+        "account_name=devstoreaccount1&account_key=a2V5"
+        "&account_host=http%3A%2F%2F127.0.0.1%3A10000%2Fdevstoreaccount1",
+    ],
+)
+def test_azure_arrow_keywords_are_accepted_by_pyarrow(query):
+    """The mapped keywords are pinned against pyarrow, not against a stand-in.
+
+    A construction spy proves the mapping; only the real class proves the names,
+    and Arrow rejects an unknown keyword rather than ignoring it.
+    """
+    with patch("dlt_filesystem.source.core.resource_for_reader") as build_resource:
+        AzureSource().dlt_source(f"az://?{query}", "container/*.csv")
+
+    assert build_resource.call_args.args[0].fs.protocol == "az"
+
+
+def test_azure_source_rejects_api_version():
+    """Arrow pins the API version its bundled SDK speaks, with no override."""
+    with pytest.raises(ValueError, match="api_version is not supported"):
+        AzureSource().dlt_source(
+            "az://?account_name=acct&account_key=a2V5&api_version=2025-11-05",
+            "container/*.csv",
+        )
+
+
+def test_azure_connection_string_without_an_account_name_is_rejected():
+    """Arrow addresses a storage account by name, so an endpoint alone cannot serve."""
+    connection_string = (
+        "SharedAccessSignature=sv=2023-01-03&sig=SECRET;"
+        "BlobEndpoint=https://custom.example/accounts/anonymous;"
+    )
+    with pytest.raises(ValueError, match="Azure needs an account name") as exc_info:
+        AzureSource().dlt_source(
+            f"az://?connection_string={quote(connection_string, safe='')}",
+            "container/*.csv",
+        )
+
+    assert "SECRET" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("account_host", "match"),
+    [
+        pytest.param("ftp://acct.blob.core.windows.net", "hostname", id="scheme"),
+        pytest.param(
+            "user:pw@acct.blob.core.windows.net", "hostname", id="credentials"
+        ),
+        pytest.param(
+            "acct.blob.core.windows.net?sv=1", "query or fragment", id="query"
+        ),
+        pytest.param(
+            "acct.blob.core.windows.net#frag", "query or fragment", id="fragment"
+        ),
+        pytest.param(
+            "http://127.0.0.1:10000/other", "must end in", id="foreign-account-path"
+        ),
+        pytest.param(
+            "other.blob.core.windows.net", "must start in", id="foreign-account-host"
+        ),
+    ],
+)
+def test_azure_source_rejects_invalid_account_host(account_host, match):
+    """The endpoint rules S3 applies transfer, though arrow's Azure shape differs."""
+    with pytest.raises(ValueError, match=match):
+        AzureSource().dlt_source(
+            f"az://?account_name=acct&account_key=a2V5"
+            f"&account_host={quote(account_host, safe='')}",
+            "container/*.csv",
+        )
+
+
+@pytest.mark.parametrize("scheme", ["az", "adls", "abfss"])
+@pytest.mark.parametrize("key", ["vendor#1/data.csv", "odd?name.csv"])
+def test_azure_wrapper_preserves_url_delimiters_in_blob_names(scheme, key):
+    """A blob name may contain `?` and `#`, which are not URL delimiters here."""
+    fs = _AzureArrowFSWrapper(FakeArrowAzureFilesystem())
+
+    assert fs._strip_protocol(f"{scheme}://container/{key}") == f"container/{key}"
+
+
+@pytest.mark.parametrize(
+    "supplied",
+    ["sv=2023-01-03&sig=abc", "?sv=2023-01-03&sig=abc"],
+    ids=["bare", "already-delimited"],
+)
+def test_azure_sas_token_carries_the_delimiter_arrow_needs(supplied):
+    """Arrow appends the token to the account URL, so it has to open a query.
+
+    Without the `?` every request lands the token in the URL path and fails as a
+    malformed resource name, whichever carrier the token arrived on.
+    """
+    _, kwargs = _azure_source_reference(
+        f"az://?account_name=acct&sas_token={quote(supplied, safe='')}"
+    )
+
+    assert kwargs["sas_token"] == "?sv=2023-01-03&sig=abc"  # noqa: S105
+
+
+def test_azure_connection_string_dfs_endpoint_is_used_as_given():
+    """A string that names the Data Lake endpoint is not second-guessed.
+
+    Arrow reaches a hierarchical-namespace account through the Data Lake
+    endpoint, and a custom host is not derivable from the Blob one.
+    """
+    connection_string = (
+        "AccountName=acct;AccountKey=a2V5;"
+        "BlobEndpoint=https://gateway.example/blob/acct;"
+        "DfsEndpoint=https://gateway.example/dfs/acct;"
+    )
+    _, kwargs = _azure_source_reference(
+        f"az://?connection_string={quote(connection_string, safe='')}"
+    )
+
+    assert kwargs == {
+        "account_name": "acct",
+        "account_key": "a2V5",
+        "blob_storage_authority": "gateway.example/blob",
+        "blob_storage_scheme": "https",
+        "dfs_storage_authority": "gateway.example/dfs",
+        "dfs_storage_scheme": "https",
+    }
+
+
+def test_azure_connection_string_dfs_endpoint_is_validated_by_name():
+    """A rejected endpoint says which field it came from, not just that one failed."""
+    connection_string = (
+        "AccountName=acct;AccountKey=a2V5;"
+        "BlobEndpoint=https://acct.blob.core.windows.net;"
+        "DfsEndpoint=https://other.dfs.core.windows.net;"
+    )
+    with pytest.raises(ValueError, match="Invalid DfsEndpoint"):
+        AzureSource().dlt_source(
+            f"az://?connection_string={quote(connection_string, safe='')}",
+            "container/*.csv",
+        )

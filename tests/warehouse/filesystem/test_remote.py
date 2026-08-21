@@ -647,7 +647,7 @@ def test_s3_destination():
         )
 
 
-# adlfs serves Azure Blob and ADLS Gen2 through one AzureBlobFileSystem and the
+# One pyarrow.fs.AzureFileSystem serves Azure Blob and ADLS Gen2 through the
 # az:// bucket-url scheme, so az://, adls://, and abfss:// share the exact same
 # source read matrix (each is a registry alias onto AzureSource). They run
 # through the same parametrized harness as S3/GCS, so a regression in shared
@@ -659,7 +659,7 @@ def test_s3_destination():
     "test_case",
     fs_test_cases(
         "az",
-        "adlfs.AzureBlobFileSystem",
+        "dlt_filesystem.source.impl.remote.AzureSource._filesystem",
         "account_name=acct&account_key=a2V5",
     ),
 )
@@ -675,7 +675,7 @@ def test_az(dest, test_case):
     "test_case",
     fs_test_cases(
         "adls",
-        "adlfs.AzureBlobFileSystem",
+        "dlt_filesystem.source.impl.remote.AzureSource._filesystem",
         "account_name=acct&account_key=a2V5",
     ),
 )
@@ -691,7 +691,7 @@ def test_adls(dest, test_case):
     "test_case",
     fs_test_cases(
         "abfss",
-        "adlfs.AzureBlobFileSystem",
+        "dlt_filesystem.source.impl.remote.AzureSource._filesystem",
         "account_name=acct&account_key=a2V5",
     ),
 )
@@ -936,7 +936,7 @@ def test_azure_destination_account_key_and_sas_conflict():
 
 
 def test_azure_source_encoded_credentials(tmp_path):
-    """A base64 account_key, URL-encoded in the *source* URI, reaches adlfs
+    """A base64 account_key, URL-encoded in the *source* URI, reaches Arrow
     decoded (the source constructs the filesystem directly)."""
     test_fs = MemoryFileSystem()
     with test_fs.open("/data.csv", "w") as f:
@@ -945,15 +945,23 @@ def test_azure_source_encoded_credentials(tmp_path):
     def glob_files_override(fs_client, _, file_glob):
         return glob_files(fs_client, "memory://", file_glob)
 
+    captured_kwargs = []
+
+    def record_filesystem(_self, fs_kwargs):
+        captured_kwargs.append(dict(fs_kwargs))
+        return test_fs
+
     dest_uri = f"duckdb:///{tmp_path / 'azure_src.db'}"
     with (
-        patch("adlfs.AzureBlobFileSystem") as fs_mock,
+        patch(
+            "dlt_filesystem.source.impl.remote.AzureSource._filesystem",
+            record_filesystem,
+        ),
         patch(
             "dlt_filesystem.source.adapter.glob_files",
             wraps=glob_files_override,
         ),
     ):
-        fs_mock.return_value = test_fs
         schema = f"testschema_fs_{get_random_string(5)}"
         result = invoke_ingest_command(
             "az://bucket?account_name=acct&account_key=a2V5%2Bx%2F%3D%3D",
@@ -962,7 +970,5 @@ def test_azure_source_encoded_credentials(tmp_path):
             f"{schema}.out",
         )
         assert result.exit_code == 0
-        # adlfs was constructed with the DECODED key, not the raw percent-encoding
-        _, kwargs = fs_mock.call_args
-        assert kwargs.get("account_name") == "acct"
-        assert kwargs.get("account_key") == "a2V5+x/=="
+        # Arrow is handed the DECODED key, not the raw percent-encoding
+        assert captured_kwargs == [{"account_name": "acct", "account_key": "a2V5+x/=="}]

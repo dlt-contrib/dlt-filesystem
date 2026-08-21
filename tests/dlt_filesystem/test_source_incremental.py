@@ -155,7 +155,7 @@ def test_filesystem_sources_thread_incremental_identity_without_auth_material(tm
 
     with (
         patch("dlt_filesystem.source.core.resource_for_reader") as build,
-        patch("adlfs.AzureBlobFileSystem"),
+        patch("pyarrow.fs.AzureFileSystem"),
     ):
         AzureSource().dlt_source(
             "az://?account_name=account&account_key=SECRET",
@@ -262,7 +262,7 @@ def test_auth_rotation_does_not_change_incremental_resource_names(mocker):
 
     with (
         patch("dlt_filesystem.source.core.resource_for_reader") as first_build,
-        patch("adlfs.AzureBlobFileSystem"),
+        patch("pyarrow.fs.AzureFileSystem"),
     ):
         AzureSource().dlt_source(
             "az://?account_name=account&account_key=OLD_SECRET",
@@ -270,7 +270,7 @@ def test_auth_rotation_does_not_change_incremental_resource_names(mocker):
         )
     with (
         patch("dlt_filesystem.source.core.resource_for_reader") as second_build,
-        patch("adlfs.AzureBlobFileSystem"),
+        patch("pyarrow.fs.AzureFileSystem"),
     ):
         AzureSource().dlt_source(
             "az://?account_name=account&account_key=NEW_SECRET",
