@@ -105,6 +105,7 @@ def filesystem(
     files_per_page: int = 100,
     extract_content: bool = True,
     require_file_match: bool = False,
+    filesystem_incremental: bool = False,
 ) -> Iterator[List[FileItem]]:
     """This resource lists files in `bucket_url` using `file_glob` pattern. The files are yielded as FileItem which also
     provide methods to open and read file data. It should be combined with transformers that further process (ie. load files)
@@ -118,6 +119,8 @@ def filesystem(
             false it will return a fsspec file, defaults to False.
         require_file_match (bool, optional): Raise when the concrete source selection
             matches no file. Defaults to False for direct uses of this resource.
+        filesystem_incremental (bool, optional): Resolve trustworthy modification
+            times when the listing itself does not carry one. Defaults to False.
 
     Returns:
         Iterator[List[FileItem]]: The list of files.
@@ -131,7 +134,12 @@ def filesystem(
 
     matched_files = 0
     files_chunk: List[FileItem] = []
-    for file_model in glob_files(fs_client, bucket_url, file_glob or "**"):
+    for file_model in glob_files(
+        fs_client,
+        bucket_url,
+        file_glob or "**",
+        filesystem_incremental=filesystem_incremental,
+    ):
         matched_files += 1
         file_dict = FileItemDict(file_model, fs_client)
         if extract_content:

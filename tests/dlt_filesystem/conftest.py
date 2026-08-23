@@ -18,6 +18,7 @@ from tests.dlt_filesystem.http_server import (
     HttpFixture,
     ServerMode,
     build_document_root,
+    build_index_document_root,
     self_signed_certificate,
     serve,
 )
@@ -31,6 +32,11 @@ def http_document_root(tmp_path_factory) -> Path:
 @pytest.fixture(scope="session")
 def http_certificate(tmp_path_factory) -> tuple[Path, Path]:
     return self_signed_certificate(tmp_path_factory.mktemp("http-tls"))
+
+
+@pytest.fixture(scope="session")
+def http_index_document_root(tmp_path_factory) -> Path:
+    return build_index_document_root(tmp_path_factory.mktemp("http-index-root"))
 
 
 @pytest.fixture(scope="session")
@@ -48,6 +54,24 @@ def _no_range_server(http_document_root) -> Iterator[HttpFixture]:
 @pytest.fixture(scope="session")
 def _chunked_server(http_document_root) -> Iterator[HttpFixture]:
     with serve(http_document_root, ServerMode.CHUNKED) as fixture:
+        yield fixture
+
+
+@pytest.fixture(scope="session")
+def _index_server(http_index_document_root) -> Iterator[HttpFixture]:
+    with serve(http_index_document_root, ServerMode.INDEX) as fixture:
+        yield fixture
+
+
+@pytest.fixture(scope="session")
+def _no_last_modified_server(http_document_root) -> Iterator[HttpFixture]:
+    with serve(http_document_root, ServerMode.NO_LAST_MODIFIED) as fixture:
+        yield fixture
+
+
+@pytest.fixture(scope="session")
+def _malformed_last_modified_server(http_document_root) -> Iterator[HttpFixture]:
+    with serve(http_document_root, ServerMode.MALFORMED_LAST_MODIFIED) as fixture:
         yield fixture
 
 
@@ -88,6 +112,24 @@ def no_range_server(_no_range_server) -> HttpFixture:
 def chunked_server(_chunked_server) -> HttpFixture:
     """A server that answers chunked, so no `Content-Length` is ever reported."""
     return _fresh(_chunked_server)
+
+
+@pytest.fixture
+def index_server(_index_server) -> HttpFixture:
+    """A range-serving server whose directories render browsable HTML indexes."""
+    return _fresh(_index_server)
+
+
+@pytest.fixture
+def no_last_modified_server(_no_last_modified_server) -> HttpFixture:
+    """A range-serving server that never sends `Last-Modified`."""
+    return _fresh(_no_last_modified_server)
+
+
+@pytest.fixture
+def malformed_last_modified_server(_malformed_last_modified_server) -> HttpFixture:
+    """A range-serving server with an invalid `Last-Modified` value."""
+    return _fresh(_malformed_last_modified_server)
 
 
 @pytest.fixture

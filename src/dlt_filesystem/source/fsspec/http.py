@@ -23,10 +23,12 @@ requested, and that object is built by `HTTPFileSystem`, not here.
 """
 
 import io
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional, Tuple, Type
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
+from fsspec.asyn import sync
 from fsspec.implementations.http import HTTPFileSystem
 
 from dlt_filesystem.error import MissingConnectorOption
@@ -57,6 +59,17 @@ class HttpReadError(OSError):
     def __init__(self, status: int, url: str) -> None:
         super().__init__(f"HTTP {status} reading {url}")
         self.status = status
+
+
+class HttpModificationTimeError(ValueError):
+    """An HTTP response cannot provide a trustworthy modification time."""
+
+    def __init__(self, url: str, value: Optional[str] = None) -> None:
+        if value is None:
+            detail = "does not provide the required 'Last-Modified' header"
+        else:
+            detail = f"provides a malformed 'Last-Modified' header: {value!r}"
+        super().__init__(f"HTTP response for {url} {detail}")
 
 
 class HttpFileSystem(HTTPFileSystem):
@@ -167,6 +180,48 @@ class HttpFileSystem(HTTPFileSystem):
         except aiohttp.ClientResponseError as error:
             raise HttpReadError(error.status, path) from None
 
+    def modified(self, path: str) -> Any:
+        """Return the server's `Last-Modified` value as a UTC datetime."""
+        return sync(self.loop, self._modified, path)
+
+    async def _modified(self, path: str) -> Any:
+        """Read one modification time with exactly one metadata request."""
+        import aiohttp
+
+        request_kwargs = self.kwargs.copy()
+        allow_redirects = request_kwargs.pop("allow_redirects", True)
+        headers = dict(request_kwargs.get("headers") or {})
+        headers["Accept-Encoding"] = "identity"
+        request_kwargs["headers"] = headers
+
+        session = await self.set_session()
+        try:
+            response = await session.head(
+                self.encode_url(path),
+                allow_redirects=allow_redirects,
+                **request_kwargs,
+            )
+        except aiohttp.ClientError:
+            raise OSError(f"HTTP metadata request failed for {path}") from None
+
+        async with response:
+            if response.status >= 400:
+                raise HttpReadError(response.status, path)
+            value = response.headers.get("Last-Modified")
+
+        if value is None:
+            raise HttpModificationTimeError(path)
+        try:
+            modified = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            raise HttpModificationTimeError(path, value) from None
+        if modified.tzinfo is None:
+            raise HttpModificationTimeError(path, value)
+
+        from dlt.common.time import ensure_pendulum_datetime_utc
+
+        return ensure_pendulum_datetime_utc(modified)
+
     def _range_size(self, path: str) -> Optional[int]:
         """Return the resource's length if it can be read in ranges, else `None`.
 
@@ -232,14 +287,8 @@ class HttpFilesystemSource(FilesystemSource):
         return HttpFileSystem
 
     def supports_filesystem_incremental(self) -> bool:
-        """Return `False`: an HTTP response need not carry a modification time.
-
-        dlt's own per-scheme extractor substitutes *now* for a missing
-        `Last-Modified` header, so file selection by modification time would not
-        select anything -- it would reload every file on every run while reporting
-        that it had filtered. Refused until the transport can answer honestly.
-        """
-        return False
+        """Return whether HTTP can select files by their modification time."""
+        return True
 
     def dlt_source(self, uri: str, table: str, **kwargs):
         # `run_ingest` nulls `incremental_key` before calling any source that manages
@@ -250,14 +299,6 @@ class HttpFilesystemSource(FilesystemSource):
             raise ValueError(
                 "HTTP takes care of incrementality on its own, you should not provide incremental_key"
             )
-        if kwargs.get("filesystem_incremental"):
-            raise ValueError(
-                "HTTP does not support file selection by modification time: a "
-                "response need not carry a 'Last-Modified' header, and a missing "
-                "one reads as 'just now', so every file would be reloaded on "
-                "every run. Omit '--filesystem-incremental'."
-            )
-
         # A programmatic caller may name the format and the reader's chunk size
         # directly. Both are reader arguments rather than connection arguments, so
         # they are translated into the channels the family reads them from and

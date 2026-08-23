@@ -39,6 +39,7 @@ def test_range_server_reports_a_size(range_server: HttpFixture):
     assert status == 200
     assert headers["Content-Length"] == str(len(body))
     assert headers["Accept-Ranges"] == "bytes"
+    assert headers["Last-Modified"]
 
 
 def test_range_server_answers_a_range_with_partial_content(range_server: HttpFixture):
@@ -127,6 +128,7 @@ def test_chunked_server_reports_no_length(chunked_server: HttpFixture):
     with urllib.request.urlopen(head, timeout=30) as response:  # noqa: S310
         assert response.headers["Transfer-Encoding"] == "chunked"
         assert response.headers.get("Content-Length") is None
+        assert response.headers["Last-Modified"]
 
     status, headers, served = fetch(url)
 
@@ -151,6 +153,24 @@ def test_auth_server_refuses_a_request_without_credentials(auth_server: HttpFixt
 
     assert exception.value.code == 401
     assert exception.value.headers["WWW-Authenticate"].startswith("Basic ")
+
+
+def test_index_server_renders_relative_links(index_server: HttpFixture):
+    status, headers, served = fetch(f"{index_server.base_url}/")
+
+    assert status == 200
+    assert headers.get_content_type() == "text/html"
+    assert b'<a href="alpha.csv">alpha.csv</a>' in served
+    assert b'<a href="sub/">sub/</a>' in served
+
+
+def test_headerless_server_omits_last_modified(
+    no_last_modified_server: HttpFixture,
+):
+    status, headers, _ = fetch(no_last_modified_server.url(DOCUMENT))
+
+    assert status == 200
+    assert headers.get("Last-Modified") is None
 
 
 def test_auth_server_accepts_the_decoded_credentials(auth_server: HttpFixture):

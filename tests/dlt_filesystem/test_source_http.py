@@ -5,10 +5,13 @@ rather than a named class, so the matrix reads the same before and after the
 connector behind that scheme is replaced. What it pins is what reaches the wire
 and what lands in the destination, not one implementation of it.
 
-Three server behaviours are covered because they are three different code paths,
-and each is a way the previous connector's whole-body download quietly worked:
-a server that honours `Range`, one that ignores it, and one that answers chunked
-so no size is reported at all. See `http_server.py`.
+Six server behaviours are covered because discovery and reading take different
+code paths through them: a server that honours `Range`, one that ignores it, one
+that answers chunked so no size is reported, one that renders an HTML directory
+index, one that omits `Last-Modified`, and one that sends a malformed value. An
+HTML index entry carries only its name and type, with neither a size nor a
+modification time, even though a request for the concrete file returns both. See
+`http_server.py`.
 
 Every server is a local `http.server` thread: no Docker, no credentials, no
 network.
@@ -16,6 +19,7 @@ network.
 
 import ssl
 from contextlib import contextmanager
+from datetime import timedelta
 from unittest.mock import patch
 
 import duckdb
@@ -26,15 +30,17 @@ from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.fsspec.http import (
     HttpFileSystem,
     HttpFilesystemSource,
+    HttpModificationTimeError,
     HttpReadError,
 )
 from dlt_filesystem.source.lister import glob_files
 from dlt_filesystem.source.model import FilesystemReference
-from omniload import ValidationError, run_ingest
+from omniload import run_ingest
 from tests.dlt_filesystem.http_server import (
     AUTH_PASSWORD_ENCODED,
     AUTH_USERNAME,
     EVENT_COUNT,
+    HTTP_LAST_MODIFIED,
     PEOPLE,
     HttpFixture,
     closed_port,
@@ -350,6 +356,139 @@ def test_https_loads_over_tls(tls_server, http_certificate):
     assert tls_server.requests, "nothing reached the TLS server"
 
 
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        pytest.param("*.csv", ["alpha.csv", "bravo.csv"], id="flat"),
+        pytest.param(
+            "**/*.csv",
+            ["alpha.csv", "bravo.csv", "sub/charlie.csv", "sub/deep/delta.csv"],
+            id="recursive",
+        ),
+        pytest.param("sub/*.csv", ["sub/charlie.csv"], id="scoped"),
+    ],
+)
+def test_html_directory_index_globs_exact_files(index_server, pattern, expected):
+    """Wildcards follow the links exposed by a browsable directory index."""
+    reference = build_reference(index_server.url(pattern))
+
+    items = list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
+
+    assert [item["relative_path"] for item in items] == expected
+    assert [item["file_url"] for item in items] == [
+        index_server.url(path) for path in expected
+    ]
+    assert all("size_in_bytes" not in item for item in items)
+
+
+def test_globbed_and_concrete_modification_dates_match(index_server):
+    """An index entry is enriched to the same header a concrete lookup sees."""
+    globbed_reference = build_reference(index_server.url("*.csv"))
+    globbed = list(
+        glob_files(
+            globbed_reference.fs,
+            globbed_reference.bucket_url,
+            globbed_reference.file_glob,
+            filesystem_incremental=True,
+        )
+    )
+
+    index_server.clear()
+    concrete_reference = build_reference(index_server.url("alpha.csv"))
+    concrete = list(
+        glob_files(
+            concrete_reference.fs,
+            concrete_reference.bucket_url,
+            concrete_reference.file_glob,
+            filesystem_incremental=True,
+        )
+    )
+
+    expected = HTTP_LAST_MODIFIED.replace(microsecond=0)
+    assert globbed[0]["modification_date"] == expected
+    assert concrete[0]["modification_date"] == expected
+
+
+def test_plain_index_glob_issues_no_per_file_metadata_requests(index_server):
+    reference = build_reference(index_server.url("*.csv"))
+
+    list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
+
+    file_heads = [
+        request
+        for request in index_server.requests
+        if request.method == "HEAD" and request.path.endswith(".csv")
+    ]
+    assert file_heads == []
+
+
+def test_incremental_index_glob_issues_one_head_per_selected_file(index_server):
+    reference = build_reference(index_server.url("*.csv"))
+
+    items = list(
+        glob_files(
+            reference.fs,
+            reference.bucket_url,
+            reference.file_glob,
+            filesystem_incremental=True,
+        )
+    )
+
+    assert len(items) == 2
+    file_heads = [
+        request
+        for request in index_server.requests
+        if request.method == "HEAD" and request.path.endswith(".csv")
+    ]
+    assert len(file_heads) == 2
+
+
+def test_concrete_incremental_selection_issues_no_second_head(index_server):
+    reference = build_reference(index_server.url("alpha.csv"))
+
+    items = list(
+        glob_files(
+            reference.fs,
+            reference.bucket_url,
+            reference.file_glob,
+            filesystem_incremental=True,
+        )
+    )
+
+    assert len(items) == 1
+    assert [request.method for request in index_server.requests].count("HEAD") == 1
+
+
+def test_modified_reattaches_query_but_keeps_it_out_of_missing_header_error(
+    no_last_modified_server,
+):
+    filesystem = HttpFileSystem(url_query=SIGNED_QUERY)
+    url = no_last_modified_server.url("people.csv")
+
+    with pytest.raises(HttpModificationTimeError) as exception:
+        filesystem.modified(url)
+
+    message = str(exception.value)
+    assert url in message
+    assert "Last-Modified" in message
+    assert "X-Amz-Signature" not in message
+    assert [request.method for request in no_last_modified_server.requests] == ["HEAD"]
+    assert no_last_modified_server.queries() == [SIGNED_QUERY_ON_THE_WIRE]
+
+
+def test_modified_rejects_a_malformed_header(malformed_last_modified_server):
+    filesystem = HttpFileSystem()
+    url = malformed_last_modified_server.url("people.csv")
+
+    with pytest.raises(HttpModificationTimeError) as exception:
+        filesystem.modified(url)
+
+    message = str(exception.value)
+    assert url in message
+    assert "malformed 'Last-Modified'" in message
+    assert "not-an-http-date" in message
+
+
 # -- guardrails: what must never happen to a query, a credential, or an identity -
 
 
@@ -506,29 +645,111 @@ def test_a_failed_whole_body_read_does_not_leak_the_query(no_range_server):
     ), "the signature never reached the server, so the test proves nothing"
 
 
-def test_filesystem_incremental_is_refused_by_a_run(range_server, tmp_path):
-    with pytest.raises(ValidationError, match="does not support the"):
-        load(range_server, "people.csv", tmp_path, filesystem_incremental=True)
+def test_filesystem_incremental_is_supported_by_run_and_dry_run(range_server, tmp_path):
+    destination = load(
+        range_server, "people.csv", tmp_path, filesystem_incremental=True
+    )
+
+    assert rows(destination) == EXPECTED
+    assert HttpFilesystemSource().supports_filesystem_incremental() is True
+    load(
+        range_server,
+        "people.csv",
+        tmp_path,
+        filesystem_incremental=True,
+        dry_run=True,
+    )
 
 
-def test_filesystem_incremental_is_refused_by_a_dry_run(range_server, tmp_path):
-    """The dry run validates before a source is built, so it needs the same answer."""
-    with pytest.raises(ValidationError, match="does not support the"):
+def test_filesystem_incremental_is_supported_by_the_source_itself(range_server):
+    source = HttpFilesystemSource().dlt_source(
+        range_server.url("people.csv"), "", filesystem_incremental=True
+    )
+
+    assert records(source) == list(PEOPLE)
+
+
+def test_missing_last_modified_refuses_incremental_but_not_plain_load(
+    no_last_modified_server, tmp_path
+):
+    url = no_last_modified_server.url("people.csv")
+
+    with pytest.raises(Exception) as exception:  # noqa: PT011 - dlt wraps extraction
         load(
-            range_server,
+            no_last_modified_server,
             "people.csv",
             tmp_path,
             filesystem_incremental=True,
-            dry_run=True,
         )
 
+    message = str(exception.value)
+    assert url in message
+    assert "Last-Modified" in message
 
-def test_filesystem_incremental_is_refused_by_the_source_itself(range_server):
-    """A caller reaching past the CLI gets the reason, not silent reload-everything."""
-    with pytest.raises(ValueError, match="Last-Modified"):
-        HttpFilesystemSource().dlt_source(
-            range_server.url("people.csv"), "", filesystem_incremental=True
+    no_last_modified_server.clear()
+    destination = load(no_last_modified_server, "people.csv", tmp_path)
+    assert rows(destination) == EXPECTED
+
+
+def test_incremental_html_index_loads_unchanged_files_once_then_one_modified_file(
+    index_server, tmp_path
+):
+    destination = tmp_path / "incremental-index.duckdb"
+    pipelines_dir = tmp_path / "state"
+
+    def run(query: str = "") -> None:
+        run_ingest(
+            source_uri=index_server.url("**/*.csv", query=query),
+            dest_uri=f"duckdb:///{destination}",
+            source_table="",
+            dest_table="out.index_values",
+            pipelines_dir=str(pipelines_dir),
+            filesystem_incremental=True,
+            progress="log",
         )
+
+    try:
+        run()
+        run()
+        assert rows(
+            destination,
+            "select value, count(*) from out.index_values group by value order by value",
+        ) == [("alpha", 1), ("bravo", 1), ("charlie", 1), ("delta", 1)]
+
+        index_server.set_modified(
+            "alpha.csv", HTTP_LAST_MODIFIED + timedelta(minutes=1)
+        )
+        run()
+
+        assert rows(
+            destination,
+            "select value, count(*) from out.index_values group by value order by value",
+        ) == [("alpha", 2), ("bravo", 1), ("charlie", 1), ("delta", 1)]
+    finally:
+        index_server.set_modified("alpha.csv", HTTP_LAST_MODIFIED)
+
+
+def test_incremental_cursor_identity_survives_signed_query_rotation(
+    index_server, tmp_path
+):
+    destination = tmp_path / "signed-incremental.duckdb"
+    pipelines_dir = tmp_path / "signed-state"
+
+    for signature in ("one", "two"):
+        run_ingest(
+            source_uri=index_server.url("*.csv", query=f"X-Amz-Signature={signature}"),
+            dest_uri=f"duckdb:///{destination}",
+            source_table="",
+            dest_table="out.signed_values",
+            pipelines_dir=str(pipelines_dir),
+            filesystem_incremental=True,
+            progress="log",
+        )
+
+    assert rows(
+        destination,
+        "select value, count(*) from out.signed_values group by value order by value",
+    ) == [("alpha", 1), ("bravo", 1)]
 
 
 def test_incremental_key_is_refused(range_server):

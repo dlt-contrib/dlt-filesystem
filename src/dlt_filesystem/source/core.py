@@ -34,6 +34,7 @@ def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResourc
         file_glob=ref.file_glob,
         extract_content=False,
         require_file_match=ref.require_file_match,
+        filesystem_incremental=ref.filesystem_incremental,
     )
     if ref.filesystem_incremental:
         filesystem_resource = filesystem_resource.with_name(

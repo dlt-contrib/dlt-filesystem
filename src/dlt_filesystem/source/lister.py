@@ -17,8 +17,11 @@ coupling break here:
   raises ``KeyError`` on the key, which is what any ``pyarrow.fs``-backed
   client does (its entries carry ``mtime`` whatever the scheme).
 
-Resolving from the listing keeps every scheme dlt does know byte-identical,
-because its own table is consulted first.
+Resolving from the listing keeps every non-HTTP scheme dlt knows byte-identical,
+because its own table is consulted first. HTTP is the exception: a listing entry
+without `Last-Modified` is enriched through the filesystem client's `modified()`
+method when file-level incremental selection is requested, instead of accepting
+dlt's fallback to the current time.
 """
 
 import glob
@@ -26,6 +29,7 @@ import pathlib
 import posixpath
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any, Callable, Iterator, Mapping, Tuple
 from urllib.parse import urlparse
 
@@ -103,6 +107,14 @@ def _from_mlsd_timestamp(value: Any) -> Any:
     return ensure_pendulum_datetime_utc(stamp.replace(tzinfo=timezone.utc))
 
 
+def _from_http_timestamp(value: Any) -> Any:
+    """Read an RFC 7231 HTTP date and require its timezone."""
+    stamp = parsedate_to_datetime(str(value))
+    if stamp.tzinfo is None:
+        raise ValueError("HTTP date has no timezone")
+    return ensure_pendulum_datetime_utc(stamp)
+
+
 # The key each backend's listing carries a file's last-modified time under,
 # paired with how that backend encodes it. Every entry is taken from the
 # backend's own `modified()` implementation, which reads the same key.
@@ -121,17 +133,42 @@ MODIFICATION_DATE_KEYS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
 )
 
 
-def resolve_modification_date(scheme: str, file_info: Mapping[str, Any]) -> Any:
+def resolve_modification_date(
+    scheme: str,
+    file_info: Mapping[str, Any],
+    fs_client: AbstractFileSystem | None = None,
+) -> Any:
     """Return a file's modification date from one entry of a filesystem listing.
 
-    Prefers dlt's own per-scheme extractor so known schemes keep their exact
-    behaviour, then reads the key the backend emits and decodes it the way that
-    backend encodes it.
+    Prefers dlt's own per-scheme extractor so known non-HTTP schemes keep their
+    exact behaviour, then reads the key the backend emits and decodes it the way
+    that backend encodes it. HTTP first trusts a header already present in the
+    listing, then asks `fs_client.modified()` when a caller supplied the client.
 
     Raises:
         ValueError: when the listing carries no usable modification date, naming
             the scheme, the keys present, and why any candidate was rejected.
     """
+    if scheme in {"http", "https"}:
+        if "Last-Modified" in file_info:
+            value = file_info["Last-Modified"]
+            try:
+                return _from_http_timestamp(value)
+            except (ValueError, TypeError, OverflowError):
+                url = file_info.get("name", "the selected file")
+                raise ValueError(
+                    f"HTTP response for {url} provides a malformed "
+                    f"'Last-Modified' header: {value!r}"
+                ) from None
+        if fs_client is not None:
+            path = file_info.get("name")
+            if path is None:
+                raise ValueError(
+                    "HTTP filesystem listing carries no file name for its "
+                    "modification-time lookup"
+                )
+            return fs_client.modified(str(path))
+
     extractor = MTIME_DISPATCH.get(scheme)
     if extractor is not None:
         try:
@@ -176,7 +213,10 @@ def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
 
 
 def glob_files(
-    fs_client: AbstractFileSystem, bucket_url: str, file_glob: str = "**"
+    fs_client: AbstractFileSystem,
+    bucket_url: str,
+    file_glob: str = "**",
+    filesystem_incremental: bool = False,
 ) -> Iterator[FileItem]:
     """Get the files from the filesystem client.
 
@@ -184,6 +224,8 @@ def glob_files(
         fs_client (AbstractFileSystem): The filesystem client.
         bucket_url (str): The url to the bucket.
         file_glob (str): A glob for the filename filter.
+        filesystem_incremental (bool): Enrich listing-poor transports with a
+            trustworthy modification time for incremental file selection.
 
     Returns:
         Iterable[FileItem]: The list of files.
@@ -248,7 +290,9 @@ def glob_files(
             relative_path=rel_path,
             file_url=file_url,
             mime_type=mime_type,
-            modification_date=resolve_modification_date(scheme, md),
+            modification_date=resolve_modification_date(
+                scheme, md, fs_client if filesystem_incremental else None
+            ),
         )
         if size is not None:
             file_item["size_in_bytes"] = int(size)

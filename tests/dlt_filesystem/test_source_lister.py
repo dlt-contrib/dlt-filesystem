@@ -25,6 +25,10 @@ class StubFilesystem(AbstractFileSystem):
     def glob(self, path, maxdepth=None, **kwargs) -> dict:
         return {"bucket/data/report.csv": self.file_info}
 
+    def modified(self, path):
+        self.modified_path = path
+        return MODIFIED
+
 
 def stub_filesystem(protocol: str, file_info: dict) -> StubFilesystem:
     """Return a stub client that reports `protocol` as its fsspec protocol."""
@@ -78,6 +82,33 @@ def test_scheme_dlt_does_not_know_resolves_from_the_listing(scheme, key, raw):
 def test_known_scheme_with_foreign_key_falls_back():
     """A pyarrow.fs client addressed as `s3://` reports `mtime`, not `LastModified`."""
     assert resolve_modification_date("s3", listing(mtime=MODIFIED)) == MODIFIED
+
+
+def test_http_header_wins_before_dlts_synthesized_fallback(monkeypatch):
+    """A concrete HTTP file keeps its header without a second metadata request."""
+    fs = stub_filesystem("http", listing())
+    monkeypatch.setitem(MTIME_DISPATCH, "http", lambda _: "dlt-now")
+
+    resolved = resolve_modification_date(
+        "http",
+        listing(**{"Last-Modified": "Thu, 20 Aug 2026 22:39:23 GMT"}),
+        fs,
+    )
+
+    assert resolved == dt.datetime(2026, 8, 20, 22, 39, 23, tzinfo=dt.timezone.utc)
+    assert not hasattr(fs, "modified_path")
+
+
+def test_http_missing_listing_header_uses_filesystem_not_dlt(monkeypatch):
+    """An index entry is enriched instead of receiving dlt's current time."""
+    fs = stub_filesystem("http", listing())
+    monkeypatch.setitem(MTIME_DISPATCH, "http", lambda _: "dlt-now")
+    info = listing(name="http://example.test/report.csv")
+
+    resolved = resolve_modification_date("http", info, fs)
+
+    assert resolved == MODIFIED
+    assert fs.modified_path == "http://example.test/report.csv"
 
 
 def test_access_time_is_not_read_as_a_modification_date():

@@ -144,7 +144,7 @@ def fs_test_cases(
     with test_fs.open("/bin/data.bin", "w") as f:
         f.write("BINARY")
 
-    def glob_files_override(fs_client, _, file_glob):
+    def glob_files_override(fs_client, _, file_glob, **_kwargs):
         return glob_files(fs_client, "memory://", file_glob)
 
     def assert_rows(dest_uri, dest_table, n):
@@ -942,7 +942,7 @@ def test_azure_source_encoded_credentials(tmp_path):
     with test_fs.open("/data.csv", "w") as f:
         f.write("name,country\nAda,UK\nBob,US\n")
 
-    def glob_files_override(fs_client, _, file_glob):
+    def glob_files_override(fs_client, _, file_glob, **_kwargs):
         return glob_files(fs_client, "memory://", file_glob)
 
     captured_kwargs = []

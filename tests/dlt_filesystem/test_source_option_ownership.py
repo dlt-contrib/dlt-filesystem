@@ -85,10 +85,6 @@ class Case:
     table: str = ""
     #: Connection arguments this URI carries, which must survive the split.
     expect_kwargs: tuple[str, ...] = field(default_factory=tuple)
-    #: Whether this scheme accepts file selection by modification time. A
-    #: transport that cannot report one declines the option outright, so the
-    #: matrix must not drive it with the flag set.
-    filesystem_incremental: bool = True
 
 
 #: One case per filesystem-family scheme in `omniload.core.registry`.
@@ -141,7 +137,6 @@ CASES = [
         "http",
         "http://public.example.org/path/to/data.parquet?X-Amz-Signature=abc%2Fdef",
         expect_kwargs=("url_query", "client_kwargs"),
-        filesystem_incremental=False,
     ),
     Case(
         # WebDAV takes its URL positionally and folds any credentials into `auth`.
@@ -153,7 +148,6 @@ CASES = [
         "https",
         "https://public.example.org/path/to/data.parquet",
         expect_kwargs=("url_query", "client_kwargs"),
-        filesystem_incremental=False,
     ),
     Case(
         "https+webdav",
@@ -289,11 +283,7 @@ def _drive(case: Case, tmp_path, **overrides) -> tuple[FilesystemReference, list
     # JSON object in its query string and its braces are not format fields.
     uri = case.uri.replace("__TMP__", tmp_path.as_posix())
     source = SourceDestinationFactory(uri, "file://").get_source()
-    options = {
-        **RUN_OPTIONS,
-        "filesystem_incremental": case.filesystem_incremental,
-        **overrides,
-    }
+    options = {**RUN_OPTIONS, **overrides}
 
     with (
         mock.patch("dlt_filesystem.source.core.resource_for_reader") as build,
@@ -338,7 +328,7 @@ def test_resource_options_reach_the_reference(case, tmp_path):
     _skip_unsupported(case.scheme)
     reference, _ = _drive(case, tmp_path)
 
-    assert reference.filesystem_incremental is case.filesystem_incremental
+    assert reference.filesystem_incremental is True
     assert reference.column_types == RUN_OPTIONS["column_types"]
 
 
@@ -346,8 +336,6 @@ def test_resource_options_reach_the_reference(case, tmp_path):
 def test_lister_is_namespaced_only_when_incremental_is_requested(case, tmp_path):
     """The no-op fingerprint: a plain `filesystem` lister means the flag was dropped."""
     _skip_unsupported(case.scheme)
-    if not case.filesystem_incremental:
-        pytest.skip(f"{case.scheme}:// declines selection by modification time")
 
     enabled, _ = _drive(case, tmp_path, filesystem_incremental=True)
     disabled, _ = _drive(case, tmp_path, filesystem_incremental=False)
@@ -356,32 +344,6 @@ def test_lister_is_namespaced_only_when_incremental_is_requested(case, tmp_path)
     assert disabled.filesystem_incremental is False
     assert enabled.incremental_resource_name.startswith("filesystem_")
     assert enabled.incremental_resource_name != "filesystem"
-
-
-DECLINING_CASES = [case for case in CASES if not case.filesystem_incremental]
-
-
-@pytest.mark.parametrize("case", DECLINING_CASES, ids=lambda case: case.scheme)
-def test_a_declining_scheme_refuses_selection_by_modification_time(case, tmp_path):
-    """Declining is a capability *and* a refusal, because both paths are reachable.
-
-    `run_ingest` reads the capability before it builds a source, so that alone
-    covers the CLI and the dry run; a caller holding the source itself reaches
-    neither, and inheriting the family default there would silently reload every
-    file on every run.
-    """
-    uri = case.uri.replace("__TMP__", tmp_path.as_posix())
-    source = SourceDestinationFactory(uri, "file://").get_source()
-
-    # Read the way the pipeline reads it: an optional capability, defaulted.
-    capability = getattr(source, "supports_filesystem_incremental", lambda: True)
-    assert capability() is False
-    with pytest.raises(ValueError, match="modification time"):
-        source.dlt_source(
-            uri=uri,
-            table=case.table,
-            **{**RUN_OPTIONS, "filesystem_incremental": True},
-        )
 
 
 def test_uri_column_types_remains_the_fallback(tmp_path):

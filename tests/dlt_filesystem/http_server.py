@@ -5,8 +5,8 @@ directory and served from a background thread on an ephemeral port, so the whole
 HTTP matrix runs in the unit lane. This is a different pattern from `gcs.py` in
 the same directory, which starts a testcontainer.
 
-Three server behaviours are modelled, because the reader stack takes a different
-code path through each:
+Six server behaviours are modelled, because discovery and the reader stack take
+different code paths through each:
 
 - `ServerMode.RANGE` answers a `Range` request with `206 Partial Content` plus a
   `Content-Range` header, and reports `Content-Length` on `HEAD`. This is the CDN
@@ -16,6 +16,12 @@ code path through each:
   request answered this way.
 - `ServerMode.CHUNKED` answers with `Transfer-Encoding: chunked` and no
   `Content-Length`, so the client reports no size at all.
+- `ServerMode.INDEX` renders a standard relative-link HTML directory index and
+  serves its files with byte ranges.
+- `ServerMode.NO_LAST_MODIFIED` serves byte ranges but withholds the
+  `Last-Modified` header.
+- `ServerMode.MALFORMED_LAST_MODIFIED` serves byte ranges with an invalid
+  `Last-Modified` value.
 
 Every request is recorded with its **raw** query string and `Range` header, so a
 test can assert on what reached the wire rather than only on the rows that came
@@ -27,16 +33,19 @@ import binascii
 import gzip
 import json
 import mimetypes
+import os
 import socket
 import ssl
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterator, List, Optional, Sequence, Tuple
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 #: The rows every text-shaped document in the root carries.
 PEOPLE: Tuple[dict, ...] = (
@@ -61,6 +70,10 @@ AUTH_PASSWORD_ENCODED = "p%40ss%2Fword"  # noqa: S105 - the same fixture credent
 #: Body bytes per chunk in `ServerMode.CHUNKED`, small enough to produce several.
 CHUNK_SIZE = 4096
 
+#: A fixed historical timestamp for every generated document. Keeping it away
+#: from the test clock proves that an incremental cursor did not receive `now()`.
+HTTP_LAST_MODIFIED = datetime(2026, 8, 20, 22, 39, 23, tzinfo=timezone.utc)
+
 #: Any request under this path is answered `403`, whatever the mode. Models the
 #: failure a signed URL actually has: a signature that expired or does not match.
 FORBIDDEN_PREFIX = "/forbidden/"
@@ -72,6 +85,9 @@ class ServerMode(str, Enum):
     RANGE = "range"
     NO_RANGE = "no_range"
     CHUNKED = "chunked"
+    INDEX = "index"
+    NO_LAST_MODIFIED = "no_last_modified"
+    MALFORMED_LAST_MODIFIED = "malformed_last_modified"
 
 
 @dataclass
@@ -131,6 +147,11 @@ class HttpFixture:
     def body(self, name: str) -> bytes:
         """Return the bytes the server would serve for a document."""
         return (self.document_root / name).read_bytes()
+
+    def set_modified(self, name: str, modified: datetime) -> None:
+        """Set one document's modification time for an incremental re-run."""
+        timestamp = modified.timestamp()
+        os.utime(self.document_root / name, (timestamp, timestamp))
 
     def clear(self) -> None:
         """Forget every recorded request, so one test does not read another's."""
@@ -263,21 +284,45 @@ class _Handler(BaseHTTPRequestHandler):
             self._respond(record, 403, b"<Error>AccessDenied</Error>", method=method)
             return
 
-        target = self._target(fixture.document_root, raw_path)
+        target = self._target(fixture.document_root, raw_path, fixture.mode)
         if target is None:
             self._respond(record, 404, b"file not found", method=method)
             return
 
+        if target.is_dir():
+            body = self._directory_index(target)
+            self._respond(
+                record,
+                200,
+                body,
+                method=method,
+                extra=(("Content-Type", "text/html; charset=utf-8"),),
+            )
+            return
+
         body = target.read_bytes()
         content_type = _content_type(target.name)
+        modification_header = self._modification_header(fixture.mode, target)
 
         if fixture.mode is ServerMode.CHUNKED:
-            self._respond_chunked(record, body, content_type, method=method)
+            self._respond_chunked(
+                record,
+                body,
+                content_type,
+                method=method,
+                extra=modification_header,
+            )
             return
 
         selection = (
             _requested_range(record.range_header, len(body))
-            if fixture.mode is ServerMode.RANGE
+            if fixture.mode
+            in {
+                ServerMode.RANGE,
+                ServerMode.INDEX,
+                ServerMode.NO_LAST_MODIFIED,
+                ServerMode.MALFORMED_LAST_MODIFIED,
+            }
             else None
         )
         if selection is not None:
@@ -302,13 +347,20 @@ class _Handler(BaseHTTPRequestHandler):
                     ("Content-Type", content_type),
                     ("Accept-Ranges", "bytes"),
                     ("Content-Range", f"bytes {start}-{end}/{len(body)}"),
+                    *modification_header,
                 ),
             )
             return
 
         extra = [("Content-Type", content_type)]
-        if fixture.mode is ServerMode.RANGE:
+        if fixture.mode in {
+            ServerMode.RANGE,
+            ServerMode.INDEX,
+            ServerMode.NO_LAST_MODIFIED,
+            ServerMode.MALFORMED_LAST_MODIFIED,
+        }:
             extra.append(("Accept-Ranges", "bytes"))
+        extra.extend(modification_header)
         self._respond(record, 200, body, method=method, extra=tuple(extra))
 
     def _authorized(self, auth: Optional[Tuple[str, str]]) -> bool:
@@ -325,17 +377,44 @@ class _Handler(BaseHTTPRequestHandler):
         username, _, password = decoded.partition(":")
         return (username, password) == auth
 
-    def _target(self, document_root: Path, raw_path: str) -> Optional[Path]:
+    def _target(
+        self, document_root: Path, raw_path: str, mode: ServerMode
+    ) -> Optional[Path]:
         """Resolve a request path inside the document root, or `None`."""
         relative = unquote(raw_path).lstrip("/")
-        if not relative:
-            return None
         candidate = (document_root / relative).resolve()
-        if not candidate.is_file():
+        root = document_root.resolve()
+        if not candidate.exists():
             return None
-        if document_root.resolve() not in candidate.parents:
+        if candidate != root and root not in candidate.parents:
+            return None
+        if candidate.is_dir() and mode is not ServerMode.INDEX:
+            return None
+        if not candidate.is_file() and not candidate.is_dir():
             return None
         return candidate
+
+    @staticmethod
+    def _directory_index(directory: Path) -> bytes:
+        """Render the immediate children as a conventional HTML index."""
+        links = []
+        for child in sorted(directory.iterdir(), key=lambda path: path.name):
+            suffix = "/" if child.is_dir() else ""
+            label = f"{child.name}{suffix}"
+            links.append(f'<a href="{quote(child.name)}{suffix}">{label}</a>')
+        return ("<html><body>" + "\n".join(links) + "</body></html>").encode()
+
+    @staticmethod
+    def _modification_header(
+        mode: ServerMode, target: Path
+    ) -> Tuple[Tuple[str, str], ...]:
+        """Return the file's HTTP modification header unless this mode omits it."""
+        if mode is ServerMode.NO_LAST_MODIFIED:
+            return ()
+        if mode is ServerMode.MALFORMED_LAST_MODIFIED:
+            return (("Last-Modified", "not-an-http-date"),)
+        modified = datetime.fromtimestamp(target.stat().st_mtime, tz=timezone.utc)
+        return (("Last-Modified", format_datetime(modified, usegmt=True)),)
 
     def _respond(
         self,
@@ -353,11 +432,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         record.status = status
         if method == "GET" and body:
-            self.wfile.write(body)
             record.bytes_served += len(body)
+            self.wfile.write(body)
 
     def _respond_chunked(
-        self, record: Request, body: bytes, content_type: str, *, method: str
+        self,
+        record: Request,
+        body: bytes,
+        content_type: str,
+        *,
+        method: str,
+        extra: Sequence[Tuple[str, str]] = (),
     ) -> None:
         """Answer without a `Content-Length`, so the client learns no size.
 
@@ -367,6 +452,8 @@ class _Handler(BaseHTTPRequestHandler):
         """
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        for key, value in extra:
+            self.send_header(key, value)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         record.status = 200
@@ -374,8 +461,8 @@ class _Handler(BaseHTTPRequestHandler):
             return
         for start in range(0, len(body), CHUNK_SIZE):
             piece = body[start : start + CHUNK_SIZE]
-            self.wfile.write(b"%x\r\n" % len(piece) + piece + b"\r\n")
             record.bytes_served += len(piece)
+            self.wfile.write(b"%x\r\n" % len(piece) + piece + b"\r\n")
         self.wfile.write(b"0\r\n\r\n")
 
 
@@ -521,7 +608,34 @@ def build_document_root(directory: Path) -> Path:
         )
     )
 
+    _set_tree_modified(root, HTTP_LAST_MODIFIED)
+
     return root
+
+
+def build_index_document_root(directory: Path) -> Path:
+    """Build the small nested tree used by HTML-index glob tests."""
+    root = directory / "index-documents"
+    deep = root / "sub" / "deep"
+    deep.mkdir(parents=True)
+
+    (root / "alpha.csv").write_text("value\nalpha\n")
+    (root / "bravo.csv").write_text("value\nbravo\n")
+    (root / "ignored.json").write_text('{"value": "ignored"}\n')
+    (root / "sub" / "charlie.csv").write_text("value\ncharlie\n")
+    (root / "sub" / "ignored.jsonl").write_text('{"value": "ignored"}\n')
+    (deep / "delta.csv").write_text("value\ndelta\n")
+
+    _set_tree_modified(root, HTTP_LAST_MODIFIED)
+    return root
+
+
+def _set_tree_modified(root: Path, modified: datetime) -> None:
+    """Give every generated path the same deterministic modification time."""
+    timestamp = modified.timestamp()
+    for path in sorted(root.rglob("*"), reverse=True):
+        os.utime(path, (timestamp, timestamp))
+    os.utime(root, (timestamp, timestamp))
 
 
 def _write_parquet(path: Path, records: Sequence[dict]) -> None:
