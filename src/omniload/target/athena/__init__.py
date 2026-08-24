@@ -3,8 +3,13 @@ from urllib.parse import parse_qs, quote, urlparse
 
 import dlt
 
+from omniload.core.tablename import three_level
+from omniload.target.model import GenericSqlDestination
 
-class AthenaDestination:
+
+class AthenaDestination(GenericSqlDestination):
+    table_capability = three_level("athena")
+
     def dlt_dest(self, uri: str, **kwargs):
         encoded_uri = quote(uri, safe=":/?&=")
         source_fields = urlparse(encoded_uri)
@@ -23,13 +28,8 @@ class AthenaDestination:
         if not dest_table:
             raise ValueError("A destination table is required to connect to Athena.")
 
-        dest_table_fields = dest_table.split(".")
-        if len(dest_table_fields) != 2:
-            raise ValueError(
-                f"Table name must be in the format <schema>.<table>, given: {dest_table}"
-            )
-
-        query_result_path = f"{bucket}/{dest_table_fields[0]}_staging/metadata"
+        parsed_table = self.parse_table(uri, dest_table)
+        query_result_path = f"{bucket}/{parsed_table.schema}_staging/metadata"
 
         access_key_id = source_params.get("access_key_id", [None])[0]
         secret_access_key = source_params.get("secret_access_key", [None])[0]
@@ -66,6 +66,10 @@ class AthenaDestination:
 
         from dlt.common.configuration.specs import AwsCredentials
 
+        catalog_params: dict[str, str] = {}
+        if parsed_table.catalog:
+            catalog_params["aws_data_catalog"] = parsed_table.catalog
+
         return dlt.destinations.athena(
             query_result_bucket=query_result_path,
             athena_work_group=source_params.get("workgroup", [None])[0],  # type: ignore
@@ -77,16 +81,13 @@ class AthenaDestination:
             ),
             destination_name=bucket,
             force_iceberg=True,
+            **catalog_params,
         )
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
-        table_fields = table.split(".")
-        if len(table_fields) != 2:
-            raise ValueError("Table name must be in the format <schema>.<table>")
         return {
             "table_format": "iceberg",
-            "dataset_name": table_fields[-2],
-            "table_name": table_fields[-1],
+            **super().dlt_run_params(uri, table, **kwargs),
         }
 
     def post_load(self):

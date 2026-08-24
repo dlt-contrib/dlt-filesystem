@@ -1,6 +1,5 @@
 import importlib
 import typing
-from dataclasses import dataclass
 from typing import Any, Iterator, Mapping, Protocol
 
 if typing.TYPE_CHECKING:
@@ -58,23 +57,6 @@ class DestinationProtocol(Protocol):
     def post_load(self) -> None:
         """Run destination follow-up work after a successful load."""
         pass
-
-
-@dataclass
-class TableDefinition:
-    """Parsed schema and table components for a source table specifier."""
-
-    dataset: str
-    table: str
-
-
-def table_string_to_dataclass(table: str) -> TableDefinition:
-    """Parse a schema-qualified table string into a table definition."""
-    table_fields = table.split(".", 1)
-    if len(table_fields) != 2:
-        raise ValueError("Table name must be in the format <schema>.<table>")
-
-    return TableDefinition(dataset=table_fields[0], table=table_fields[1])
 
 
 class LazyRegistry(Mapping):

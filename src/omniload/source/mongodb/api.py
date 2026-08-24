@@ -2,7 +2,9 @@ from typing import Callable
 
 from dlt.common.time import ensure_pendulum_datetime_utc
 
-from omniload.core.model import table_string_to_dataclass
+from omniload.core.tablename import TableName, prefix_split
+
+MONGODB_TABLE_CAPABILITY = prefix_split("mongodb", ("database", "collection"))
 
 
 class MongoDbSource:
@@ -67,16 +69,13 @@ class MongoDbSource:
                 # Substitute interval parameters in the query
                 query = self._substitute_interval_params(query, kwargs)
 
-            # Parse collection name to get database and collection
-            if "." in collection_name:
-                # Handle database.collection format
-                table_fields = table_string_to_dataclass(collection_name)
-                database = table_fields.dataset
-                collection = table_fields.table
-            else:
-                # Single collection name, use default database
-                database = None
-                collection = collection_name
+            table_fields = (
+                MONGODB_TABLE_CAPABILITY.parse(collection_name)
+                if "." in collection_name
+                else TableName(catalog=None, schema=None, table=collection_name)
+            )
+            database = table_fields.schema
+            collection = table_fields.table
 
             table_instance = self.table_builder(
                 connection_url=uri,
@@ -90,7 +89,7 @@ class MongoDbSource:
             return table_instance
         else:
             # Default behavior for simple collection names
-            table_fields = table_string_to_dataclass(table)
+            table_fields = MONGODB_TABLE_CAPABILITY.parse(table)
 
             incremental = None
             if kwargs.get("incremental_key"):
@@ -105,7 +104,7 @@ class MongoDbSource:
 
             table_instance = self.table_builder(
                 connection_url=uri,
-                database=table_fields.dataset,
+                database=table_fields.schema,
                 collection=table_fields.table,
                 parallel=False,
                 incremental=incremental,

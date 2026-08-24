@@ -1,5 +1,6 @@
 from typing import Optional, cast
 
+from omniload.core.tablename import three_level, uri_with_database
 from omniload.target.model import GenericSqlDestination
 
 
@@ -62,11 +63,19 @@ class TrinoTypeMapper:
 
 
 class TrinoDestination(GenericSqlDestination):
+    table_capability = three_level("trino")
+
     def dlt_dest(self, uri: str, **kwargs):
         # Import required modules
         from dlt.destinations.impl.sqlalchemy.factory import (
             sqlalchemy as sqlalchemy_factory,
         )
+
+        dest_table = kwargs.get("dest_table")
+        if dest_table:
+            catalog = self.parse_table(uri, dest_table).catalog
+            if catalog:
+                uri = uri_with_database(uri, catalog)
 
         # Create the destination with custom type mapper
         # We need to use the factory to properly configure the type mapper

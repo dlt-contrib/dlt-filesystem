@@ -2,6 +2,7 @@ import dlt
 from dlt import Schema
 from dlt.common.destination import DestinationCapabilitiesContext
 
+from omniload.core.tablename import three_level, uri_with_database
 from omniload.target.model import GenericSqlDestination
 from omniload.util.auth import serialize_azure_token
 from omniload.util.time import handle_datetimeoffset
@@ -93,7 +94,14 @@ def build_mssql_dest():
 class MsSQLDestination(GenericSqlDestination):
     """Destination adapter for SQL Server and Azure SQL targets."""
 
+    table_capability = three_level("mssql", catalog_label="database")
+
     def dlt_dest(self, uri: str, **kwargs):
         """Build the dlt MSSQL destination for the given connection URI."""
+        dest_table = kwargs.get("dest_table")
+        if dest_table:
+            catalog = self.parse_table(uri, dest_table).catalog
+            if catalog:
+                uri = uri_with_database(uri, catalog)
         cls = build_mssql_dest()
         return cls(credentials=uri, **kwargs)

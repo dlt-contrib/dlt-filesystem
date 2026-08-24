@@ -16,6 +16,7 @@ import logging
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from omniload.core.tablename import split
 from omniload.error import IngestJobError, ValidationError
 from omniload.model import (
     JSON_RETURNING_SOURCES,
@@ -148,6 +149,7 @@ def _run_ingest(
     loader_file_format = _coerce(jr.loader_file_format, LoaderFileFormat)
     schema_naming = _coerce(jr.schema_naming, SchemaNaming)
     sql_reflection_level = _coerce(jr.sql_reflection_level, SqlReflectionLevel)
+    dest_table_was_defaulted = jr.dest_table is None and jr.source_table is not None
 
     def report_errors(run_info: LoadInfo):
         for load_package in run_info.load_packages:
@@ -165,11 +167,6 @@ def _run_ingest(
         source_table: str | None, dest_table: str | None
     ) -> tuple[str, str]:
         if dest_table is None and source_table is not None:
-            if len(source_table.split(".")) != 2:
-                raise ValidationError(
-                    "Table name must be in the format schema.table for source table when dest-table is not given."
-                )
-
             logger.info(
                 "Destination table is not given, defaulting to the source table."
             )
@@ -343,6 +340,30 @@ def _run_ingest(
         uri=jr.dest_uri, dest_table=dest_table, staging_bucket=jr.staging_bucket
     )
     validate_loader_file_format(dlt_dest, loader_file_format)
+    if dest_table_was_defaulted:
+        # A defaulted name carries the source's spelling into a destination that may
+        # read its dots differently. A destination that splits on them would claim
+        # components the source kept whole, so only a name it reads the same way
+        # defaults through; anything longer needs an explicit destination table. A
+        # destination whose name is opaque splits nothing and is unaffected.
+        capability = getattr(destination, "table_capability", None)
+        if capability is not None and capability.split_kind == "qualified":
+            components = len(split(dest_table))
+            if components > 2:
+                raise ValidationError(
+                    f"Cannot default the destination table to the source table "
+                    f"{dest_table!r}: the '{factory.destination_scheme}' destination "
+                    f"reads it as {components} components, which need not be the ones "
+                    f"the source reads. Give --dest-table explicitly."
+                )
+
+        # Validate a defaulted destination before an eager SQL source reflects its
+        # table. The destination now owns its name shape, including opaque names.
+        destination.dlt_run_params(
+            uri=jr.dest_uri,
+            table=dest_table,
+            staging_bucket=jr.staging_bucket,
+        )
 
     if jr.partition_by:
         if jr.partition_by not in column_hints:
@@ -520,9 +541,6 @@ def _run_ingest(
         return None
 
     logger.info("Starting the ingestion")
-
-    if factory.source_scheme == "sqlite":
-        source_table = "main." + source_table.split(".")[-1]
 
     if (
         jr.incremental_key

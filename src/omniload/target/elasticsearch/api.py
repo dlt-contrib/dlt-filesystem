@@ -1,4 +1,9 @@
+from omniload.core.tablename import opaque
+
+
 class ElasticsearchDestination:
+    table_capability = opaque("elasticsearch", table_label="index")
+
     def dlt_dest(self, uri: str, **kwargs):
         from urllib.parse import urlparse
 
@@ -25,8 +30,9 @@ class ElasticsearchDestination:
         return elasticsearch_insert(connection_string=connection_string)
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
+        parsed_table = self.table_capability.parse(table)
         return {
-            "table_name": table,
+            "table_name": parsed_table.table,
         }
 
     def post_load(self):

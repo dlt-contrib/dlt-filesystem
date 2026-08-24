@@ -29,7 +29,7 @@ class ProcessingError(Exception):
         super().__init__(f"Processing error in {source} source: {message}")
 
 
-class ValidationError(Exception):
+class ValidationError(ValueError):
     """Raised when ingest parameters are invalid (bad table spec, unsupported
     loader file format or column type). The CLI translates this into an abort."""
 

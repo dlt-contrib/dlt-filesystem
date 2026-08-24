@@ -127,4 +127,97 @@ def test_run_ingest_without_tables_invalid_destination_table(tmp_path):
             source_uri="csv://tests/assets/create_replace.csv",
             dest_uri=f"duckdb://{dest}",
         )
-    assert excinfo.match("Table name must be in the format <schema>.<table>")
+    assert excinfo.match(
+        "The 'duckdb' table name must be in the format <schema>.<table>"
+    )
+
+
+def test_dotted_elasticsearch_index_defaults_through_without_component_counting():
+    result = run_ingest(
+        source_uri="elasticsearch://localhost:9200",
+        dest_uri="elasticsearch://localhost:9200",
+        source_table="filebeat-2026.03.15",
+        dry_run=True,
+    )
+
+    assert result is None
+
+
+@pytest.mark.parametrize(
+    "source_uri,source_table",
+    [
+        pytest.param(
+            "gsheets://?credentials_base64=e30=",
+            "spreadsheet_id.'Q3.2026'!A1:D5",
+            id="sheets-a1-range-with-a-dotted-sheet-name",
+        ),
+        pytest.param(
+            "mongodb://localhost:27017",
+            "mydb.audit.2026",
+            id="mongodb-dotted-collection",
+        ),
+        pytest.param(
+            "elasticsearch://localhost:9200",
+            "filebeat-2026.03.15",
+            id="elasticsearch-dated-index",
+        ),
+    ],
+)
+def test_defaulted_dest_table_refuses_a_name_the_destination_would_resplit(
+    source_uri, source_table, tmp_path
+):
+    """A source that keeps dots whole cannot default into a destination that splits them.
+
+    Both spellings name two things at the source (a spreadsheet plus an A1 range, a
+    database plus a dotted collection). A SQL destination reads three, so defaulting
+    would load into a schema and table the source never named.
+    """
+    dest = tmp_path / "warehouse.duckdb"
+    with pytest.raises(ValidationError) as excinfo:
+        run_ingest(
+            source_uri=source_uri,
+            dest_uri=f"duckdb:///{dest}",
+            source_table=source_table,
+            dry_run=True,
+        )
+
+    assert excinfo.match("Cannot default the destination table")
+    assert excinfo.match("reads it as 3 components")
+
+    # A destination that retargets its connection from the catalog is the sharper
+    # case: without the guard this one opens a different database entirely.
+    with pytest.raises(ValidationError) as excinfo:
+        run_ingest(
+            source_uri=source_uri,
+            dest_uri="postgres://user:pw@host/mydb",
+            source_table=source_table,
+            dry_run=True,
+        )
+
+    assert excinfo.match("Cannot default the destination table")
+
+
+def test_defaulted_dest_table_passes_a_two_component_name_through(tmp_path):
+    """The guard is about re-splitting, not about dots: two components default as before."""
+    dest = tmp_path / "warehouse.duckdb"
+    result = run_ingest(
+        source_uri="mongodb://localhost:27017",
+        dest_uri=f"duckdb:///{dest}",
+        source_table="mydb.events",
+        dry_run=True,
+    )
+
+    assert result is None
+
+
+def test_defaulted_dest_table_counts_quoted_components_not_dots(tmp_path):
+    """A dot inside a quoted identifier is one component, so the name still defaults."""
+    dest = tmp_path / "warehouse.duckdb"
+    result = run_ingest(
+        source_uri="csv://tests/assets/create_replace.csv",
+        dest_uri=f"duckdb:///{dest}",
+        source_table='public."order.items"',
+        dry_run=True,
+    )
+
+    assert result is None

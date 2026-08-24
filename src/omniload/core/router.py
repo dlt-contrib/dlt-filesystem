@@ -24,7 +24,8 @@ from dlt.extract import Incremental
 from dlt.extract import Incremental as dlt_incremental
 from dlt.sources.sql_database import BaseTableLoader
 
-from omniload.core.model import TableDefinition, table_string_to_dataclass
+from omniload.core.registry import SOURCE_CAPABILITIES
+from omniload.core.tablename import Defaults, TableName
 
 
 class SqlSourceRouter:
@@ -47,12 +48,27 @@ class SqlSourceRouter:
 
     def dlt_source(self, uri: str, table: str, **kwargs):
         """Build a dlt SQL resource after normalizing supported SQL URI variants."""
-        table_fields = TableDefinition(dataset="custom", table="custom")
-        if not table.startswith("query:"):
-            if uri.startswith("spanner://"):
-                table_fields = TableDefinition(dataset="", table=table)
-            else:
-                table_fields = table_string_to_dataclass(table)
+        table_fields = TableName(catalog=None, schema="custom", table="custom")
+        scheme = urlparse(uri).scheme
+        if not table:
+            # Empty table options remain temporarily valid for pipeline elements that
+            # do not name a table. SQL reflection will report the missing table as it
+            # did before table capabilities were introduced.
+            table_fields = TableName(
+                catalog=None,
+                schema="main" if scheme == "sqlite" else None,
+                table="",
+            )
+        elif not table.startswith("query:"):
+            table_fields = SOURCE_CAPABILITIES[scheme].parse(
+                table, Defaults(schema="main") if scheme == "sqlite" else None
+            )
+            if scheme == "sqlite":
+                table_fields = TableName(
+                    catalog=None,
+                    schema="main",
+                    table=table_fields.table,
+                )
 
         incremental = None
         if kwargs.get("incremental_key"):
@@ -411,7 +427,7 @@ class SqlSourceRouter:
 
         builder_res = self.table_builder(
             credentials=credentials,
-            schema=table_fields.dataset,
+            schema=table_fields.schema or "",
             table=table_fields.table,
             incremental=incremental,
             backend=sql_backend,

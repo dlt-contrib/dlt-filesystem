@@ -2,14 +2,20 @@ from urllib.parse import parse_qs, urlparse
 
 import dlt
 
+from omniload.core.tablename import two_level
+
 
 class ClickhouseDestination:
+    table_capability = two_level(
+        "clickhouse", schema_label="database", table_label="table"
+    )
+
     def dlt_dest(self, uri: str, **kwargs):
         parsed_uri = urlparse(uri)
 
         if "dest_table" in kwargs:
-            table = kwargs["dest_table"]
-            database = table.split(".")[0]
+            parsed_table = self.table_capability.parse(kwargs["dest_table"])
+            database = parsed_table.schema
         else:
             database = parsed_uri.path.lstrip("/")
 
@@ -68,11 +74,9 @@ class ClickhouseDestination:
         return dlt.destinations.clickhouse(credentials=credentials)
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
-        table_fields = table.split(".")
-        if len(table_fields) != 2:
-            raise ValueError("Table name must be in the format <schema>.<table>")
+        parsed_table = self.table_capability.parse(table)
         return {
-            "table_name": table_fields[-1],
+            "table_name": parsed_table.table,
         }
 
     def post_load(self):

@@ -287,7 +287,10 @@ def autocreate_db_for_clickhouse():
     dlt_dest = ClickhouseDestination().dlt_dest
 
     def patched_dlt_dest(uri, **kwargs):
-        db, _ = kwargs["dest_table"].split(".")
+        parsed_table = ClickhouseDestination.table_capability.parse(
+            kwargs["dest_table"]
+        )
+        db = parsed_table.schema
         dest_engine = sqlalchemy.create_engine(uri)
         with dest_engine.connect() as dest_conn:
             dest_conn.exec_driver_sql(f"CREATE DATABASE IF NOT EXISTS {db}")

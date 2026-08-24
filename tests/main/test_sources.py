@@ -12,6 +12,7 @@ from omniload.core.router import SqlSourceRouter
 from omniload.source.adjust.api import AdjustSource
 from omniload.source.couchbase.api import CouchbaseSource
 from omniload.source.fluxx.api import FluxxSource
+from omniload.source.google_sheets.api import GoogleSheetsSource
 from omniload.source.mongodb.api import MongoDbSource
 
 
@@ -46,6 +47,62 @@ class SqlSourceTest(unittest.TestCase):
         source = SqlSourceRouter(table_builder=sql_table)
         res = source.dlt_source(uri, table)
         self.assertIsNotNone(res)
+
+    def test_three_part_name_is_rejected_with_catalog_hint(self):
+        source = SqlSourceRouter(table_builder=lambda **kwargs: dlt.resource())
+
+        with pytest.raises(ValueError) as exc_info:
+            source.dlt_source("bigquery://my-project", "project.schema.table")
+
+        message = str(exc_info.value)
+        self.assertIn("bigquery", message)
+        self.assertIn("<schema>.<table>", message)
+        self.assertIn("--source-uri", message)
+
+    def test_quoted_dotted_table_name_is_unquoted_for_sql_table(self):
+        captured = {}
+
+        def sql_table(**kwargs):
+            captured.update(kwargs)
+            return dlt.resource()
+
+        source = SqlSourceRouter(table_builder=sql_table)
+        source.dlt_source("mssql://user:pass@host/database", "[dbo].[my.table]")
+
+        self.assertEqual(captured["schema"], "dbo")
+        self.assertEqual(captured["table"], "my.table")
+
+    def test_sqlite_rewrites_schema_without_losing_a_quoted_dot(self):
+        captured = {}
+
+        def sql_table(**kwargs):
+            captured.update(kwargs)
+            return dlt.resource()
+
+        source = SqlSourceRouter(table_builder=sql_table)
+        source.dlt_source("sqlite:///warehouse.db", "[other].[my.table]")
+
+        self.assertEqual(captured["schema"], "main")
+        self.assertEqual(captured["table"], "my.table")
+
+    def test_spanner_accepts_only_an_unqualified_table_name(self):
+        captured = {}
+
+        def sql_table(**kwargs):
+            captured.update(kwargs)
+            return dlt.resource()
+
+        source = SqlSourceRouter(table_builder=sql_table)
+        uri = (
+            "spanner://?project_id=project&instance_id=instance&database=database"
+            "&credentials_base64=e30%3D"
+        )
+        source.dlt_source(uri, "events")
+
+        self.assertEqual(captured["schema"], "")
+        self.assertEqual(captured["table"], "events")
+        with pytest.raises(ValueError, match="spanner"):
+            source.dlt_source(uri, "analytics.events")
 
     def test_table_instance_is_created_with_incremental(self):
         uri = "bigquery://my-project"
@@ -214,6 +271,37 @@ class MongoDbSourceTest(unittest.TestCase):
         res = source.dlt_source(uri, table, incremental_key=incremental_key)
         self.assertIsNotNone(res)
 
+    def test_dotted_collection_name_keeps_everything_after_database(self):
+        captured = {}
+
+        def mongo(**kwargs):
+            captured.update(kwargs)
+            return dlt.resource()
+
+        source = MongoDbSource(table_builder=mongo)
+        source.dlt_source("mongodb://localhost", "db.audit.2026")
+
+        self.assertEqual(captured["database"], "db")
+        self.assertEqual(captured["collection"], "audit.2026")
+
+
+class GoogleSheetsSourceTest(unittest.TestCase):
+    def test_dotted_sheet_name_remains_in_the_a1_range(self):
+        captured = {}
+
+        def google_spreadsheet(**kwargs):
+            captured.update(kwargs)
+            return dlt.resource()
+
+        source = GoogleSheetsSource(table_builder=google_spreadsheet)
+        source.dlt_source(
+            "gsheets://?credentials_base64=e30=",
+            "spreadsheet_id.'Q3.2026'!A1:D5",
+        )
+
+        self.assertEqual(captured["spreadsheet_url_or_id"], "spreadsheet_id")
+        self.assertEqual(captured["range_names"], ["'Q3.2026'!A1:D5"])
+
 
 class CouchbaseSourceTest(unittest.TestCase):
     def test_preserves_sdk_query_params_and_strips_ssl_flag(self):
@@ -263,6 +351,26 @@ class CouchbaseSourceTest(unittest.TestCase):
             captured["connection_string"],
             "couchbases://localhost:33083?network=external",
         )
+
+    def test_bucket_from_uri_defaults_a_two_part_table_name(self):
+        captured = {}
+
+        class DummyResource:
+            max_table_nesting = None
+
+        def couchbase_collection(**kwargs):
+            captured.update(kwargs)
+            return DummyResource()
+
+        source = CouchbaseSource(table_builder=couchbase_collection)
+        source.dlt_source(
+            "couchbase://Administrator:password@localhost:33083/test_bucket",
+            "inventory.airport",
+        )
+
+        self.assertEqual(captured["bucket"], "test_bucket")
+        self.assertEqual(captured["scope"], "inventory")
+        self.assertEqual(captured["collection"], "airport")
 
 
 @pytest.fixture(scope="function")

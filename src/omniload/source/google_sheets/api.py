@@ -3,7 +3,9 @@ import json
 from typing import Callable
 from urllib.parse import parse_qs, urlparse
 
-from omniload.core.model import table_string_to_dataclass
+from omniload.core.tablename import prefix_split
+
+GOOGLE_SHEETS_TABLE_CAPABILITY = prefix_split("gsheets", ("spreadsheet", "range"))
 
 
 class GoogleSheetsSource:
@@ -43,10 +45,10 @@ class GoogleSheetsSource:
                 base64.b64decode(credentials_base64[0]).decode("utf-8")
             )
 
-        table_fields = table_string_to_dataclass(table)
+        table_fields = GOOGLE_SHEETS_TABLE_CAPABILITY.parse(table)
         return self.table_builder(
             credentials=credentials,
-            spreadsheet_url_or_id=table_fields.dataset,
+            spreadsheet_url_or_id=table_fields.schema,
             range_names=[table_fields.table],
             get_named_ranges=False,
         )

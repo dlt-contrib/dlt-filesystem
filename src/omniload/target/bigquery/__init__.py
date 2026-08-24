@@ -5,8 +5,15 @@ from urllib.parse import parse_qs, urlparse
 
 import dlt
 
+from omniload.core.tablename import three_level
+from omniload.target.model import GenericSqlDestination
 
-class BigQueryDestination:
+
+class BigQueryDestination(GenericSqlDestination):
+    table_capability = three_level(
+        "bigquery", catalog_label="project", schema_label="dataset"
+    )
+
     def dlt_dest(self, uri: str, **kwargs):
         source_fields = urlparse(uri)
         source_params = parse_qs(source_fields.query)
@@ -50,9 +57,13 @@ class BigQueryDestination:
                     credentials.get("client_email", None)
                 )
 
-        project_id = None
-        if source_fields.hostname:
-            project_id = source_fields.hostname
+        dest_table = kwargs.get("dest_table")
+        parsed_table = self.parse_table(uri, dest_table) if dest_table else None
+        project_id = (
+            parsed_table.catalog
+            if parsed_table and parsed_table.catalog
+            else source_fields.hostname
+        )
 
         return dlt.destinations.bigquery(
             credentials=credentials,  # type: ignore
@@ -62,16 +73,7 @@ class BigQueryDestination:
         )
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
-        table_fields = table.split(".")
-        if len(table_fields) != 2 and len(table_fields) != 3:
-            raise ValueError(
-                "Table name must be in the format <dataset>.<table> or <project>.<dataset>.<table>"
-            )
-
-        res = {
-            "dataset_name": table_fields[-2],
-            "table_name": table_fields[-1],
-        }
+        res = super().dlt_run_params(uri, table, **kwargs)
 
         staging_bucket = kwargs.get("staging_bucket", None)
         if staging_bucket:

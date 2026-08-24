@@ -1,5 +1,6 @@
 # ruff: noqa: E501
 from omniload.core.model import LazyRegistry
+from omniload.core.tablename import one_level, two_level
 
 SQL_SOURCE_SCHEMES = [
     "bigquery",
@@ -30,6 +31,23 @@ SQL_SOURCE_SCHEMES = [
     "spanner",
     "trino",
 ]
+
+SOURCE_CAPABILITIES = {
+    scheme: two_level(
+        scheme,
+        "Select the catalog or database in --source-uri instead.",
+    )
+    for scheme in SQL_SOURCE_SCHEMES
+}
+SOURCE_CAPABILITIES["spanner"] = one_level(
+    "spanner",
+    "Select the project, instance, and database in --source-uri instead.",
+)
+SOURCE_CAPABILITIES["sqlite"] = two_level(
+    "sqlite",
+    "Select the database file in --source-uri instead.",
+    min_components=1,
+)
 
 sources: LazyRegistry = LazyRegistry(
     {

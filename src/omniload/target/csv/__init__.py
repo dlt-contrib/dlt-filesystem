@@ -6,6 +6,7 @@ import tempfile
 import dlt.destinations
 
 from dlt_filesystem.util.loader import load_dlt_file
+from omniload.core.tablename import two_level
 from omniload.target.model import GenericSqlDestination
 
 
@@ -23,6 +24,7 @@ class CsvDestination(GenericSqlDestination):
     uri: str
     dataset_name: str
     table_name: str
+    table_capability = two_level("csv")
 
     def supports_multiple_tables(self) -> bool:
         """A single CSV output file cannot represent several worksheet tables."""
@@ -30,14 +32,7 @@ class CsvDestination(GenericSqlDestination):
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
         """Record table metadata needed to locate the staged dlt output."""
-        table_fields = table.split(".")
-        if len(table_fields) != 2:
-            raise ValueError("Table name must be in the format <schema>.<table>")
-
-        res = {
-            "dataset_name": table_fields[-2],
-            "table_name": table_fields[-1],
-        }
+        res = super().dlt_run_params(uri, table, **kwargs)
 
         self.dataset_name = res["dataset_name"]
         self.table_name = res["table_name"]

@@ -1,6 +1,16 @@
 from typing import Callable
 from urllib.parse import urlparse
 
+from omniload.core.tablename import Defaults, three_level
+
+COUCHBASE_TABLE_CAPABILITY = three_level(
+    "couchbase",
+    "Specify the bucket in the URI or in the table name.",
+    catalog_label="bucket",
+    schema_label="scope",
+    table_label="collection",
+)
+
 
 class CouchbaseSource:
     table_builder: Callable
@@ -116,32 +126,19 @@ class CouchbaseSource:
         if parsed.path and parsed.path.strip("/"):
             bucket_from_uri = parsed.path.strip("/").split("/")[0]
 
-        # Parse table format: can be "scope.collection" or "bucket.scope.collection"
-        table_parts = table.split(".")
-
-        if len(table_parts) == 3:
-            # Format: bucket.scope.collection
-            bucket, scope, collection = table_parts
-        elif len(table_parts) == 2:
-            # Format: scope.collection (bucket from URI)
-            if bucket_from_uri:
-                bucket = bucket_from_uri
-                scope, collection = table_parts
-            else:
-                raise ValueError(
-                    "Table format is 'scope.collection' but no bucket specified in URI.\n"
-                    f"Either use URI format: couchbase://user:pass@host/bucket\n"
-                    f"Or use table format: bucket.scope.collection\n"
-                    f"Got table: {table}"
-                )
-        else:
-            raise ValueError(
-                "Table format must be 'bucket.scope.collection' or 'scope.collection' (with bucket in URI). "
-                f"Got: {table}\n"
-                "Examples:\n"
-                "  - URI: couchbase://user:pass@host, Table: travel-sample.inventory.airport\n"
-                "  - URI: couchbase://user:pass@host/travel-sample, Table: inventory.airport"
+        parsed_table = COUCHBASE_TABLE_CAPABILITY.parse(
+            table, Defaults(catalog=bucket_from_uri)
+        )
+        if parsed_table.catalog is None:
+            raise COUCHBASE_TABLE_CAPABILITY.error(
+                table,
+                "Specify the bucket in the URI, for example "
+                "couchbase://user:pass@host/bucket, or in the table name as "
+                "<bucket>.<scope>.<collection>.",
             )
+        bucket = parsed_table.catalog
+        scope = parsed_table.schema
+        collection = parsed_table.table
 
         # Handle incremental loading
         incremental = None
