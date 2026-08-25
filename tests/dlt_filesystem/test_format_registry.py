@@ -1,4 +1,5 @@
 import inspect
+from typing import Any
 from unittest.mock import patch
 
 import dlt
@@ -23,6 +24,7 @@ EXPECTED_FORMAT_TO_READER = {
     "parquet": "read_parquet",
     "bson": "read_bson",
     "xlsx": "read_excel",
+    "csv_duckdb": "read_csv_duckdb",
     "cbor": "read_cbor",
     "msgpack": "read_msgpack",
     "xml": "read_xml",
@@ -74,6 +76,8 @@ def test_generated_read_csv_matches_literal_transformer_metadata():
     literal = filesystem("memory://bucket", fs, file_glob="*.none") | dlt.transformer(
         name="read_csv", max_table_nesting=0
     )(read_csv)
+    generated_dynamic: Any = generated
+    literal_dynamic: Any = literal
 
     assert generated.name == literal.name == "read_csv"
     assert generated.table_name == literal.table_name == "read_csv"
@@ -81,19 +85,19 @@ def test_generated_read_csv_matches_literal_transformer_metadata():
     assert generated.max_table_nesting == literal.max_table_nesting == 0
     assert generated._hints == literal._hints
     assert inspect.signature(generated) == inspect.signature(literal)
-    assert inspect.signature(generated._pipe.gen) == inspect.signature(
-        literal._pipe.gen
+    assert inspect.signature(generated_dynamic._pipe.gen) == inspect.signature(
+        literal_dynamic._pipe.gen
     )
     assert (
-        generated.__SPEC__.__module__,
-        generated.__SPEC__.__qualname__,
-        generated.__SPEC__.__annotations__,
-        inspect.signature(generated.__SPEC__),
+        generated_dynamic.__SPEC__.__module__,
+        generated_dynamic.__SPEC__.__qualname__,
+        generated_dynamic.__SPEC__.__annotations__,
+        inspect.signature(generated_dynamic.__SPEC__),
     ) == (
-        literal.__SPEC__.__module__,
-        literal.__SPEC__.__qualname__,
-        literal.__SPEC__.__annotations__,
-        inspect.signature(literal.__SPEC__),
+        literal_dynamic.__SPEC__.__module__,
+        literal_dynamic.__SPEC__.__qualname__,
+        literal_dynamic.__SPEC__.__annotations__,
+        inspect.signature(literal_dynamic.__SPEC__),
     )
     assert tuple(source.with_resources("read_csv").selected_resources) == ("read_csv",)
 

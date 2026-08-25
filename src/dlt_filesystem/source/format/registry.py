@@ -27,8 +27,7 @@ BASE_READER_REGISTRATIONS = (
     # bson is read-only: the file:// destination's WRITE_FORMATS is a separate tuple.
     ReaderRegistration("read_bson", ("bson",), transformer_order=6),
     ReaderRegistration("read_excel", ("xlsx",), transformer_order=2),
-    # This reader is exposed through the Python API but does not yet have a format key.
-    ReaderRegistration("read_csv_duckdb", (), transformer_order=12),
+    ReaderRegistration("read_csv_duckdb", ("csv_duckdb",), transformer_order=12),
 )
 
 # Readers backed by the optional `iterable` extra (msgpack via iterabledata; cbor, xml and yaml

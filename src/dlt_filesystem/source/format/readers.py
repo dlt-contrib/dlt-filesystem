@@ -26,7 +26,7 @@ from dlt_filesystem.source.error import WorksheetNameCollisionError, _safe_locat
 from dlt_filesystem.source.format.helpers import fetch_arrow, fetch_json
 from dlt_filesystem.source.format.iterable_codec import read_via_iterable
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
-from dlt_filesystem.util.python import cast_kwargs_to_signature
+from dlt_filesystem.util.python import asbool, cast_kwargs_to_signature
 
 
 def _polars_csv_symbols() -> Dict[str, Any]:
@@ -683,7 +683,8 @@ def read_csv_duckdb(
     """
     import duckdb
 
-    helper = fetch_arrow if use_pyarrow else fetch_json
+    parsed_use_pyarrow = False if use_pyarrow == "" else asbool(use_pyarrow)
+    helper = fetch_arrow if parsed_use_pyarrow else fetch_json
 
     for item in items:
         with item.open() as f:

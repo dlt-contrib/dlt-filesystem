@@ -99,6 +99,7 @@ def test_source_selects_single_file(uri: str, table: str | None, expected: bool)
         ("data.parquet", "read_parquet"),
         ("data.bson", "read_bson"),
         ("data.bson.gz", "read_bson"),
+        ("data.csv_duckdb", "read_csv_duckdb"),
     ],
 )
 def test_parse_endpoint(path: str, endpoint: str):
@@ -118,6 +119,11 @@ def test_parse_endpoint(path: str, endpoint: str):
         ("bucket/path/no-extension#jsonl", "path/no-extension", "read_jsonl"),
         ("bucket/path/no-extension#parquet", "path/no-extension", "read_parquet"),
         ("bucket/path/no-extension#bson", "path/no-extension", "read_bson"),
+        (
+            "bucket/path/no-extension#csv_duckdb",
+            "path/no-extension",
+            "read_csv_duckdb",
+        ),
     ],
 )
 def test_determine_endpoint_format_hint(table: str, path: str, endpoint: str):
@@ -179,6 +185,10 @@ def test_split_format_hint(table: str, expected: tuple[str, str | None]):
         ("book.xlsx#sheet_name=foo&bad", ("book.xlsx#sheet_name=foo&bad", None, {})),
         # duplicate/conflicting bare formats -> literal
         ("feed.dat#csv&parquet", ("feed.dat#csv&parquet", None, {})),
+        (
+            "feed.dat#csv_duckdb&csv",
+            ("feed.dat#csv_duckdb&csv", None, {}),
+        ),
         # literal '#' in a path (trailing segment is neither hint nor format)
         ("/feeds/vendor#1/data.csv", ("/feeds/vendor#1/data.csv", None, {})),
         ("path/data#unknown", ("path/data#unknown", None, {})),

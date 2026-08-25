@@ -68,9 +68,20 @@ def test_bson_destination_is_rejected(uri):
         _resolve_output_target(uri)
 
 
-@pytest.mark.parametrize("uri", ["file://", "file://#csv", "file://   "])
+@pytest.mark.parametrize(
+    "uri", ["file://", "file://#csv", "file://#csv_duckdb", "file://   "]
+)
 def test_empty_path_raises(uri):
     with pytest.raises(MissingConnectorOption):
+        _resolve_output_target(uri)
+
+
+@pytest.mark.parametrize("uri", ["file://out.csv#csv_duckdb", "file://out.csv_duckdb"])
+def test_csv_duckdb_destination_is_rejected(uri):
+    with pytest.raises(
+        ValueError,
+        match=r"only supports file formats: csv, jsonl, parquet \(got 'csv_duckdb'\)",
+    ):
         _resolve_output_target(uri)
 
 
