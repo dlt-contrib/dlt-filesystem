@@ -23,25 +23,26 @@ from dlt.sources.filesystem import FileItem, FileItemDict, fsspec_filesystem
 from fsspec import AbstractFileSystem
 
 from dlt_filesystem.source.error import NoFilesFoundError
-from dlt_filesystem.source.format.readers import (
-    ReadersSource,
-    read_bson,
-    read_cbor,
-    read_csv,
-    read_csv_duckdb,
-    read_csv_headless,
-    read_excel,
-    read_json,
-    read_jsonl,
-    read_msgpack,
-    read_ods,
-    read_parquet,
-    read_xml,
-    read_yaml,
+from dlt_filesystem.source.format import readers as reader_functions
+from dlt_filesystem.source.format.readers import ReadersSource
+from dlt_filesystem.source.format.registry import (
+    READER_REGISTRATIONS,
+    ReaderRegistration,
 )
 from dlt_filesystem.source.lister import glob_files
 
 from .model import FilesystemConfigurationResource
+
+
+def _resolve_reader(registration: ReaderRegistration):
+    """Resolve a registered reader name without making the registry import reader code."""
+    reader = getattr(reader_functions, registration.reader_name, None)
+    if not callable(reader):
+        raise ValueError(
+            f"Reader function {registration.reader_name!r} is not defined in "
+            "dlt_filesystem.source.format.readers"
+        )
+    return reader
 
 
 @dlt.source(_impl_cls=ReadersSource, spec=FilesystemConfigurationResource)
@@ -63,35 +64,13 @@ def readers(
     """
     filesystem_resource = filesystem(bucket_url, credentials, file_glob=file_glob)
 
-    return (
+    return tuple(
         filesystem_resource
-        | dlt.transformer(name="read_csv", max_table_nesting=0)(read_csv),
-        filesystem_resource
-        | dlt.transformer(name="read_csv_headless", max_table_nesting=0)(
-            read_csv_headless
-        ),
-        filesystem_resource
-        | dlt.transformer(name="read_excel", max_table_nesting=0)(read_excel),
-        filesystem_resource
-        | dlt.transformer(name="read_ods", max_table_nesting=0)(read_ods),
-        filesystem_resource
-        | dlt.transformer(name="read_json", max_table_nesting=0)(read_json),
-        filesystem_resource
-        | dlt.transformer(name="read_jsonl", max_table_nesting=0)(read_jsonl),
-        filesystem_resource
-        | dlt.transformer(name="read_bson", max_table_nesting=0)(read_bson),
-        filesystem_resource
-        | dlt.transformer(name="read_msgpack", max_table_nesting=0)(read_msgpack),
-        filesystem_resource
-        | dlt.transformer(name="read_cbor", max_table_nesting=0)(read_cbor),
-        filesystem_resource
-        | dlt.transformer(name="read_xml", max_table_nesting=0)(read_xml),
-        filesystem_resource
-        | dlt.transformer(name="read_yaml", max_table_nesting=0)(read_yaml),
-        filesystem_resource
-        | dlt.transformer(name="read_parquet", max_table_nesting=0)(read_parquet),
-        filesystem_resource
-        | dlt.transformer(name="read_csv_duckdb", max_table_nesting=0)(read_csv_duckdb),
+        | dlt.transformer(
+            name=registration.reader_name,
+            max_table_nesting=registration.max_table_nesting,
+        )(_resolve_reader(registration))
+        for registration in READER_REGISTRATIONS
     )
 
 
