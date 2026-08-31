@@ -1,12 +1,24 @@
 from typing import Type
 
 from fsspec import AbstractFileSystem
+from fsspec.implementations.arrow import HadoopFileSystem
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
 from dlt_filesystem.source.model import FilesystemLocator, split_run_options
+from dlt_filesystem.util.fsspec import ReadIntoArrowFSMixin
 from dlt_filesystem.util.python import apply_alias, cast_to_dict, cast_to_int
+
+
+class ReadIntoHadoopFileSystem(ReadIntoArrowFSMixin, HadoopFileSystem):
+    """HDFS through Arrow, with `readinto` on its read handles.
+
+    Defined at module scope so the class stays addressable by import path: fsspec
+    filesystems are picklable by design, and a class built inside a function is not.
+    Importing `fsspec.implementations.arrow` costs nothing here, it defers pyarrow to
+    the constructor.
+    """
 
 
 class HDFSSource(FilesystemSource):
@@ -17,9 +29,7 @@ class HDFSSource(FilesystemSource):
 
     @property
     def fs_class(self) -> Type["AbstractFileSystem"]:
-        from fsspec.implementations.arrow import HadoopFileSystem
-
-        return HadoopFileSystem
+        return ReadIntoHadoopFileSystem
 
     def dlt_source(self, uri: str, table: str, **kwargs):
         if kwargs.get("incremental_key"):

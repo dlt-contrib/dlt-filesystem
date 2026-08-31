@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING, Any, Dict, Type
 from urllib.parse import parse_qs, urlparse
 
 from fsspec import AbstractFileSystem
-from fsspec.implementations.arrow import ArrowFSWrapper
 
 from dlt_filesystem.error import InvalidBlobTableError, MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -22,12 +21,13 @@ from dlt_filesystem.util.auth import (
     parse_azure_blob_auth,
     s3_arrow_filesystem_kwargs,
 )
+from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper
 
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
 
 
-class _S3CompatibleArrowFSWrapper(ArrowFSWrapper):
+class _S3CompatibleArrowFSWrapper(ReadIntoArrowFSWrapper):
     """Keep S3-compatible object keys intact while stripping their URI scheme."""
 
     protocol = "s3"
@@ -46,7 +46,7 @@ class _R2ArrowFSWrapper(_S3CompatibleArrowFSWrapper):
     protocol = "r2"
 
 
-class _AzureArrowFSWrapper(ArrowFSWrapper):
+class _AzureArrowFSWrapper(ReadIntoArrowFSWrapper):
     """Keep Azure blob names intact while stripping their URI scheme.
 
     Arrow addresses a blob as ``container/name`` with the storage account as the

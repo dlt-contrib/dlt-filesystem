@@ -2,7 +2,45 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from fsspec.implementations.arrow import ArrowFSWrapper
 from fsspec.utils import update_storage_options
+
+
+class ReadIntoArrowFSMixin:
+    """Hand out Arrow read handles that satisfy `readinto`.
+
+    fsspec's ``ArrowFile`` mirrors a fixed list of methods from the pyarrow stream it
+    wraps, and ``readinto`` is not on that list, so the handle serves ``read()`` but
+    fails anything that fills a caller-supplied buffer.
+
+    Gzip is where that surfaces. fsspec registers isal's ``IGzipFile`` as its ``gzip``
+    codec whenever ``isal`` is importable and falls back to the stdlib ``GzipFile`` only
+    when it is not, and isal decompresses through ``readinto``. Any dependency pulling
+    ``xopen`` brings isal along on x86-64 and AArch64, so a `.gz` file read through an
+    Arrow-backed filesystem fails with ``AttributeError`` in an environment that happens
+    to carry it, and reads fine everywhere else.
+
+    The pyarrow stream implements ``readinto`` itself, so the handle only has to expose
+    it. Mixed into a filesystem class rather than applied to ``ArrowFile``, because
+    re-boxing a handle would leave the discarded wrapper to close the stream from its
+    finalizer.
+
+    TODO: Drop once fsspec mirrors `readinto` on `ArrowFile`.
+    """
+
+    def _open(self, path: str, mode: str = "rb", *args: Any, **kwargs: Any) -> Any:
+        """Return an Arrow handle, `readinto` included when the handle is readable."""
+        # A mixin has no `_open` on its own MRO; the filesystem it composes with does.
+        handle = super()._open(path, mode, *args, **kwargs)  # ty: ignore[unresolved-attribute]
+        # Only read handles, so `hasattr(handle, "readinto")` keeps reading as a
+        # readability probe on a write handle, as it does on a plain `ArrowFile`.
+        if "r" in mode and not hasattr(handle, "readinto"):
+            handle.readinto = handle.stream.readinto
+        return handle
+
+
+class ReadIntoArrowFSWrapper(ReadIntoArrowFSMixin, ArrowFSWrapper):
+    """The generic Arrow filesystem wrapper, with `readinto` on its read handles."""
 
 
 def infer_storage_options(

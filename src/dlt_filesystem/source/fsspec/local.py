@@ -96,10 +96,11 @@ class LocalFilesystemSource(FilesystemSource):
         directory, file_glob = _split_dir_glob(local)
 
         # https://arrow.apache.org/docs/python/filesystems.html#using-arrow-filesystems-with-fsspec
-        from fsspec.implementations.arrow import ArrowFSWrapper
         from pyarrow.fs import LocalFileSystem
 
-        fs = ArrowFSWrapper(LocalFileSystem())
+        from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper
+
+        fs = ReadIntoArrowFSWrapper(LocalFileSystem())
 
         from dlt_filesystem.source.core import resource_for_reader
         from dlt_filesystem.source.model import FilesystemReference

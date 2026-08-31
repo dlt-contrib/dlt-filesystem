@@ -51,10 +51,11 @@ class RsyncSource(FilesystemSource):
 
         staging_dir = RsyncStager(transport, config, self._runner).stage(selection)
 
-        from fsspec.implementations.arrow import ArrowFSWrapper
         from pyarrow.fs import LocalFileSystem
 
-        fs = ArrowFSWrapper(LocalFileSystem())
+        from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper
+
+        fs = ReadIntoArrowFSWrapper(LocalFileSystem())
 
         return resource_for_reader(
             FilesystemReference(
