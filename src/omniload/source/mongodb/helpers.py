@@ -372,10 +372,15 @@ class CollectionArrowLoader(CollectionLoader):
 
         cursor = self._limit(cursor, limit)
 
-        context = PyMongoArrowContext(
-            schema=pymongoarrow_schema, codec_options=self.collection.codec_options
-        )
         for batch in cursor:
+            # A context per batch. `finish()` does not reset the builders it has
+            # accumulated, so reusing one across batches replays the previous
+            # batch's slots as all-null rows: feeding {_id: 1} then {_id: 2} to a
+            # shared context returns [{_id: None}, {_id: 2}] on the second finish.
+            context = PyMongoArrowContext(
+                schema=pymongoarrow_schema,
+                codec_options=self.collection.codec_options,
+            )
             context.process_bson_stream(batch)
             table = context.finish()
             yield convert_arrow_columns(table)
@@ -478,10 +483,14 @@ class CollectionArrowLoaderParallel(CollectionLoaderParallel):
 
         cursor = cursor.clone()
 
-        context = PyMongoArrowContext(
-            schema=pymongoarrow_schema, codec_options=self.collection.codec_options
-        )
         for chunk in cursor.skip(batch["skip"]).limit(batch["limit"]):
+            # A context per chunk, for the same reason as the sequential loader:
+            # `finish()` leaves the accumulated builders in place, so a shared
+            # context emits the previous chunk's slots again as all-null rows.
+            context = PyMongoArrowContext(
+                schema=pymongoarrow_schema,
+                codec_options=self.collection.codec_options,
+            )
             context.process_bson_stream(chunk)
             table = context.finish()
             yield convert_arrow_columns(table)

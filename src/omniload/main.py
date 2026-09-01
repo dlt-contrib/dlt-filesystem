@@ -277,6 +277,16 @@ def ingest(
             envvar=["MASK", "OMNILOAD_MASK"],
         ),
     ] = None,
+    reshape: Annotated[
+        Optional[str],
+        typer.Option(
+            help="Reshape transform in format '<engine>:<spec>' "
+            "(e.g. 'python:my.module:fn'). Restructures nested documents "
+            "(flatten/explode/coerce); disables Mongo JSON-array hinting so "
+            "arrays become child tables.",
+            envvar=["RESHAPE", "OMNILOAD_RESHAPE"],
+        ),
+    ] = None,
 ):
     setup_logging()
     try:
@@ -310,6 +320,7 @@ def ingest(
             yield_limit=yield_limit,
             staging_bucket=staging_bucket,
             mask=mask,
+            reshape=reshape,
         )
     except ValidationError as e:
         logger.error("Validation failed: %s", e)

@@ -242,11 +242,19 @@ class MongoDbSourceTest(unittest.TestCase):
         table = "schema.table"
 
         # monkey patch the mongo function
-        def mongo(connection_url, database, collection, incremental, parallel):
+        def mongo(
+            connection_url,
+            database,
+            collection,
+            incremental,
+            parallel,
+            data_item_format,
+        ):
             self.assertEqual(connection_url, uri)
             self.assertEqual(database, "schema")
             self.assertEqual(collection, "table")
             self.assertIsNone(incremental)
+            self.assertEqual(data_item_format, "object")
             return dlt.resource()
 
         source = MongoDbSource(table_builder=mongo)
@@ -259,12 +267,20 @@ class MongoDbSourceTest(unittest.TestCase):
         incremental_key = "id"
 
         # monkey patch the mongo function
-        def mongo(connection_url, database, collection, incremental, parallel):
+        def mongo(
+            connection_url,
+            database,
+            collection,
+            incremental,
+            parallel,
+            data_item_format,
+        ):
             self.assertEqual(connection_url, uri)
             self.assertEqual(database, "schema")
             self.assertEqual(collection, "table")
             self.assertIsInstance(incremental, dlt.sources.incremental)
             self.assertEqual(incremental.cursor_path, incremental_key)
+            self.assertEqual(data_item_format, "object")
             return dlt.resource()
 
         source = MongoDbSource(table_builder=mongo)

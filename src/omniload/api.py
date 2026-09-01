@@ -536,6 +536,30 @@ def _run_ingest(
     logger.info("Primary Key: %s", jr.primary_key if jr.primary_key else "None")
     logger.info("Pipeline ID: %s", m.hexdigest())
 
+    # Resolve the reshape before the dry-run return, so a bad spec, a missing extra
+    # or an engine the source cannot feed is reported by `--dry-run` rather than
+    # waiting for a real run. A batch (polars) reshape consumes Arrow tables, so the
+    # source has to be told to deliver Arrow; per-row reshapes do not care.
+    reshape_mapper = None
+    data_item_format = "object"
+    if jr.reshape:
+        from omniload.codec.reshape import create_reshape_mapper
+
+        # A bad spec (unknown engine, empty recipes) or a missing extra is user/config
+        # error: surface it as ValidationError so the CLI reports it instead of
+        # tracebacking.
+        try:
+            reshape_mapper = create_reshape_mapper(jr.reshape)
+        except (ValueError, ImportError) as exc:
+            raise ValidationError(str(exc)) from exc
+        if reshape_mapper.batch:
+            if not isinstance(source, MongoDbSource):
+                raise ValidationError(
+                    "the batch (polars) reshape engine needs an Arrow-yielding "
+                    "source; only the MongoDB source supports it currently"
+                )
+            data_item_format = "arrow"
+
     if jr.dry_run:
         logger.info("Skipping data transfer, because `--dry-run` was selected.")
         return None
@@ -583,6 +607,7 @@ def _run_ingest(
         extract_parallelism=jr.extract_parallelism,
         column_types=column_types,
         filesystem_incremental=jr.filesystem_incremental,
+        data_item_format=data_item_format,
     )
 
     resource.for_each(dlt_source, lambda x: x.add_map(cast_set_to_list))
@@ -602,6 +627,13 @@ def _run_ingest(
 
         resource.for_each(dlt_source, lambda x: x.add_map(arrow.as_list))
 
+    if reshape_mapper is not None:
+        # Both models go through add_yield_map: a batch reshape is N dicts out of one
+        # Arrow table, and a per-row one has to be able to rowify an Arrow item too,
+        # because add_map would hand it the whole table. See ReshapeMapper.
+        reshape_fn = reshape_mapper.as_yield_map()
+        resource.for_each(dlt_source, lambda x: x.add_yield_map(reshape_fn))
+
     if jr.mask:
         masking_filter = create_masking_filter(jr.mask)
         resource.for_each(dlt_source, lambda x: x.add_map(masking_filter))
@@ -609,7 +641,10 @@ def _run_ingest(
     if jr.yield_limit:
         resource.for_each(dlt_source, lambda x: x.add_limit(jr.yield_limit))
 
-    if isinstance(source, MongoDbSource):
+    # TypeHintMap json-hints top-level Mongo arrays into JSON columns. A reshape owns the
+    # schema instead (and needs the arrays un-hinted so they normalize into child tables),
+    # so skip it when a reshape is active. See omniload.codec.reshape.
+    if isinstance(source, MongoDbSource) and not jr.reshape:
         from omniload.core.resource import TypeHintMap
 
         resource.for_each(dlt_source, lambda x: x.add_map(TypeHintMap().type_hint_map))

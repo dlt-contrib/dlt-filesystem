@@ -73,6 +73,7 @@ RUN_OPTIONS: dict[str, Any] = {
     "extract_parallelism": 1,
     "column_types": {"name": {"data_type": "text"}},
     "filesystem_incremental": True,
+    "data_item_format": "object",
 }
 
 

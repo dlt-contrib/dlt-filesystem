@@ -44,6 +44,7 @@ class FilesystemConfigurationResource(FilesystemConfiguration):
 RUN_OPTION_KEYS: frozenset = frozenset(
     {
         "column_types",
+        "data_item_format",
         "extract_parallelism",
         "filesystem_incremental",
         "incremental_key",
