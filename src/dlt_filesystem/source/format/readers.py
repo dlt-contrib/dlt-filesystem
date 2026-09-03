@@ -26,14 +26,14 @@ from dlt_filesystem.source.error import WorksheetNameCollisionError, _safe_locat
 from dlt_filesystem.source.format.helpers import fetch_arrow, fetch_json
 from dlt_filesystem.source.format.iterable_codec import read_via_iterable
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
-from dlt_filesystem.util.python import asbool, cast_kwargs_to_signature
+from dlt_filesystem.util.python import asbool, cast_kwargs_to_signature, is_polars_2
 
 
 def _polars_csv_symbols() -> Dict[str, Any]:
     """Symbols needed to resolve `polars.read_csv`'s type hints for casting reader hints."""
-    from typing import Mapping
+    from typing import Callable, Mapping
 
-    from polars import DataFrame
+    from polars import CredentialProvider, CredentialProviderFunction, DataFrame
     from polars._typing import (  # noqa: F401
         CsvEncoding,
         PolarsDataType,
@@ -43,12 +43,15 @@ def _polars_csv_symbols() -> Dict[str, Any]:
     from polars.datatypes import DataType, DataTypeClass  # noqa: F401
 
     return {
+        "CredentialProvider": CredentialProvider,
+        "CredentialProviderFunction": CredentialProviderFunction,
         "CsvEncoding": CsvEncoding,
         "PolarsDataType": PolarsDataType,
         "SchemaDict": SchemaDict,
         "StorageOptionsDict": StorageOptionsDict,
         "DataType": DataType,
         "DataTypeClass": DataTypeClass,
+        "Callable": Callable,
         "Mapping": Mapping,
         "DataFrame": DataFrame,
     }
@@ -122,14 +125,22 @@ def read_csv(
     Returns:
         TDataItem: The file content
     """
+
+    # Apply defaults.
+    kwargs.setdefault("batch_size", chunksize)
+
+    # pl.read_csv is now dispatched to pl.scan_csv(...).collect().
+    # It loses n_threads, batch_size, sample_size, and rechunk,
+    # which have no equivalent in the lazy reader.
+    # https://docs.pola.rs/releases/upgrade/2/#plread_csv-is-now-dispatched-to-plscan_csvcollect
+    if is_polars_2():
+        kwargs.pop("batch_size", None)
+
     import polars as pl
 
     kwargs = cast_kwargs_to_signature(
         pl.read_csv, kwargs, symbols=_polars_csv_symbols()
     )
-
-    # Apply defaults.
-    kwargs.setdefault("batch_size", chunksize)
 
     for file_obj in items:
         # Read the file in chunks to avoid loading the whole file into memory.
@@ -180,6 +191,13 @@ def read_csv_headless(
                 **{"has_header": False, "new_columns": names, "batch_size": chunksize},
                 **polars_kwargs,
             }
+
+            # pl.read_csv is now dispatched to pl.scan_csv(...).collect().
+            # It loses n_threads, batch_size, sample_size, and rechunk,
+            # which have no equivalent in the lazy reader.
+            # https://docs.pola.rs/releases/upgrade/2/#plread_csv-is-now-dispatched-to-plscan_csvcollect
+            if is_polars_2():
+                kwargs.pop("batch_size", None)
 
             df = pl.read_csv(file, **kwargs)
             yield df.to_dicts()
