@@ -15,9 +15,15 @@ ROWS = [{"id": 1, "name": "Zoë"}, {"id": 2, "name": "Ōtautahi", "note": "late 
 # text handles would default to, so the parent can tell "the locale was forced" from
 # "the platform ignored the request".
 _CHILD = """
-import locale, sys
+import sys, tempfile
 from dlt_filesystem.target.registry import writer_for_format
-print(locale.getencoding())
+
+# What `open()` in text mode would actually use, asked of a real handle rather than
+# of the locale module: `locale.getencoding()` is 3.11+, and this package supports
+# 3.10, where the equivalent spelling is `getpreferredencoding(False)`.
+with tempfile.TemporaryFile("w") as probe:
+    print(probe.encoding)
+
 out_dir, rows = sys.argv[1], __import__("json").loads(sys.argv[2])
 for file_format in sys.argv[3].split(","):
     writer_for_format(file_format)(f"{out_dir}/out.{file_format}", rows)
