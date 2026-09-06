@@ -11,9 +11,10 @@ import pytest
 
 from dlt_filesystem.source.format.registry import FORMAT_TO_READER
 from dlt_filesystem.target.registry import (
+    ADVERTISED_WRITE_FORMATS,
+    ADVERTISED_WRITE_FORMATS_TEXT,
     FORMAT_TO_WRITER,
     WRITE_FORMATS,
-    WRITE_FORMATS_TEXT,
     WRITER_REGISTRATIONS,
     WriterRegistration,
     _build_writer_map,
@@ -31,7 +32,21 @@ def test_write_formats_is_derived_from_the_registrations():
     )
     assert WRITE_FORMATS == registered
     assert set(FORMAT_TO_WRITER) == set(registered)
-    assert WRITE_FORMATS_TEXT == ", ".join(registered)
+
+
+def test_only_the_first_key_of_a_registration_is_advertised():
+    """Aliases route but are not named. `yml` and `yaml` are one writer under two
+    extensions, so an error that listed both would read as two formats."""
+    assert ADVERTISED_WRITE_FORMATS == tuple(
+        registration.format_keys[0] for registration in WRITER_REGISTRATIONS
+    )
+    assert ADVERTISED_WRITE_FORMATS_TEXT == ", ".join(ADVERTISED_WRITE_FORMATS)
+    assert set(ADVERTISED_WRITE_FORMATS) <= set(WRITE_FORMATS)
+    assert "yml" in WRITE_FORMATS and "yml" not in ADVERTISED_WRITE_FORMATS
+
+
+def test_an_alias_routes_to_the_same_writer_as_its_canonical_format():
+    assert writer_for_format("yml") is writer_for_format("yaml")
 
 
 def test_duplicate_format_registration_is_rejected():
@@ -62,9 +77,9 @@ def test_every_write_format_is_also_a_read_format():
     assert set(WRITE_FORMATS) <= set(FORMAT_TO_READER)
 
 
-def test_the_supported_format_message_names_the_registered_set():
+def test_the_supported_format_message_names_the_advertised_set():
     message = supported_write_format_message("txt")
-    assert WRITE_FORMATS_TEXT in message
+    assert ADVERTISED_WRITE_FORMATS_TEXT in message
     assert "(got 'txt')" in message
 
 
@@ -122,7 +137,7 @@ PROSE_CLAIMS = [
 
 
 def test_the_matrix_write_column_matches_the_registry():
-    assert _matrix_write_formats() == set(WRITE_FORMATS)
+    assert _matrix_write_formats() == set(ADVERTISED_WRITE_FORMATS)
 
 
 @pytest.mark.parametrize(
@@ -135,7 +150,7 @@ def test_prose_claims_match_the_registry(page, pattern):
     assert match, (
         f"{page}: the write-format claim this test pins is gone; drop the entry"
     )
-    assert _prose_formats(match.group(1)) == set(WRITE_FORMATS)
+    assert _prose_formats(match.group(1)) == set(ADVERTISED_WRITE_FORMATS)
 
 
 def test_the_pages_that_stopped_naming_the_write_set_have_not_regrown_it():

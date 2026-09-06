@@ -6,12 +6,12 @@ import pytest
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.target.local import LocalFilesystemDestination
 from dlt_filesystem.target.model import DEFAULT_DATASET_NAME
-from dlt_filesystem.target.registry import WRITE_FORMATS_TEXT
+from dlt_filesystem.target.registry import ADVERTISED_WRITE_FORMATS_TEXT
 from dlt_filesystem.target.util import _resolve_output_target
 
 # Asserted against the registry rather than typed out, so registering a writer cannot
 # leave these three expectations naming a set the code no longer has.
-SUPPORTED = re.escape(f"only supports file formats: {WRITE_FORMATS_TEXT}")
+SUPPORTED = re.escape(f"only supports file formats: {ADVERTISED_WRITE_FORMATS_TEXT}")
 
 # Normalized so the relative-form expectations hold on Windows too (os.getcwd() there
 # returns a backslash drive path), matching the source-side test.

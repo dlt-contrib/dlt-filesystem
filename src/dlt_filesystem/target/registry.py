@@ -6,6 +6,7 @@ from dlt_filesystem.target.writer import (
     write_json,
     write_jsonl,
     write_parquet,
+    write_yaml,
 )
 
 Writer = Callable[[str, list[dict]], None]
@@ -39,6 +40,18 @@ WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
     WriterRegistration(write_json, ("json",)),
     WriterRegistration(write_jsonl, ("jsonl",)),
     WriterRegistration(write_parquet, ("parquet",)),
+    # `yaml` is registered unconditionally, where the *reader* lists it under the
+    # optional `iterable` extra. PyYAML is not actually optional in this dependency
+    # set: `dlt` and `google-ads` both require it outright, so it arrives with any
+    # install and the reader's `find_spec` gate never fires for it. `write_yaml` still
+    # raises the install hint the reader gives if the import ever does fail, so the
+    # contract `docs/supported-sources/yaml.md` states holds in both directions.
+    #
+    # `yml` is the same format under the other common extension, and is an alias here
+    # for the same reason it is one on the read side: the format is chosen from the
+    # path, so a destination spelled `out.yml` must resolve or it is rejected as an
+    # unsupported format while `out.yaml` writes.
+    WriterRegistration(write_yaml, ("yaml", "yml")),
 )
 
 
@@ -61,8 +74,18 @@ def _build_writer_map(
 
 
 FORMAT_TO_WRITER = _build_writer_map(WRITER_REGISTRATIONS)
+
+#: Every key a destination path or ``#hint`` may name, aliases included.
 WRITE_FORMATS = tuple(FORMAT_TO_WRITER)
-WRITE_FORMATS_TEXT = ", ".join(WRITE_FORMATS)
+
+#: What error messages and the documentation name: the first key of each registration,
+#: one entry per writer. An alias routes but is not advertised, so ``yml`` does not read
+#: as a second format alongside ``yaml`` -- the same split the read side makes, where
+#: `FORMAT_TO_READER` carries `yml` and `advertised_file_formats()` does not.
+ADVERTISED_WRITE_FORMATS = tuple(
+    registration.format_keys[0] for registration in WRITER_REGISTRATIONS
+)
+ADVERTISED_WRITE_FORMATS_TEXT = ", ".join(ADVERTISED_WRITE_FORMATS)
 
 
 def writer_for_format(file_format: str) -> Writer:
@@ -75,7 +98,8 @@ def writer_for_format(file_format: str) -> Writer:
 def supported_write_format_message(file_format: str | None = None) -> str:
     got = f" (got '{file_format}')" if file_format else ""
     return (
-        f"Local file Destination only supports file formats: {WRITE_FORMATS_TEXT}{got}"
+        "Local file Destination only supports file formats: "
+        f"{ADVERTISED_WRITE_FORMATS_TEXT}{got}"
     )
 
 

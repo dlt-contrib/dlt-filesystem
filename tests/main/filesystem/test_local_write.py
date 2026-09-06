@@ -178,6 +178,14 @@ def _read_back(path, out_format):
     if out_format == "json":
         with open(path, encoding="utf-8") as f:
             return json.load(f)
+    if out_format in ("yaml", "yml"):
+        import yaml
+
+        # One document holding a list, so `safe_load` (not `safe_load_all`) is what
+        # reads it; a `---` stream would come back as a generator of documents here
+        # and fail the row assertions rather than passing quietly.
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
     import pyarrow.parquet as pq
 
     return pq.read_table(path).to_pylist()
@@ -211,6 +219,39 @@ def test_written_file_reads_back_through_its_own_reader(tmp_path, out_format):
     rows = _read_back(final, "jsonl")
     assert sorted(row["name"] for row in rows) == ["Bob", "Zoë"]
     assert sorted(row["city"] for row in rows) == ["München", "Ōtautahi"]
+
+
+def test_yaml_survives_a_forced_parquet_intermediate(tmp_path):
+    """`--loader-file-format parquet` is the only load path that hands a writer native
+    values instead of JSON-typed ones, and any typed source can reach it. A decimal
+    column aborted the whole YAML export there before the writer learned to spell the
+    types PyYAML's safe dumper refuses.
+
+    duckdb rather than the CSV fixture the other cases use, because a CSV source cannot
+    produce a decimal or a blob in the first place.
+    """
+    import duckdb
+
+    source = tmp_path / "src.duckdb"
+    connection = duckdb.connect(str(source))
+    connection.execute("CREATE TABLE t (id INTEGER, price DECIMAL(10,2), blob BLOB)")
+    connection.execute("INSERT INTO t VALUES (1, 1.50, 'hi'::BLOB)")
+    connection.close()
+
+    out_path = tmp_path / "out.yaml"
+    result = invoke_ingest_command(
+        f"duckdb:///{source}",
+        "main.t",
+        f"file://{out_path}",
+        "public.t",
+        loader_file_format="parquet",
+    )
+    assert result.exit_code == 0, result.output
+
+    rows = _read_back(out_path, "yaml")
+    # The scale a float would drop, and the same string `write_json` writes for it.
+    assert rows[0]["price"] == "1.50"
+    assert rows[0]["blob"] == b"hi"
 
 
 # --- csv:// compatibility destination (#301) ---

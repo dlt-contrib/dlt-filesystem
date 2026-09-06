@@ -45,11 +45,15 @@ class WorksheetNameCollisionError(ValueError):
 
 
 class MissingDecoderError(UnsupportedEndpointError):
-    """A routable format resolved to a reader whose decoder package is not installed.
+    """A routable format resolved to a reader or writer whose package is not installed.
 
     Raised (instead of a bare ``ImportError``) when an iterable-backed format such as
     ``msgpack`` is requested but the optional ``iterable`` extra / its per-format decoder is
     absent. Carries the exact ``pip install`` target so the message is actionable.
+
+    The write side raises it too (``target.writer.write_yaml``): the missing package is the
+    format's, not the direction's, so both halves owe the same install hint rather than one
+    of them a bare ``ImportError``.
     """
 
     pass
