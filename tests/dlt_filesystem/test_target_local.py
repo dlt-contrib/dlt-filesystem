@@ -24,6 +24,7 @@ CWD = os.getcwd().replace(os.sep, "/")
 resolve_cases = [
     ("file:///data/out.csv", "/data/out.csv", "csv"),
     ("file:///data/out.jsonl", "/data/out.jsonl", "jsonl"),
+    ("file:///data/out.orc", "/data/out.orc", "orc"),
     ("file:///data/out.parquet", "/data/out.parquet", "parquet"),
     # Windows drive and UNC, same handling as the source
     ("file:///C:/data/out.csv", "C:/data/out.csv", "csv"),
@@ -32,6 +33,7 @@ resolve_cases = [
     # #format hint wins over (or supplies) the format; the path keeps the hinted-off name
     ("file:///data/out.dat#jsonl", "/data/out.dat", "jsonl"),
     ("file:///data/feed#csv", "/data/feed", "csv"),
+    ("file:///data/feed#orc", "/data/feed", "orc"),
     # literal '#' in the path (suffix is not a known format) stays part of the path,
     # so the format falls back to the extension
     ("file:///data/v#1/out.csv", "/data/v#1/out.csv", "csv"),

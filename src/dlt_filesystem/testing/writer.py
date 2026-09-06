@@ -27,6 +27,15 @@ def write_msgpack(path, rows, **packb_kwargs):
     return path
 
 
+def write_orc(path, records):
+    """Write record dictionaries to an ORC file."""
+    import pyarrow as pa
+    from pyarrow import orc
+
+    orc.write_table(pa.Table.from_pylist(records), path)
+    return path
+
+
 def write_xml(path, text):
     """Write raw XML ``text`` to ``path`` as UTF-8 bytes."""
     with open(path, "wb") as f:

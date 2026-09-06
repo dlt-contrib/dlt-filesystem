@@ -14,7 +14,17 @@
 
 import codecs
 import io
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Mapping, Optional
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Union,
+)
 
 import dlt
 from dlt.common import json
@@ -424,6 +434,42 @@ def read_spreadsheet(
             yield dlt.mark.with_table_name(rows, sheet_name)
 
 
+def read_orc(
+    items: Iterator[FileItemDict],
+    chunksize: int = 1000,
+    columns: Optional[Union[list[str], str]] = None,
+) -> Iterator[TDataItems]:
+    """Reader for ORC files that yields chunked stripe output."""
+    from pyarrow import orc
+
+    try:
+        chunksize = int(chunksize)
+    except (TypeError, ValueError):
+        raise TypeError(f"chunksize must be an integer, not {chunksize}")
+    if chunksize < 1:
+        raise ValueError(f"chunksize must be greater than zero, not {chunksize}")
+
+    # `columns` applies to `read_stripe`, not the ORCFile constructor. Reader
+    # hints arrive as strings, so decode the JSON-list representation that
+    # `pandas.read_orc` previously accepted through signature casting.
+    # Also handle single-column spelling `#columns=id` well.
+    if isinstance(columns, str):
+        try:
+            columns = json.loads(columns)
+        except (ValueError, TypeError):
+            columns = [columns]
+        if not isinstance(columns, list):
+            columns = [columns]
+
+    for file_obj in items:
+        with file_obj.open() as f:
+            orc_file = orc.ORCFile(f)
+            for stripe_index in range(orc_file.nstripes):
+                stripe = orc_file.read_stripe(stripe_index, columns=columns)
+                for offset in range(0, stripe.num_rows, chunksize):
+                    yield stripe.slice(offset, chunksize).to_pylist()
+
+
 def read_jsonl(
     items: Iterator[FileItemDict], chunksize: int = 1000
 ) -> Iterator[TDataItems]:
@@ -747,6 +793,10 @@ if TYPE_CHECKING:
         @copy_sig(read_msgpack)
         def read_msgpack(self) -> DltResource:
             """MessagePack reader resource."""
+
+        @copy_sig(read_orc)
+        def read_orc(self) -> DltResource:
+            """ORC reader resource (pyarrow)."""
 
         @copy_sig(read_cbor)
         def read_cbor(self) -> DltResource:
