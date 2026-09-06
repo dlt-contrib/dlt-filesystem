@@ -76,12 +76,20 @@ def test_the_supported_format_message_names_the_registered_set():
 
 
 def _matrix_write_formats() -> set[str]:
-    """Formats whose Write column is ticked in the filesystem format matrix."""
+    """Formats whose Write column is ticked in the filesystem format matrix.
+
+    A row is identified by its Read and Write cells both holding a tick or a cross,
+    which the header and separator rows do not, rather than by the format-hint cell
+    starting with `#`. Keying off the hint would silently ignore a ticked row whose
+    hint were spelled differently, and an ignored row is the one case where this test
+    could pass while the matrix is wrong.
+    """
+    marks = {"✅", "❌"}
     formats = set()
     for line in (DOCS / "filesystem.md").read_text().splitlines():
         cells = [cell.strip() for cell in line.split("|")]
         # | Format | Description | Extensions | Format hint | Read | Write |
-        if len(cells) != 8 or not cells[4].startswith("#"):
+        if len(cells) != 8 or cells[5] not in marks or cells[6] not in marks:
             continue
         if cells[6] == "✅":
             formats.add(cells[4].lstrip("#"))
@@ -105,6 +113,10 @@ PROSE_CLAIMS = [
     (
         "file.md",
         r"Supported output formats\s+are ([^;]+);",
+    ),
+    (
+        "index.md",
+        r"Local files \(([^;]+) written;",
     ),
 ]
 

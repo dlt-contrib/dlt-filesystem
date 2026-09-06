@@ -18,7 +18,7 @@ from dlt_filesystem.source.router import (
 
 
 class LocalFilesystemSource(FilesystemSource):
-    """Read local CSV / JSONL / Parquet files through the shared filesystem readers.
+    """Read local files through the shared filesystem readers, in any known format.
 
     Everything after ``file://`` is treated as a filesystem path, never an RFC-8089
     host, matching how ``csv://`` and ``mmap://`` already work. This keeps the

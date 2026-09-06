@@ -1,4 +1,7 @@
-"""Write CSV / JSONL / Parquet files to the local filesystem via ``file://``.
+"""Write a single file to the local filesystem via ``file://``.
+
+The output format is whatever ``target.registry`` registers a writer for; the
+supported set is stated once there rather than restated here.
 
 This is the write-side twin of ``dlt_filesystem.source`` ``LocalFilesystemSource``
 (the ``file://`` source). It mirrors that URI grammar exactly: everything after
@@ -31,7 +34,7 @@ from dlt_filesystem.util.loader import load_dlt_file
 
 
 class LocalFilesystemDestination:
-    """Write a single local CSV / JSONL / Parquet file addressed by ``file://``.
+    """Write a single local file addressed by ``file://``, in any registered format.
 
     Usage mirrors the ``file://`` source: ``--dest-uri file://<path>[#format]``. The
     ``--dest-table`` value must be ``<dataset>.<table>``; it only names dlt's intermediate
