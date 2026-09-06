@@ -69,7 +69,9 @@ def parse_endpoint(path: str) -> str:
     """
     Parse the endpoint kind from the URI.
 
-    kind is a file format. one of [csv, jsonl, parquet]
+    The kind is the reader name the path's file format routes to; a `.gz` suffix is
+    stripped first, so `events.csv.gz` resolves the same as `events.csv`. Every format
+    in the reader registry is accepted, and an unknown one raises.
     """
     file_extension = path.split(".")[-1]
     if file_extension == "gz":

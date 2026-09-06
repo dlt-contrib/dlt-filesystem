@@ -24,7 +24,8 @@ BASE_READER_REGISTRATIONS = (
     ReaderRegistration("read_jsonl", ("jsonl",), transformer_order=5),
     ReaderRegistration("read_ods", ("ods",), transformer_order=3),
     ReaderRegistration("read_parquet", ("parquet",), transformer_order=11),
-    # bson is read-only: the file:// destination's WRITE_FORMATS is a separate tuple.
+    # bson is read-only: the file:// destination keeps its own writer registrations
+    # (`target.registry`), and registers no writer for it.
     ReaderRegistration("read_bson", ("bson",), transformer_order=6),
     ReaderRegistration("read_excel", ("xlsx",), transformer_order=2),
     ReaderRegistration("read_csv_duckdb", ("csv_duckdb",), transformer_order=12),

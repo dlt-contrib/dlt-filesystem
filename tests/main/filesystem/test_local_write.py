@@ -5,6 +5,7 @@ import json
 import pytest
 
 from dlt_filesystem.target.local import LocalFilesystemDestination
+from dlt_filesystem.target.registry import WRITE_FORMATS
 from omniload import run_ingest
 from omniload.core.factory import SourceDestinationFactory
 from omniload.target.csv import CsvDestination
@@ -36,7 +37,7 @@ def _write_source_files(directory):
     return directory
 
 
-@pytest.mark.parametrize("out_format", ["csv", "jsonl", "parquet"])
+@pytest.mark.parametrize("out_format", WRITE_FORMATS)
 def test_file_to_file_round_trip(tmp_path, out_format):
     """file:// source -> file:// destination end-to-end (no Docker, no DB).
 
@@ -96,7 +97,7 @@ def test_unsupported_destination_format_fails(tmp_path):
     assert not (tmp_path / "out.txt").exists()
 
 
-@pytest.mark.parametrize("out_format", ["csv", "jsonl", "parquet"])
+@pytest.mark.parametrize("out_format", WRITE_FORMATS)
 def test_column_missing_from_first_row_survives(tmp_path, out_format):
     """A column absent from the first row must not be dropped from the output.
 
@@ -144,7 +145,7 @@ def test_nested_destination_dir_is_created(tmp_path, scheme):
     assert len(_read_back(out_path, "csv")) == 3
 
 
-@pytest.mark.parametrize("out_format", ["csv", "jsonl", "parquet"])
+@pytest.mark.parametrize("out_format", WRITE_FORMATS)
 def test_empty_source_writes_a_file_without_crashing(tmp_path, out_format):
     """A header-only source (zero data rows) still produces an output file."""
     (tmp_path / "empty.csv").write_text("name,age\n")
@@ -162,15 +163,54 @@ def test_empty_source_writes_a_file_without_crashing(tmp_path, out_format):
 
 
 def _read_back(path, out_format):
+    """Decode an output file with the format's own conventions, not omniload's reader.
+
+    Deliberately independent of `src/`, so a writer and its reader agreeing on a broken
+    encoding still fails here. `test_written_file_reads_back_through_its_own_reader`
+    covers the other direction.
+    """
     if out_format == "csv":
-        with open(path, newline="") as f:
+        with open(path, newline="", encoding="utf-8") as f:
             return list(csv.DictReader(f))
     if out_format == "jsonl":
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return [json.loads(line) for line in f if line.strip()]
+    if out_format == "json":
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
     import pyarrow.parquet as pq
 
     return pq.read_table(path).to_pylist()
+
+
+@pytest.mark.parametrize("out_format", WRITE_FORMATS)
+def test_written_file_reads_back_through_its_own_reader(tmp_path, out_format):
+    """Every registered writer emits something omniload can read back.
+
+    A writer whose output its own reader rejects is a dead end that unit tests on either
+    half would both pass, so this loads the written file back as a source. Non-ASCII
+    values are in the fixture because the readers decode as UTF-8 unconditionally, so a
+    locale-encoded writer fails here rather than in a user's export.
+    """
+    (tmp_path / "in.csv").write_text(
+        "name,city\nZoë,München\nBob,Ōtautahi\n", encoding="utf-8"
+    )
+    written = tmp_path / f"out.{out_format}"
+    final = tmp_path / "roundtrip.jsonl"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'in.csv'}", "rows", f"file://{written}", "public.rows"
+    )
+    assert result.exit_code == 0, result.output
+
+    result = invoke_ingest_command(
+        f"file://{written}", "rows", f"file://{final}", "public.rows"
+    )
+    assert result.exit_code == 0, result.output
+
+    rows = _read_back(final, "jsonl")
+    assert sorted(row["name"] for row in rows) == ["Bob", "Zoë"]
+    assert sorted(row["city"] for row in rows) == ["München", "Ōtautahi"]
 
 
 # --- csv:// compatibility destination (#301) ---
@@ -223,9 +263,9 @@ def test_csv_destination_writes_every_rotated_load_file(tmp_path):
         "out.parquet",
         "out.dat#jsonl",
         "out.dat#parquet",
-        # `json` is a registered read format, so it names a format even though the write
-        # side cannot produce it. Naming it is an error rather than a CSV file wearing a
-        # `.json` extension.
+        # `json` is writable through `file://`, which is exactly why naming it here is
+        # an error: the scheme pins CSV, so the alternative would be a CSV file wearing
+        # a `.json` extension.
         "out.json",
         "out.dat#csv_duckdb",
     ],

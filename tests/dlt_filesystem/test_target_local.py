@@ -6,7 +6,12 @@ import pytest
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.target.local import LocalFilesystemDestination
 from dlt_filesystem.target.model import DEFAULT_DATASET_NAME
+from dlt_filesystem.target.registry import WRITE_FORMATS_TEXT
 from dlt_filesystem.target.util import _resolve_output_target
+
+# Asserted against the registry rather than typed out, so registering a writer cannot
+# leave these three expectations naming a set the code no longer has.
+SUPPORTED = re.escape(f"only supports file formats: {WRITE_FORMATS_TEXT}")
 
 # Normalized so the relative-form expectations hold on Windows too (os.getcwd() there
 # returns a backslash drive path), matching the source-side test.
@@ -48,23 +53,19 @@ def test_resolve_output_target(uri, path, fmt):
     ["file:///data/out.txt", "file:///data/out", "file:///data/archive.zip"],
 )
 def test_unsupported_format_reports_supported_formats(uri):
-    with pytest.raises(
-        ValueError, match="only supports file formats: csv, jsonl, parquet"
-    ):
+    with pytest.raises(ValueError, match=SUPPORTED):
         _resolve_output_target(uri)
 
 
 @pytest.mark.parametrize("uri", ["file:///data/out.bson", "file:///data/out.dat#bson"])
 def test_bson_destination_is_rejected(uri):
     """BSON is read-only. Adding ``bson`` to ``FORMAT_TO_READER`` lights up the read
-    path, but the destination's ``WRITE_FORMATS`` is a separate tuple, so a ``.bson``
-    output (or an explicit ``#bson`` hint) is still rejected. This pins that contract
-    and documents the harmless edge that a destination ``#bson`` suffix now reads as an
-    (unsupported) format hint rather than part of the filename.
+    path, but the destination registers its own writers, so a ``.bson`` output (or an
+    explicit ``#bson`` hint) is still rejected. This pins that contract and documents
+    the harmless edge that a destination ``#bson`` suffix now reads as an (unsupported)
+    format hint rather than part of the filename.
     """
-    with pytest.raises(
-        ValueError, match="only supports file formats: csv, jsonl, parquet"
-    ):
+    with pytest.raises(ValueError, match=SUPPORTED):
         _resolve_output_target(uri)
 
 
@@ -78,10 +79,7 @@ def test_empty_path_raises(uri):
 
 @pytest.mark.parametrize("uri", ["file://out.csv#csv_duckdb", "file://out.csv_duckdb"])
 def test_csv_duckdb_destination_is_rejected(uri):
-    with pytest.raises(
-        ValueError,
-        match=r"only supports file formats: csv, jsonl, parquet \(got 'csv_duckdb'\)",
-    ):
+    with pytest.raises(ValueError, match=SUPPORTED + re.escape(" (got 'csv_duckdb')")):
         _resolve_output_target(uri)
 
 

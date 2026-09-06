@@ -1,21 +1,71 @@
-# csv_headless is a read-only concept (parsing a header-less CSV);
-# writing always emits a header, so the write side supports the
-# plain-format subset of FORMAT_TO_READER.
+from dataclasses import dataclass
 from typing import Callable
 
-from dlt_filesystem.target.writer import write_csv, write_jsonl, write_parquet
+from dlt_filesystem.target.writer import (
+    write_csv,
+    write_json,
+    write_jsonl,
+    write_parquet,
+)
 
-FORMAT_TO_WRITER: dict[str, Callable[[str, list[dict]], None]] = {
-    "csv": write_csv,
-    "jsonl": write_jsonl,
-    "parquet": write_parquet,
-}
+Writer = Callable[[str, list[dict]], None]
 
-WRITE_FORMATS = ("csv", "jsonl", "parquet")
+
+@dataclass(frozen=True)
+class WriterRegistration:
+    """Describe one writer and the format keys that route to it.
+
+    The write-side twin of ``source.format.registry.ReaderRegistration``. It carries a
+    callable rather than a name because a writer is called directly, where a reader name
+    is resolved against a dlt source's attributes at build time.
+    """
+
+    writer: Writer
+    format_keys: tuple[str, ...]
+
+
+# Writers that ship with the base install. Declaration order is what the
+# supported-format error message lists, so it is pinned here (lexical) rather than left
+# to whatever a dict literal happens to iterate.
+#
+# The write side registers fewer formats than the read side, and the gap is deliberate
+# rather than pending: `csv_headless` is a read-only concept (parsing a header-less CSV;
+# writing always emits a header), `csv_duckdb` is a reader choice for the same bytes CSV
+# already writes, and `bson` / `xml` are read-only for reasons the docs give per format.
+WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
+    WriterRegistration(write_csv, ("csv",)),
+    # `json` writes one array document and `jsonl` one record per line, matching the
+    # split the readers already make: a `.json` file is read as a single document.
+    WriterRegistration(write_json, ("json",)),
+    WriterRegistration(write_jsonl, ("jsonl",)),
+    WriterRegistration(write_parquet, ("parquet",)),
+)
+
+
+def _build_writer_map(
+    registrations: tuple[WriterRegistration, ...],
+) -> dict[str, Writer]:
+    """Build a format-to-writer map, rejecting ambiguous format keys.
+
+    Mirrors ``source.format.registry._build_format_map`` rather than reusing it: that
+    one is typed ``tuple[ReaderRegistration, ...] -> dict[str, str]`` and maps a format
+    to a reader *name*, where the write side routes straight to a callable.
+    """
+    writer_map: dict[str, Writer] = {}
+    for registration in registrations:
+        for format_key in registration.format_keys:
+            if format_key in writer_map:
+                raise ValueError(f"Duplicate file format registration: {format_key}")
+            writer_map[format_key] = registration.writer
+    return writer_map
+
+
+FORMAT_TO_WRITER = _build_writer_map(WRITER_REGISTRATIONS)
+WRITE_FORMATS = tuple(FORMAT_TO_WRITER)
 WRITE_FORMATS_TEXT = ", ".join(WRITE_FORMATS)
 
 
-def writer_for_format(file_format: str) -> Callable[[str, list[dict]], None]:
+def writer_for_format(file_format: str) -> Writer:
     try:
         return FORMAT_TO_WRITER[file_format]
     except KeyError as e:
