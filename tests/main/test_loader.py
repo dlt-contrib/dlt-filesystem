@@ -9,6 +9,7 @@ believes and could not catch a change in dlt.
 import os
 import pathlib
 import tempfile
+from contextlib import contextmanager
 
 import pytest
 from dlt.common.data_writers.writers import TLoaderFileFormat
@@ -36,27 +37,50 @@ LOADER_FILES: dict[str, tuple[TLoaderFileFormat, bool, str]] = {
 }
 
 
+@contextmanager
+def _compression(disable: bool):
+    """Set dlt's compression switch for one load, then put the environment back.
+
+    Leaving it set would follow the process out of the fixture and, under xdist, reach
+    every later test on the same worker: an uncompressed CSV intermediate is exactly what
+    some of them are written to prove does not happen by default.
+    """
+    key = "DATA_WRITER__DISABLE_COMPRESSION"
+    previous = os.environ.get(key)
+    if disable:
+        os.environ[key] = "true"
+    else:
+        os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 def _write_with_dlt(
-    loader_file_format: TLoaderFileFormat, disable_compression: bool
+    base: pathlib.Path,
+    loader_file_format: TLoaderFileFormat,
+    disable_compression: bool = False,
 ) -> str:
-    """Run one dlt load into a temp bucket and return its single data file."""
+    """Run one dlt load into ``base`` and return its single data file."""
     import dlt
 
-    if disable_compression:
-        os.environ["DATA_WRITER__DISABLE_COMPRESSION"] = "true"
-    else:
-        os.environ.pop("DATA_WRITER__DISABLE_COMPRESSION", None)
-
-    bucket = tempfile.mkdtemp()
-    pipeline = dlt.pipeline(
-        pipeline_name=f"loader_fixture_{loader_file_format}_{disable_compression}",
-        destination=dlt.destinations.filesystem(
-            bucket_url=pathlib.Path(bucket).as_uri()
-        ),
-        dataset_name="public",
-        pipelines_dir=tempfile.mkdtemp(),
-    )
-    pipeline.run(TESTDATA, table_name="people", loader_file_format=loader_file_format)
+    bucket = tempfile.mkdtemp(dir=base)
+    with _compression(disable_compression):
+        pipeline = dlt.pipeline(
+            pipeline_name=f"loader_fixture_{loader_file_format}_{disable_compression}",
+            destination=dlt.destinations.filesystem(
+                bucket_url=pathlib.Path(bucket).as_uri()
+            ),
+            dataset_name="public",
+            pipelines_dir=tempfile.mkdtemp(dir=base),
+        )
+        pipeline.run(
+            TESTDATA, table_name="people", loader_file_format=loader_file_format
+        )
 
     table_dir = os.path.join(bucket, "public", "people")
     names = sorted(os.listdir(table_dir))
@@ -65,15 +89,13 @@ def _write_with_dlt(
 
 
 @pytest.fixture(scope="session")
-def loader_files():
+def loader_files(tmp_path_factory):
     """One dlt-written data file per format, keyed by the labels in ``LOADER_FILES``."""
-    files = {}
-    try:
-        for label, (fmt, disable_compression, _) in LOADER_FILES.items():
-            files[label] = _write_with_dlt(fmt, disable_compression)
-        yield files
-    finally:
-        os.environ.pop("DATA_WRITER__DISABLE_COMPRESSION", None)
+    base = tmp_path_factory.mktemp("loader_files")
+    return {
+        label: _write_with_dlt(base, fmt, disable_compression)
+        for label, (fmt, disable_compression, _) in LOADER_FILES.items()
+    }
 
 
 def _payload(rows):
@@ -143,12 +165,58 @@ def test_loader_never_invokes_a_subprocess(loader_files, monkeypatch):
     assert calls == []
 
 
-def test_loader_reads_the_csv_dialect_dlt_wrote(monkeypatch):
+@pytest.mark.parametrize(
+    "setting",
+    [
+        "DATA_WRITER__DELIMITER",
+        # The staged files are written in the normalize stage, so this spelling reaches
+        # the writer as well. Resolving the dialect without that section reads only the
+        # unscoped one and quietly parses the file with the wrong delimiter.
+        "NORMALIZE__DATA_WRITER__DELIMITER",
+    ],
+)
+def test_loader_reads_the_csv_delimiter_dlt_wrote(tmp_path, monkeypatch, setting):
     """dlt's CSV writer takes its delimiter from configuration. Reading with a hardcoded
     comma parses every row into one composite column named by the whole header line, so
     the load reports success and the rows are unusable."""
-    monkeypatch.setenv("DATA_WRITER__DELIMITER", "|")
+    monkeypatch.setenv(setting, "|")
 
-    path = _write_with_dlt("csv", disable_compression=False)
+    path = _write_with_dlt(tmp_path, "csv")
 
     assert _payload(load_dlt_file(path)) == TESTDATA
+
+
+def test_loader_refuses_a_csv_line_terminator_it_cannot_read(tmp_path, monkeypatch):
+    """A terminator csv does not recognise leaves no newline in the file, so
+    ``csv.DictReader`` sees one unterminated record and yields nothing: a load of zero
+    rows rather than an error, which is how an export silently loses everything.
+    Splitting the text on the terminator instead would have to know where the quoted
+    fields are, and a value containing the terminator would be truncated in silence,
+    so this refuses rather than trading one silent wrong answer for another."""
+    monkeypatch.setenv("DATA_WRITER__LINETERMINATOR", "|")
+
+    path = _write_with_dlt(tmp_path, "csv")
+
+    with pytest.raises(UnsupportedLoaderFileFormat, match="line terminator"):
+        list(load_dlt_file(path))
+
+
+def test_loader_reads_carriage_return_line_endings(tmp_path, monkeypatch):
+    """``\r\n`` is the other terminator csv ends a record on, so it round-trips rather
+    than being refused with the ones it cannot read."""
+    monkeypatch.setenv("DATA_WRITER__LINETERMINATOR", "\r\n")
+
+    path = _write_with_dlt(tmp_path, "csv")
+
+    assert _payload(load_dlt_file(path)) == TESTDATA
+
+
+def test_loader_refuses_headerless_csv(tmp_path, monkeypatch):
+    """The names live in the dlt schema, not the file. Refusing beats naming the columns
+    after the first row of data."""
+    monkeypatch.setenv("DATA_WRITER__INCLUDE_HEADER", "false")
+
+    path = _write_with_dlt(tmp_path, "csv")
+
+    with pytest.raises(UnsupportedLoaderFileFormat, match="without a header"):
+        list(load_dlt_file(path))

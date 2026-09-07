@@ -30,7 +30,8 @@ class CsvDestination(LocalFilesystemDestination):
         A dot inside a quoted identifier is one component, and a name that resolves no
         schema says so rather than restating the format. The shared ``post_load()``
         locates dlt's staged output by these two names, so they are recorded on the
-        instance as well as returned.
+        instance as well as returned, and dlt's reserved namespace is refused here for
+        the same reason it is on the parent: this parser replaces that one entirely.
         """
         parsed = self.table_capability.parse(table)
         if parsed.schema is None:
@@ -38,6 +39,7 @@ class CsvDestination(LocalFilesystemDestination):
 
         self.dataset_name = parsed.schema
         self.table_name = parsed.table
+        self.reject_reserved_table(self.table_name)
         return {
             "dataset_name": self.dataset_name,
             "table_name": self.table_name,

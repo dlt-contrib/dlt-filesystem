@@ -83,9 +83,30 @@ class LocalFilesystemDestination:
         # gives an RFC-correct file:// URL on every platform (file:///tmp/x on POSIX,
         # file:///C:/... on Windows), avoiding the drive-as-host trap of a naive
         # "file://" + path.
+        # extra_placeholders is pinned for the same reason as the layout, and it is not
+        # covered by pinning the layout: dlt resolves it from ambient configuration too
+        # and applies its entries over the built-in ones, so an `ext` or `table_name`
+        # entry rewrites a name this layout had already fixed.
         return dlt.destinations.filesystem(
-            bucket_url=Path(self.temp_path).as_uri(), layout=STAGING_LAYOUT
+            bucket_url=Path(self.temp_path).as_uri(),
+            layout=STAGING_LAYOUT,
+            extra_placeholders={},
         )
+
+    def reject_reserved_table(self, table_name: str) -> None:
+        """Refuse a destination table in dlt's own namespace.
+
+        dlt writes its bookkeeping into the staging directory of a table named this way
+        (a load record into ``_dlt_loads``, and so on), and ``post_load()`` reads every
+        data file it finds there, so the export would interleave those rows with the
+        source's. Subclasses that parse the table name themselves call this too, since
+        they share the ``post_load()`` that does the reading.
+        """
+        if table_name.startswith("_dlt_"):
+            raise ValueError(
+                f"Table name {table_name} is reserved by dlt and cannot be written "
+                f"to a single file"
+            )
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
         """Decode dataset and table name from `--dest-table` or `--dest-uri` parameters."""
@@ -96,6 +117,7 @@ class LocalFilesystemDestination:
             if len(table_fields) != 2:
                 raise ValueError("Table name must be in the format <schema>.<table>")
             self.dataset_name, self.table_name = table_fields
+            self.reject_reserved_table(self.table_name)
 
         # If it's empty, use a fixed dataset name (`public`), and derive
         # the table name from the filename path component in the URI.

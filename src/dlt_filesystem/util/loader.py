@@ -83,7 +83,22 @@ def csvfile(filepath: str, compressed: bool = False):
     from dlt.common.configuration import resolve_configuration
     from dlt.common.destination.configuration import CsvFormatConfiguration
 
-    csv_format = resolve_configuration(CsvFormatConfiguration())
+    # The section matters. These files are written in the normalize stage, so a
+    # `[normalize.data_writer]` setting applies to them; resolving without the section
+    # sees only the unscoped `[data_writer]` spelling and silently reads the default
+    # dialect against a file written with another one.
+    csv_format = resolve_configuration(
+        CsvFormatConfiguration(), sections=("normalize",)
+    )
+    # csv ends a record on its own newline handling, which covers "\n" and "\r\n" and
+    # nothing else. Splitting the text on another terminator would have to know where
+    # the quoted fields are to be correct, so a value containing the terminator would
+    # be truncated without a word. Refusing says what happened instead.
+    if csv_format.lineterminator not in ("\n", "\r\n"):
+        raise UnsupportedLoaderFileFormat(
+            f"csv written with the line terminator {csv_format.lineterminator!r}: "
+            f"only newline and carriage-return newline can be read back"
+        )
     if not csv_format.include_header:
         raise UnsupportedLoaderFileFormat(
             "csv written without a header: the column names are in the dlt schema "

@@ -408,3 +408,56 @@ def test_destinations_read_back_a_csv_intermediate(tmp_path, scheme):
 
     assert result.exit_code == 0, result.output
     assert [r["name"] for r in _read_back(out_path, "csv")] == ["Alice", "Bob", "Carol"]
+
+
+@pytest.mark.parametrize(
+    "placeholders",
+    [
+        '{"ext": "csv"}',  # renames a gzip-JSONL file to a format it is not
+        '{"table_name": "elsewhere"}',  # stages the load where post_load does not look
+    ],
+)
+def test_staging_ignores_ambient_extra_placeholders(
+    tmp_path, monkeypatch, placeholders
+):
+    """Pinning the layout is not enough on its own. dlt resolves ``extra_placeholders``
+    from configuration too and applies its entries over the built-in ones, so an ``ext``
+    or ``table_name`` entry rewrites a name the layout had already fixed."""
+    monkeypatch.setenv("DESTINATION__FILESYSTEM__EXTRA_PLACEHOLDERS", placeholders)
+    _write_source_files(tmp_path)
+    out_path = tmp_path / "out.jsonl"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'people.csv'}",
+        "people",
+        f"file://{out_path}",
+        "public.people",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [r["name"] for r in _read_back(out_path, "jsonl")] == [
+        "Alice",
+        "Bob",
+        "Carol",
+    ]
+
+
+@pytest.mark.parametrize("scheme", ["file", "csv"])
+def test_reserved_dlt_table_name_is_refused(tmp_path, scheme):
+    """dlt writes its own bookkeeping into the staging directory of a table in this
+    namespace, and ``post_load`` reads every data file it finds there, so exporting one
+    would interleave dlt's load record with the source's rows. ``csv://`` parses the
+    destination table itself rather than inheriting the parser, so it has to refuse the
+    namespace itself; it shares the ``post_load`` that does the reading."""
+    _write_source_files(tmp_path)
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'people.csv'}",
+        "people",
+        f"{scheme}://{tmp_path / 'out.csv'}",
+        "public._dlt_loads",
+        print_output=False,
+    )
+
+    assert result.exit_code != 0
+    assert "reserved by dlt" in str(result.output) + str(result.exception)
