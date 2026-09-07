@@ -201,10 +201,14 @@ def test_loader_refuses_a_csv_line_terminator_it_cannot_read(tmp_path, monkeypat
         list(load_dlt_file(path))
 
 
-def test_loader_reads_carriage_return_line_endings(tmp_path, monkeypatch):
-    """``\r\n`` is the other terminator csv ends a record on, so it round-trips rather
-    than being refused with the ones it cannot read."""
-    monkeypatch.setenv("DATA_WRITER__LINETERMINATOR", "\r\n")
+@pytest.mark.parametrize("terminator", ["\r\n", "\r"])
+def test_loader_reads_the_line_endings_csv_ends_a_record_on(
+    tmp_path, monkeypatch, terminator
+):
+    """csv recognises all three spellings of a line ending when reading, whatever it was
+    told to write, so these round-trip rather than being refused with the terminators it
+    genuinely cannot read."""
+    monkeypatch.setenv("DATA_WRITER__LINETERMINATOR", terminator)
 
     path = _write_with_dlt(tmp_path, "csv")
 

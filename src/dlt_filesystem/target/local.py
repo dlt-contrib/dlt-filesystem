@@ -99,8 +99,8 @@ class LocalFilesystemDestination:
         dlt writes its bookkeeping into the staging directory of a table named this way
         (a load record into ``_dlt_loads``, and so on), and ``post_load()`` reads every
         data file it finds there, so the export would interleave those rows with the
-        source's. Subclasses that parse the table name themselves call this too, since
-        they share the ``post_load()`` that does the reading.
+        source's. Called from the table-name parsers, which fail before a load runs, and
+        again from ``post_load()`` itself, which no subclass can route around.
         """
         if table_name.startswith("_dlt_"):
             raise ValueError(
@@ -131,6 +131,12 @@ class LocalFilesystemDestination:
         }
 
     def post_load(self) -> None:
+        # Checked again here, not only where the name was parsed. The read below is what
+        # the reserved namespace breaks, and a subclass that replaces the parser drops a
+        # parse-step check silently: that is how `csv://` lost the first one. Parse-step
+        # stays as well, so the ordinary route fails before a load runs rather than after.
+        self.reject_reserved_table(self.table_name)
+
         table_dir = os.path.join(self.temp_path, self.dataset_name, self.table_name)
         try:
             # The whole load is materialized here before writing. dlt omits null keys per

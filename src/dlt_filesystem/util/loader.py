@@ -90,14 +90,15 @@ def csvfile(filepath: str, compressed: bool = False):
     csv_format = resolve_configuration(
         CsvFormatConfiguration(), sections=("normalize",)
     )
-    # csv ends a record on its own newline handling, which covers "\n" and "\r\n" and
-    # nothing else. Splitting the text on another terminator would have to know where
-    # the quoted fields are to be correct, so a value containing the terminator would
-    # be truncated without a word. Refusing says what happened instead.
-    if csv_format.lineterminator not in ("\n", "\r\n"):
+    # csv ends a record on its own newline handling, which is the three spellings of a
+    # line ending and nothing else; `lineterminator` governs writing, not reading, so
+    # there is nothing to pass it. Splitting the text on any other terminator would have
+    # to know where the quoted fields are to be correct, and a value containing the
+    # terminator would be truncated without a word. Refusing says what happened instead.
+    if csv_format.lineterminator not in ("\n", "\r\n", "\r"):
         raise UnsupportedLoaderFileFormat(
             f"csv written with the line terminator {csv_format.lineterminator!r}: "
-            f"only newline and carriage-return newline can be read back"
+            f"only the line endings csv itself ends a record on can be read back"
         )
     if not csv_format.include_header:
         raise UnsupportedLoaderFileFormat(
