@@ -349,3 +349,62 @@ def test_csv_destination_writes_a_path_with_no_csv_extension(tmp_path, name):
     )
     assert result.exit_code == 0, result.output
     assert [r["name"] for r in _read_back(out_path, "csv")] == ["Alice", "Bob", "Carol"]
+
+
+# --- the staging bucket's own naming (#333) ---
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        "{table_name}/data",  # no format in the name at all
+        "{table_name}/data.csv",  # a format, and the wrong one
+    ],
+)
+def test_staging_layout_ignores_ambient_filesystem_configuration(
+    tmp_path, monkeypatch, layout
+):
+    """``post_load`` reads the staged files back by the format in their name, so the
+    staging bucket names itself rather than inheriting a user's filesystem layout. It is
+    a private temp directory the user never sees, and their layout would otherwise reach
+    it: without ``{ext}`` the format leaves the name entirely, and a layout ending
+    ``.csv`` puts a wrong one on a gzip-JSONL file, which reads back as mis-parsed rows
+    rather than as an error."""
+    monkeypatch.setenv("DESTINATION__FILESYSTEM__LAYOUT", layout)
+    _write_source_files(tmp_path)
+    out_path = tmp_path / "out.jsonl"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'people.csv'}",
+        "people",
+        f"file://{out_path}",
+        "public.people",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [r["name"] for r in _read_back(out_path, "jsonl")] == [
+        "Alice",
+        "Bob",
+        "Carol",
+    ]
+
+
+@pytest.mark.parametrize("scheme", ["file", "csv"])
+def test_destinations_read_back_a_csv_intermediate(tmp_path, scheme):
+    """``--loader-file-format csv`` stages CSV instead of the default JSONL. dlt gzips
+    both, so the staged file used to be read as JSONL and the load died on a raw JSON
+    decode error. ``csv://`` inherits ``post_load``, so it is covered here too rather
+    than assumed from the ``file://`` case."""
+    _write_source_files(tmp_path)
+    out_path = tmp_path / f"out-{scheme}.csv"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'people.csv'}",
+        "people",
+        f"{scheme}://{out_path}",
+        "public.people",
+        loader_file_format="csv",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert [r["name"] for r in _read_back(out_path, "csv")] == ["Alice", "Bob", "Carol"]

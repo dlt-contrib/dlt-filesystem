@@ -32,6 +32,17 @@ from dlt_filesystem.target.registry import writer_for_format
 from dlt_filesystem.target.util import _resolve_output_target, _strip_dlt_columns
 from dlt_filesystem.util.loader import load_dlt_file
 
+#: Layout for the private staging bucket below. ``post_load()`` reads those files back
+#: by the format in their name, so the name has to carry one; dlt resolves an unset
+#: ``layout`` from ambient configuration, where a user's own filesystem layout would
+#: reach a bucket they never see. A layout without ``{ext}`` drops the extension, and one
+#: like ``{table_name}/data.csv`` puts a misleading one on a gzip-JSONL file.
+#:
+#: It differs from dlt's own default by one separator on purpose: dlt drops a constructor
+#: argument equal to the declared default and falls back to configuration, so passing
+#: ``DEFAULT_FILE_LAYOUT`` verbatim would pin nothing.
+STAGING_LAYOUT = "{table_name}/{load_id}-{file_id}.{ext}"
+
 
 class LocalFilesystemDestination:
     """Write a single local file addressed by ``file://``, in any registered format.
@@ -72,7 +83,9 @@ class LocalFilesystemDestination:
         # gives an RFC-correct file:// URL on every platform (file:///tmp/x on POSIX,
         # file:///C:/... on Windows), avoiding the drive-as-host trap of a naive
         # "file://" + path.
-        return dlt.destinations.filesystem(bucket_url=Path(self.temp_path).as_uri())
+        return dlt.destinations.filesystem(
+            bucket_url=Path(self.temp_path).as_uri(), layout=STAGING_LAYOUT
+        )
 
     def dlt_run_params(self, uri: str, table: str, **kwargs) -> dict:
         """Decode dataset and table name from `--dest-table` or `--dest-uri` parameters."""
