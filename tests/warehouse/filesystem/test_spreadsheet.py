@@ -56,7 +56,7 @@ def test_spreadsheet_source_with_sheet_name(request, spreadsheet_fixture, tmp_pa
     # Validate output file content.
     content = csv_outfile.read_text().splitlines()
     assert content[0] == "symbol,date,is_enabled,name"
-    assert content[1] == "A,2024-04-19,True,AGILENT TECHNOLOGIES INC"
+    assert content[1] == "A,2024-04-19,true,AGILENT TECHNOLOGIES INC"
 
 
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])
@@ -124,7 +124,7 @@ def test_spreadsheet_source_with_sheet_id(request, spreadsheet_fixture, tmp_path
     # Validate output file content.
     content = csv_outfile.read_text().splitlines()
     assert content[0] == "symbol,date,is_enabled,name"
-    assert content[1] == "A,2024-04-19,True,AGILENT TECHNOLOGIES INC"
+    assert content[1] == "A,2024-04-19,true,AGILENT TECHNOLOGIES INC"
 
 
 @pytest.mark.parametrize("spreadsheet_fixture", ["ods_testfile", "xlsx_testfile"])

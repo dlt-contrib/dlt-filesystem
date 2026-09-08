@@ -461,3 +461,101 @@ def test_reserved_dlt_table_name_is_refused(tmp_path, scheme):
 
     assert result.exit_code != 0
     assert "reserved by dlt" in str(result.output) + str(result.exception)
+
+
+def _typed_duckdb_source(tmp_path):
+    """A source carrying the types only the parquet intermediate delivers natively.
+
+    A CSV fixture cannot produce a decimal, a blob or a time in the first place, which
+    is why these two cases build a database instead.
+    """
+    import duckdb
+
+    source = tmp_path / "src.duckdb"
+    connection = duckdb.connect(str(source))
+    connection.execute(
+        'CREATE TABLE t (id INTEGER, price DECIMAL(10,2), blob BLOB, "at" TIME)'
+    )
+    connection.execute("INSERT INTO t VALUES (1, 1.50, 'hi'::BLOB, '09:30:00')")
+    connection.close()
+    return source
+
+
+def test_csv_survives_a_forced_parquet_intermediate(tmp_path):
+    """`--loader-file-format parquet` is the only load path that hands a writer native
+    values instead of JSON-typed ones, and CSV has no column type for binary at all.
+
+    The replaced writer stringified whatever it was handed, so a blob column landed in
+    the file as the Python repr `b'hi'`. It now carries the base64 string the JSON
+    writers write for the same value, and the decimal keeps the scale a float drops.
+    """
+    out_path = tmp_path / "out.csv"
+    result = invoke_ingest_command(
+        f"duckdb:///{_typed_duckdb_source(tmp_path)}",
+        "main.t",
+        f"file://{out_path}",
+        "public.t",
+        loader_file_format="parquet",
+    )
+    assert result.exit_code == 0, result.output
+
+    row = _read_back(out_path, "csv")[0]
+    assert row["blob"] == "aGk="
+    assert row["price"] == "1.50"
+    assert row["at"].startswith("09:30:00")
+
+
+def test_parquet_keeps_native_types_through_a_forced_parquet_intermediate(tmp_path):
+    """The same load into the columnar format, where each of those types has a column
+    type of its own: they survive as themselves rather than as text."""
+    import datetime
+    import decimal
+
+    out_path = tmp_path / "out.parquet"
+    result = invoke_ingest_command(
+        f"duckdb:///{_typed_duckdb_source(tmp_path)}",
+        "main.t",
+        f"file://{out_path}",
+        "public.t",
+        loader_file_format="parquet",
+    )
+    assert result.exit_code == 0, result.output
+
+    import pyarrow.parquet as pq
+
+    row = _read_back(out_path, "parquet")[0]
+    assert row["price"] == decimal.Decimal("1.50")
+    assert row["blob"] == b"hi"
+    assert row["at"] == datetime.time(9, 30)
+    # `Decimal("1.50") == 1.5` is true, so the value assertion above passes for a double
+    # column too. The column type is what says the scale survived the round trip.
+    import pyarrow as pa
+
+    price_type = pq.read_table(out_path).schema.field("price").type
+    assert pa.types.is_decimal(price_type), price_type
+    assert price_type.scale == 2
+
+
+def test_nested_source_reaches_a_csv_export_as_json(tmp_path):
+    """A nested document reaches a CSV export from any JSON-shaped source on the
+    default load path, so this is the reachable half of what CSV cannot hold natively.
+
+    Asserted end-to-end rather than on the writer alone, because it is dlt that decides
+    whether a nested value arrives as a document or as a normalized child table.
+    """
+    (tmp_path / "in.jsonl").write_text(
+        '{"id": 1, "meta": {"a": 1}, "tags": ["p", "q"]}\n', encoding="utf-8"
+    )
+    out_path = tmp_path / "out.csv"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'in.jsonl'}",
+        "rows",
+        f"file://{out_path}",
+        "public.rows",
+    )
+    assert result.exit_code == 0, result.output
+
+    row = _read_back(out_path, "csv")[0]
+    assert json.loads(row["meta"]) == {"a": 1}
+    assert json.loads(row["tags"]) == ["p", "q"]
