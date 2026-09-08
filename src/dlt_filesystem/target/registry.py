@@ -3,6 +3,7 @@ from typing import Callable
 
 from dlt_filesystem.target.writer import (
     write_csv,
+    write_feather,
     write_json,
     write_jsonl,
     write_orc,
@@ -36,6 +37,12 @@ class WriterRegistration:
 # already writes, and `bson` / `xml` are read-only for reasons the docs give per format.
 WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
     WriterRegistration(write_csv, ("csv",)),
+    # `arrow` and `ipc` are aliases for the same reason `yml` is one below: Feather V2
+    # is the Arrow IPC file format and travels under all three extensions, so a
+    # destination spelled `out.arrow` must resolve or it is rejected as an unsupported
+    # format while `out.feather` writes. Only `feather` is advertised, so the message
+    # names one format rather than three.
+    WriterRegistration(write_feather, ("feather", "arrow", "ipc")),
     # `json` writes one array document and `jsonl` one record per line, matching the
     # split the readers already make: a `.json` file is read as a single document.
     WriterRegistration(write_json, ("json",)),

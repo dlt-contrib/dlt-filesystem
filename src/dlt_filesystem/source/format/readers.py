@@ -434,6 +434,41 @@ def read_spreadsheet(
             yield dlt.mark.with_table_name(rows, sheet_name)
 
 
+def _validated_chunksize(chunksize: Any) -> int:
+    """Coerce a ``#chunksize=`` reader hint to a positive integer.
+
+    Hints arrive as strings, so the cast is the validation: a non-numeric value is a
+    ``TypeError`` naming what was given, and a non-positive one a ``ValueError``, rather
+    than an empty read or an infinite loop further down.
+    """
+    try:
+        chunksize = int(chunksize)
+    except (TypeError, ValueError):
+        raise TypeError(f"chunksize must be an integer, not {chunksize}")
+    if chunksize < 1:
+        raise ValueError(f"chunksize must be greater than zero, not {chunksize}")
+    return chunksize
+
+
+def _decode_column_selection(
+    columns: Optional[Union[list[str], str]],
+) -> Optional[list[str]]:
+    """Decode a ``#columns=`` reader hint into a list of column names.
+
+    A hint arrives as a string in both of its spellings: the JSON list a caller writes
+    for several columns (``#columns=["id","name"]``) and the bare name for one
+    (``#columns=id``). A value that is already a list is passed through, which is how a
+    Python caller supplies it.
+    """
+    if not isinstance(columns, str):
+        return columns
+    try:
+        decoded = json.loads(columns)
+    except (ValueError, TypeError):
+        return [columns]
+    return decoded if isinstance(decoded, list) else [decoded]
+
+
 def read_orc(
     items: Iterator[FileItemDict],
     chunksize: int = 1000,
@@ -442,24 +477,9 @@ def read_orc(
     """Reader for ORC files that yields chunked stripe output."""
     from pyarrow import orc
 
-    try:
-        chunksize = int(chunksize)
-    except (TypeError, ValueError):
-        raise TypeError(f"chunksize must be an integer, not {chunksize}")
-    if chunksize < 1:
-        raise ValueError(f"chunksize must be greater than zero, not {chunksize}")
-
-    # `columns` applies to `read_stripe`, not the ORCFile constructor. Reader
-    # hints arrive as strings, so decode the JSON-list representation that
-    # `pandas.read_orc` previously accepted through signature casting.
-    # Also handle single-column spelling `#columns=id` well.
-    if isinstance(columns, str):
-        try:
-            columns = json.loads(columns)
-        except (ValueError, TypeError):
-            columns = [columns]
-        if not isinstance(columns, list):
-            columns = [columns]
+    chunksize = _validated_chunksize(chunksize)
+    # `columns` applies to `read_stripe`, not the ORCFile constructor.
+    columns = _decode_column_selection(columns)
 
     for file_obj in items:
         with file_obj.open() as f:
@@ -468,6 +488,81 @@ def read_orc(
                 stripe = orc_file.read_stripe(stripe_index, columns=columns)
                 for offset in range(0, stripe.num_rows, chunksize):
                     yield stripe.slice(offset, chunksize).to_pylist()
+
+
+#: Feather V1's container magic. V2 is the Arrow IPC file format, whose magic is
+#: ``ARROW1``; V1 is a different container that only the deprecated ``pyarrow.feather``
+#: reader opens, so it is detected here and named rather than left to fail as corruption.
+_FEATHER_V1_MAGIC = b"FEA1"
+
+
+def _reject_feather_v1(handle: Any) -> None:
+    """Refuse a Feather V1 file by its own magic rather than by what V2 fails to find.
+
+    ``pa.ipc.open_file`` reports ``Not an Arrow file`` for a V1 file, which reads as "this
+    file is damaged" for a file that is a perfectly good Feather V1. Only the deprecated
+    ``pyarrow.feather`` reader opens that container.
+    """
+    magic = handle.read(len(_FEATHER_V1_MAGIC))
+    handle.seek(0)
+    if magic == _FEATHER_V1_MAGIC:
+        raise ValueError(
+            "Feather V1 files are not supported; this reader handles Feather V2, "
+            "the Arrow IPC file format. Rewrite the file as V2 to read it."
+        )
+
+
+def _reject_unknown_columns(selection: list[str], available: list[str]) -> None:
+    """Reject a ``#columns=`` selection naming a column the file does not carry.
+
+    ``RecordBatch.select`` raises a bare ``KeyError`` that does not say what the valid
+    names are. The wording is ORC's, which pyarrow produces for the same mistake on
+    ``read_stripe``, so the two columnar readers answer a typo the same way.
+    """
+    for name in selection:
+        if name not in available:
+            raise ValueError(
+                f"Invalid column selected {name}. "
+                f"Valid names are {', '.join(sorted(available))}"
+            )
+
+
+def read_feather(
+    items: Iterator[FileItemDict],
+    chunksize: int = 1000,
+    columns: Optional[Union[list[str], str]] = None,
+) -> Iterator[TDataItems]:
+    """Reader for Feather V2 (Arrow IPC file) data that yields chunked batch output.
+
+    Record batches are read one at a time through ``get_batch``, the Arrow IPC analogue
+    of ORC's stripes, so a file written in batches is never materialized whole. A batch
+    larger than ``chunksize`` is sliced; a smaller one yields as it stands, so physical
+    batch boundaries are visible in the output.
+
+    Args:
+        chunksize (int, optional): The number of rows to yield at once, defaults to 1000.
+        columns (optional): Columns to read, as a list or a ``#columns=`` hint.
+
+    Returns:
+        TDataItem: The file content
+    """
+    import pyarrow as pa
+
+    chunksize = _validated_chunksize(chunksize)
+    selection = _decode_column_selection(columns)
+
+    for file_obj in items:
+        with file_obj.open() as f:
+            _reject_feather_v1(f)
+            reader = pa.ipc.open_file(f)
+            if selection is not None:
+                _reject_unknown_columns(selection, reader.schema.names)
+            for batch_index in range(reader.num_record_batches):
+                batch = reader.get_batch(batch_index)
+                if selection is not None:
+                    batch = batch.select(selection)
+                for offset in range(0, batch.num_rows, chunksize):
+                    yield batch.slice(offset, chunksize).to_pylist()
 
 
 def read_jsonl(
@@ -797,6 +892,10 @@ if TYPE_CHECKING:
         @copy_sig(read_orc)
         def read_orc(self) -> DltResource:
             """ORC reader resource (pyarrow)."""
+
+        @copy_sig(read_feather)
+        def read_feather(self) -> DltResource:
+            """Feather V2 / Arrow IPC reader resource (pyarrow)."""
 
         @copy_sig(read_cbor)
         def read_cbor(self) -> DltResource:

@@ -45,6 +45,22 @@ def test_only_the_first_key_of_a_registration_is_advertised():
     assert "yml" in WRITE_FORMATS and "yml" not in ADVERTISED_WRITE_FORMATS
 
 
+def test_no_registered_write_alias_is_advertised():
+    """The same property the read side asserts, so neither registry can drift alone.
+
+    Non-vacuity first: with no alias registered this would pass against an
+    implementation that advertised every routing key.
+    """
+    aliases = {
+        key
+        for registration in WRITER_REGISTRATIONS
+        for key in registration.format_keys[1:]
+    }
+    assert aliases, "no registration carries an alias, so this guard proves nothing"
+    assert aliases.isdisjoint(ADVERTISED_WRITE_FORMATS)
+    assert aliases < set(WRITE_FORMATS), "an alias must still route"
+
+
 def test_an_alias_routes_to_the_same_writer_as_its_canonical_format():
     assert writer_for_format("yml") is writer_for_format("yaml")
 

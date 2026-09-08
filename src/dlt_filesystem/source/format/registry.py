@@ -30,6 +30,13 @@ BASE_READER_REGISTRATIONS = (
     ReaderRegistration("read_bson", ("bson",), transformer_order=6),
     ReaderRegistration("read_excel", ("xlsx",), transformer_order=2),
     ReaderRegistration("read_csv_duckdb", ("csv_duckdb",), transformer_order=12),
+    # `.arrow` and `.ipc` are the other two extensions Feather V2 travels under -- it is
+    # the Arrow IPC file format, and all three name one container. They are aliases for
+    # the same reason `yml` is one: the format is chosen from the path, so a file spelled
+    # `events.arrow` must resolve. Only `feather` is advertised.
+    ReaderRegistration(
+        "read_feather", ("feather", "arrow", "ipc"), transformer_order=14
+    ),
 )
 
 # Readers backed by the optional `iterable` extra (msgpack via iterabledata; cbor, xml and yaml
@@ -69,12 +76,34 @@ def _build_format_map(
     return format_map
 
 
-BASE_FILE_FORMATS = _build_format_map(BASE_READER_REGISTRATIONS)
+def _advertised_formats(
+    registrations: tuple[ReaderRegistration, ...],
+) -> tuple[str, ...]:
+    """The first format key of each registration, one entry per reader.
+
+    An alias routes but is not advertised, so a second extension for a format does not
+    read as a second format in the "only supports file formats" messages. The write side
+    makes the same split (``target.registry.ADVERTISED_WRITE_FORMATS``); this is that
+    split on the read side, where the alias tier previously escaped the question only
+    because the one alias that existed (``yml``) lives under the optional ``iterable``
+    extra, whose advertised set is built from the codec registry rather than from these
+    format keys.
+    """
+    return tuple(registration.format_keys[0] for registration in registrations)
+
+
+# `BASE_FILE_FORMATS` stood here and was read only by `advertised_file_formats()`, which
+# now reads `ADVERTISED_FILE_FORMATS` instead. It is dropped rather than left as a name
+# with no reader; the per-tier maps it was one of are still built where they are used.
 ITERABLE_FILE_FORMATS = _build_format_map(ITERABLE_READER_REGISTRATIONS)
 FORMAT_TO_READER = _build_format_map(
     BASE_READER_REGISTRATIONS + ITERABLE_READER_REGISTRATIONS
 )
 SUPPORTED_FILE_FORMATS = tuple(FORMAT_TO_READER)
+
+#: What the base half of the "supported formats" message names: one entry per base
+#: reader, aliases excluded. Every key still routes -- see ``FORMAT_TO_READER``.
+ADVERTISED_FILE_FORMATS = _advertised_formats(BASE_READER_REGISTRATIONS)
 
 
 def reader_for_format(file_format: str) -> str:
@@ -91,12 +120,15 @@ def advertised_file_formats() -> tuple[str, ...]:
     Base formats always ship. Iterable-extra formats are appended only when their decoder is
     importable, so a base install doesn't advertise a format that would fail with an install
     hint (the reader still routes such a format and raises that hint if it is used).
+
+    Aliases are left out of both halves, so the message names formats rather than
+    extensions.
     """
     from dlt_filesystem.source.format.iterable_codec import (
         installed_iterable_formats,
     )
 
-    return tuple(BASE_FILE_FORMATS) + installed_iterable_formats()
+    return ADVERTISED_FILE_FORMATS + installed_iterable_formats()
 
 
 def supported_file_format_message(source_name: str) -> str:

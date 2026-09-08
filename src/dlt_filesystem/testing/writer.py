@@ -17,6 +17,26 @@ def write_cbor(path, value):
     return path
 
 
+def write_feather(path, records, batch_size=None):
+    """Write record dictionaries to an Arrow IPC file (Feather V2).
+
+    ``batch_size`` splits the rows into that many-row record batches, which is the only
+    way to produce a file with more than one batch: a single ``write_table`` of a
+    contiguous table emits exactly one, so a chunking test written against the default
+    would pass whatever the reader did with batch boundaries.
+    """
+    import pyarrow as pa
+
+    table = pa.Table.from_pylist(records)
+    with pa.ipc.new_file(path, table.schema) as writer:
+        if batch_size is None:
+            writer.write_table(table)
+        else:
+            for batch in table.to_batches(max_chunksize=batch_size):
+                writer.write_batch(batch)
+    return path
+
+
 def write_msgpack(path, rows, **packb_kwargs):
     """Write records as a stream of concatenated MessagePack maps (the on-disk form)."""
     import msgpack

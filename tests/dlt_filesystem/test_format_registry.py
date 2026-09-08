@@ -9,10 +9,14 @@ import pytest
 from dlt_filesystem.source.adapter import filesystem, readers
 from dlt_filesystem.source.format.readers import read_csv
 from dlt_filesystem.source.format.registry import (
+    ADVERTISED_FILE_FORMATS,
+    BASE_READER_REGISTRATIONS,
     FORMAT_TO_READER,
     READER_REGISTRATIONS,
     ReaderRegistration,
+    _advertised_formats,
     _build_format_map,
+    advertised_file_formats,
 )
 
 EXPECTED_FORMAT_TO_READER = {
@@ -26,6 +30,10 @@ EXPECTED_FORMAT_TO_READER = {
     "bson": "read_bson",
     "xlsx": "read_excel",
     "csv_duckdb": "read_csv_duckdb",
+    # One reader under all three extensions Feather V2 travels under.
+    "feather": "read_feather",
+    "arrow": "read_feather",
+    "ipc": "read_feather",
     "cbor": "read_cbor",
     "msgpack": "read_msgpack",
     "xml": "read_xml",
@@ -47,6 +55,7 @@ EXPECTED_READER_NAMES = (
     "read_parquet",
     "read_csv_duckdb",
     "read_orc",
+    "read_feather",
 )
 
 
@@ -102,6 +111,45 @@ def test_generated_read_csv_matches_literal_transformer_metadata():
         inspect.signature(literal_dynamic.__SPEC__),
     )
     assert tuple(source.with_resources("read_csv").selected_resources) == ("read_csv",)
+
+
+def test_an_alias_routes_without_joining_the_advertised_set():
+    """Both halves of the split, on one synthetic registration.
+
+    Every key routes, so a second extension for a format resolves; only the first is
+    named in the "supported formats" message, so the message enumerates formats rather
+    than the extensions they answer to.
+    """
+    registrations = (
+        ReaderRegistration("read_thing", ("thing", "thingy"), transformer_order=0),
+    )
+
+    assert _build_format_map(registrations) == {
+        "thing": "read_thing",
+        "thingy": "read_thing",
+    }
+    assert _advertised_formats(registrations) == ("thing",)
+
+
+def test_no_registered_alias_is_advertised():
+    """The property the synthetic case above pins, asserted on the real registry.
+
+    Non-vacuity is asserted first: with no alias registered anywhere this would pass
+    against any implementation, including one that advertises every routing key.
+    """
+    aliases = {
+        key
+        for registration in READER_REGISTRATIONS
+        for key in registration.format_keys[1:]
+    }
+    assert aliases, "no registration carries an alias, so this guard proves nothing"
+    assert aliases.isdisjoint(advertised_file_formats())
+    assert aliases < set(FORMAT_TO_READER), "an alias must still route"
+
+
+def test_the_advertised_base_set_is_one_entry_per_base_reader():
+    assert len(ADVERTISED_FILE_FORMATS) == len(BASE_READER_REGISTRATIONS)
+    assert set(ADVERTISED_FILE_FORMATS) <= set(FORMAT_TO_READER)
 
 
 def test_duplicate_format_keys_are_rejected_during_map_construction():

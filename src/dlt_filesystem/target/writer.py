@@ -213,6 +213,34 @@ def write_csv(path: str, rows: list[dict]) -> None:
     )
 
 
+def write_feather(path: str, rows: list[dict]) -> None:
+    """Write rows as an Arrow IPC file, the container Feather V2 names, with PyArrow.
+
+    ``pa.ipc.new_file`` rather than ``pyarrow.feather.write_feather``: the latter is
+    deprecated as of pyarrow 24 and its own warning names this API. It writes V2, which
+    is what ``read_feather`` reads and what every current Arrow implementation opens.
+
+    PyArrow rather than Polars, which is where ``write_csv`` and ``write_parquet`` went,
+    for the reason ``write_orc`` also stayed: for these two the Arrow schema *is* the
+    file. ``DataFrame.write_ipc`` defaults to Polars' own newest representation and
+    writes ``string_view`` and ``binary_view`` columns, which are an Arrow 15 feature
+    rather than something every reader opens, and keeping them out means pinning
+    ``compat_level`` on a call where forgetting it changes the file rather than raising.
+    Parquet has its own type system and was insulated from that; this format is not.
+    """
+    import pyarrow as pa
+
+    fieldnames = _column_union(rows)
+    if rows and not fieldnames:
+        raise ValueError(
+            "Feather output requires at least one column for nonempty rows"
+        )
+    columns = {name: [row.get(name) for row in rows] for name in fieldnames}
+    table = pa.table(columns)
+    with pa.ipc.new_file(path, table.schema) as writer:
+        writer.write_table(table)
+
+
 def write_json(path: str, rows: list[dict]) -> None:
     """JSON writer emitting one array document.
 

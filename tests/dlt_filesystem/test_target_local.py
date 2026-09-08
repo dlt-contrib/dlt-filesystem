@@ -23,6 +23,12 @@ CWD = os.getcwd().replace(os.sep, "/")
 # overrides it, mirroring the file:// source.
 resolve_cases = [
     ("file:///data/out.csv", "/data/out.csv", "csv"),
+    # All three Feather extensions resolve, and each keeps its own name in the format
+    # slot: the alias is what the writer is looked up by, so collapsing it here would
+    # hide a registry that had stopped routing one of them.
+    ("file:///data/out.feather", "/data/out.feather", "feather"),
+    ("file:///data/out.arrow", "/data/out.arrow", "arrow"),
+    ("file:///data/out.ipc", "/data/out.ipc", "ipc"),
     ("file:///data/out.jsonl", "/data/out.jsonl", "jsonl"),
     ("file:///data/out.orc", "/data/out.orc", "orc"),
     ("file:///data/out.parquet", "/data/out.parquet", "parquet"),
@@ -34,6 +40,9 @@ resolve_cases = [
     ("file:///data/out.dat#jsonl", "/data/out.dat", "jsonl"),
     ("file:///data/feed#csv", "/data/feed", "csv"),
     ("file:///data/feed#orc", "/data/feed", "orc"),
+    ("file:///data/feed#feather", "/data/feed", "feather"),
+    ("file:///data/feed#arrow", "/data/feed", "arrow"),
+    ("file:///data/feed#ipc", "/data/feed", "ipc"),
     # literal '#' in the path (suffix is not a known format) stays part of the path,
     # so the format falls back to the extension
     ("file:///data/v#1/out.csv", "/data/v#1/out.csv", "csv"),
