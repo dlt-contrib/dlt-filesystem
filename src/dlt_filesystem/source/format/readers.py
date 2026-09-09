@@ -372,6 +372,23 @@ def read_ods(
     )
 
 
+def _file_location(file_obj: FileItemDict, fallback: str) -> str:
+    """Name a file for an error message, with any credentials in the URL removed.
+
+    A listed item carries the three names in preference order: the full URL, the path
+    relative to the bucket, and the bare file name. Which of them is populated depends
+    on the transport, so all three are tried rather than one being assumed.
+    """
+    return _safe_location(
+        str(
+            file_obj.get("file_url")
+            or file_obj.get("relative_path")
+            or file_obj.get("file_name")
+            or fallback
+        )
+    )
+
+
 def read_spreadsheet(
     reader: Callable,
     items: Iterator[FileItemDict],
@@ -406,14 +423,7 @@ def read_spreadsheet(
             yield workbook.rows(named=True)
             continue
 
-        file_location = _safe_location(
-            str(
-                file_obj.get("file_url")
-                or file_obj.get("relative_path")
-                or file_obj.get("file_name")
-                or "<unknown workbook>"
-            )
-        )
+        file_location = _file_location(file_obj, "<unknown workbook>")
         naming = dlt.current.source_schema().naming
         for sheet_name, frame in workbook.items():
             rows = frame.rows(named=True)
@@ -563,6 +573,79 @@ def read_feather(
                     batch = batch.select(selection)
                 for offset in range(0, batch.num_rows, chunksize):
                     yield batch.slice(offset, chunksize).to_pylist()
+
+
+def _avro_panic_message(location: str, panic: BaseException) -> str:
+    """Word a panic raised out of ``pl.read_avro``, naming the file and the likely cause.
+
+    ``pl.read_avro`` reads Avro into Arrow, and a type it cannot map aborts in Rust: a
+    ``map`` field raises ``PanicException: Avro maps are mapped to MapArrays``. In any
+    build that carries the compiled binary -- which is any build that can read Avro at
+    all -- that class inherits ``BaseException`` directly, so nothing above this reader
+    sees it (dlt's own extract step wraps ``Exception``) and the load would end in a Rust
+    backtrace naming neither the file nor the field. A ``map`` is an ordinary Avro type,
+    so this is reachable with a perfectly valid file.
+
+    Two causes are known and neither is exotic, so both are named: an unmappable
+    schema, and a timestamp outside Python's own range, which decodes into Polars
+    quite happily and then panics on the way out to Python objects. The wording keeps
+    them as the likely causes rather than asserting either, because the handlers catch
+    any panic out of those calls; the panic's own detail line carries the truth.
+    """
+    detail = (
+        str(panic).strip().splitlines()[0]
+        if str(panic).strip()
+        else type(panic).__name__
+    )
+    return (
+        f"Reading Avro file {location} aborted inside Polars: {detail}. Two causes are "
+        "known: a schema with no Arrow mapping (an Avro `map` field is the one to look "
+        "for, and rewriting it as a record avoids this), and a timestamp outside the "
+        "year range Python's `datetime` can hold."
+    )
+
+
+def read_avro(
+    items: Iterator[FileItemDict],
+    chunksize: int = 1000,
+    columns: Optional[Union[list[str], str]] = None,
+) -> Iterator[TDataItems]:
+    """Reader for Apache Avro object container files, using Polars.
+
+    Whole-file rather than streamed: Polars has no ``scan_avro``, so ``chunksize``
+    bounds what a downstream step is handed at once, not what is held in memory. That
+    is the same shape ``read_excel`` and ``read_ods`` have and is stated on the format
+    page rather than left to be discovered.
+
+    Args:
+        chunksize (int, optional): The number of rows to yield at once, defaults to 1000.
+        columns (optional): Columns to read, as a list or a ``#columns=`` hint.
+
+    Returns:
+        TDataItem: The file content
+    """
+    import polars as pl
+
+    chunksize = _validated_chunksize(chunksize)
+    selection = _decode_column_selection(columns)
+
+    for file_obj in items:
+        location = _file_location(file_obj, "<unknown avro file>")
+        with file_obj.open() as f:
+            try:
+                frame = pl.read_avro(f, columns=selection)
+            except pl.exceptions.PanicException as e:
+                raise ValueError(_avro_panic_message(location, e)) from e
+        for offset in range(0, frame.height, chunksize):
+            # Guarded separately from the read, because decoding and converting panic
+            # for unrelated reasons and either one escapes on its own. A timestamp past
+            # year 9999 lands in the frame without complaint and panics only here, on
+            # the way out to Python objects.
+            try:
+                chunk = frame.slice(offset, chunksize).to_dicts()
+            except pl.exceptions.PanicException as e:
+                raise ValueError(_avro_panic_message(location, e)) from e
+            yield chunk
 
 
 def read_jsonl(
@@ -896,6 +979,10 @@ if TYPE_CHECKING:
         @copy_sig(read_feather)
         def read_feather(self) -> DltResource:
             """Feather V2 / Arrow IPC reader resource (pyarrow)."""
+
+        @copy_sig(read_avro)
+        def read_avro(self) -> DltResource:
+            """Apache Avro reader resource (Polars)."""
 
         @copy_sig(read_cbor)
         def read_cbor(self) -> DltResource:

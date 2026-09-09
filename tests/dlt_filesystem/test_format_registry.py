@@ -34,6 +34,7 @@ EXPECTED_FORMAT_TO_READER = {
     "feather": "read_feather",
     "arrow": "read_feather",
     "ipc": "read_feather",
+    "avro": "read_avro",
     "cbor": "read_cbor",
     "msgpack": "read_msgpack",
     "xml": "read_xml",
@@ -56,6 +57,7 @@ EXPECTED_READER_NAMES = (
     "read_csv_duckdb",
     "read_orc",
     "read_feather",
+    "read_avro",
 )
 
 

@@ -9,9 +9,20 @@ class FileItemStub:
     """Minimal ``FileItemDict`` stand-in: a reader only calls ``open()`` as a context manager
     yielding a binary stream, so a real ``FileItemDict`` is not needed."""
 
-    def __init__(self, path):
-        """Wrap a filesystem ``path`` that ``open()`` will read in binary mode."""
+    def __init__(self, path, **fields):
+        """Wrap a filesystem ``path`` that ``open()`` will read in binary mode.
+
+        ``fields`` stand in for the listing entries a real ``FileItemDict`` carries
+        (``file_url``, ``relative_path``, ``file_name``), which the readers use to name
+        a file in an error. A stub with none of them behaves like a listing that
+        populated none, which is what the fallbacks are for.
+        """
         self._path = path
+        self._fields = dict(fields)
+
+    def get(self, key, default=None):
+        """Read one listing field, as ``FileItemDict`` (a ``dict``) would."""
+        return self._fields.get(key, default)
 
     def open(self):
         """Open the backing file as a binary stream."""
