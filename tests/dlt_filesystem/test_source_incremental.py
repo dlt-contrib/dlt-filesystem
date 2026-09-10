@@ -72,7 +72,9 @@ def test_incremental_hint_is_applied_to_metadata_only_parent_lister(tmp_path):
 
 
 def test_disabled_mode_preserves_the_existing_lister_and_output_identity(tmp_path):
-    (tmp_path / "people.csv").write_text("name\nAlice\n")
+    # Bytes, not text: the byte count below would be two higher on a platform whose
+    # text mode translates the newline.
+    (tmp_path / "people.csv").write_bytes(b"name\nAlice\n")
 
     resource = resource_for_reader(_reference(tmp_path, filesystem_incremental=False))
 
@@ -93,7 +95,7 @@ def test_disabled_mode_preserves_the_existing_lister_and_output_identity(tmp_pat
     assert isinstance(listed[0], FileItemDict)
     assert listed[0]["file_name"] == "people.csv"
     assert listed[0]["file_url"].endswith("/people.csv")
-    assert listed[0]["size_in_bytes"] == len("name\nAlice\n")
+    assert listed[0]["size_in_bytes"] == len(b"name\nAlice\n")
     assert list(resource) == [{"name": "Alice"}]
 
 

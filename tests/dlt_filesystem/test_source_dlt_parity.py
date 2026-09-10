@@ -11,7 +11,9 @@ import glob
 import inspect
 import os
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import dlt
@@ -58,15 +60,16 @@ def test_entry_point_declares_dlts_parameter_with_dlts_default(
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)
 def test_every_dlt_keyword_binds(entry_point: str):
     """Binding is the property a caller sees; declaring the name is not enough."""
-    keywords = {
-        name: None
-        for name in _dlt_parameters(entry_point)
-        if name not in ("bucket_url", "credentials")
+    supplied = {
+        "bucket_url": "memory://bucket",
+        "credentials": MemoryFileSystem(),
     }
+    keywords = {name: supplied.get(name) for name in _dlt_parameters(entry_point)}
 
-    inspect.signature(getattr(adapter, entry_point)).bind(
-        "memory://bucket", MemoryFileSystem(), **keywords
-    )
+    # Every name by keyword, `bucket_url` and `credentials` included: passing those
+    # two positionally would let them be positional-only and still pass, while
+    # rejecting the keyword call dlt accepts.
+    inspect.signature(getattr(adapter, entry_point)).bind(**keywords)
 
 
 def test_filesystem_does_not_extract_content_by_default(tmp_path: Path):
@@ -76,7 +79,9 @@ def test_filesystem_does_not_extract_content_by_default(tmp_path: Path):
     default from the spec, so this passes whatever the signature says; the
     declaration itself is guarded by the parameter-default test above.
     """
-    (tmp_path / "people.csv").write_text("name\nAlice\n")
+    # Bytes, not text: text mode translates the newline on Windows, so an exact
+    # content assertion would fail there on correct behaviour.
+    (tmp_path / "people.csv").write_bytes(b"name\nAlice\n")
     fs_client = fsspec.filesystem("file")
 
     default_call = list(filesystem(str(tmp_path), fs_client, file_glob="*.csv"))
@@ -144,6 +149,13 @@ LISTING_ORDER = ["b.csv", "c.csv", "a.csv"]
 MODIFICATION_ORDER = ["c.csv", "b.csv", "a.csv"]
 NAME_ORDER = ["a.csv", "b.csv", "c.csv"]
 
+FIRST_MODIFICATION_TIME = 1_700_000_000
+#: The middle file's modification time, as an initial value that excludes exactly one
+#: file: the oldest under a `max` cursor, the newest under a `min` one.
+MIDDLE_MODIFICATION_TIME = datetime.fromtimestamp(
+    FIRST_MODIFICATION_TIME + 100, tz=timezone.utc
+)
+
 
 @contextmanager
 def _listing_order_pinned():
@@ -155,13 +167,21 @@ def _listing_order_pinned():
     hides a missing `file_name` sort, on that machine only. Patching the module both
     listers call keeps the differential comparing like with like.
     """
+    assert (
+        len({tuple(LISTING_ORDER), tuple(MODIFICATION_ORDER), tuple(NAME_ORDER)}) == 3
+    )
     real_glob = glob.glob
 
     def ordered_glob(*args, **kwargs):
-        found = {Path(path).name: path for path in real_glob(*args, **kwargs)}
-        return [found[name] for name in LISTING_ORDER if name in found] + [
-            path for name, path in found.items() if name not in LISTING_ORDER
-        ]
+        found = real_glob(*args, **kwargs)
+        # Only this fixture's own listing is reordered. Anything else, including a
+        # `bytes` path this cannot take a basename of, is handed back exactly as glob
+        # returned it: no dedup, no reordering, nothing dropped.
+        if not all(isinstance(path, str) for path in found):
+            return found
+        if {Path(path).name for path in found} - set(LISTING_ORDER):
+            return found
+        return sorted(found, key=lambda path: LISTING_ORDER.index(Path(path).name))
 
     with patch.object(glob, "glob", ordered_glob):
         yield
@@ -171,8 +191,8 @@ def _write_listing(tmp_path: Path) -> None:
     """Write the three files and time them into `MODIFICATION_ORDER`."""
     for position, name in enumerate(MODIFICATION_ORDER):
         listed_file = tmp_path / name
-        listed_file.write_text("name\nAlice\n")
-        modified_at = 1_700_000_000 + position * 100
+        listed_file.write_bytes(b"name\nAlice\n")
+        modified_at = FIRST_MODIFICATION_TIME + position * 100
         os.utime(listed_file, (modified_at, modified_at))
 
 
@@ -248,14 +268,19 @@ def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
     )
 
 
-def test_the_default_listing_stays_lazy(tmp_path: Path):
+@pytest.mark.parametrize("cursor", ("none", "no row_order"))
+def test_the_unordered_listing_stays_lazy(tmp_path: Path, cursor: str):
     """Ordering is the one branch allowed to materialise the listing.
 
-    Everything else pages through `glob_files` as it yields, so a page reaches the
-    caller before the last file has been listed. A `list()` or `sorted()` on the
-    default path is invisible to every other test here.
+    Every other path pages through `glob_files` as it yields, so a page reaches the
+    caller before the last file has been listed. Both unordered paths are driven,
+    because materialising only the one carrying a cursor is invisible to the other.
     """
     _write_listing(tmp_path)
+    cursors: dict[str, dict[str, Any]] = {
+        "none": {},
+        "no row_order": {"incremental": dlt.sources.incremental("modification_date")},
+    }
     listed_before_first_page: list[int] = []
     real_glob_files = adapter.glob_files
 
@@ -270,6 +295,7 @@ def test_the_default_listing_stays_lazy(tmp_path: Path):
             fsspec.filesystem("file"),
             file_glob="*.csv",
             files_per_page=1,
+            **cursors[cursor],
         )
         next(iter(pages))
 
@@ -376,24 +402,38 @@ def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("row_order", "expected"),
-    (("asc", ["b.csv", "a.csv"]), ("desc", ["a.csv", "b.csv"])),
+    ("row_order", "last_value_func", "expected"),
+    (
+        ("asc", max, ["b.csv", "a.csv"]),
+        ("desc", max, ["a.csv", "b.csv"]),
+        ("asc", min, ["b.csv", "c.csv"]),
+        ("desc", min, ["c.csv", "b.csv"]),
+    ),
 )
 def test_readers_forwards_the_incremental_cursor_to_its_lister(
-    tmp_path: Path, row_order: TSortOrder, expected: list[str]
+    tmp_path: Path, row_order: TSortOrder, last_value_func, expected: list[str]
 ):
-    """`readers` forwards through its own call site, so it needs its own case."""
-    for name, modified_at in (("b.csv", 1_700_000_000), ("a.csv", 1_700_000_100)):
-        listed_file = tmp_path / name
-        listed_file.write_text("name\nAlice\n")
-        os.utime(listed_file, (modified_at, modified_at))
+    """`readers` forwards through its own call site, so it needs its own case.
 
-    source = readers(
-        str(tmp_path),
-        fsspec.filesystem("file"),
-        file_glob="*.csv",
-        incremental=dlt.sources.incremental("modification_date", row_order=row_order),
-    )
-    lister = source.resources["read_csv"]._parent
+    The cursor carries a field, an initial value, an order and an aggregation, and all
+    four have to arrive: a forwarding that rebuilt the cursor keeping only `row_order`
+    would still order the listing correctly while loading a file the initial value
+    excludes. `initial_value` drops the oldest file under `max` and the newest under
+    `min`, so what is missing shows as much as what is out of order.
+    """
+    _write_listing(tmp_path)
 
-    assert [item["file_name"] for item in lister] == expected
+    with _listing_order_pinned():
+        source = readers(
+            str(tmp_path),
+            fsspec.filesystem("file"),
+            file_glob="*.csv",
+            incremental=dlt.sources.incremental(
+                "modification_date",
+                initial_value=MIDDLE_MODIFICATION_TIME,
+                row_order=row_order,
+                last_value_func=last_value_func,
+            ),
+        )
+        lister = source.resources["read_csv"]._parent
+        assert [item["file_name"] for item in lister] == expected
