@@ -194,6 +194,50 @@ def test_row_order_yields_the_same_listing_as_dlt(
         assert ordered == list(reversed(expected))
 
 
+def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
+    """Only `row_order` orders the listing; a bare cursor must not sort it.
+
+    dlt sorts on `incremental.row_order` alone, so a condition widened to any cursor
+    would reorder every incremental run and materialise a listing that should stay
+    lazy. The fixture's modification order is not its glob order, so a sort shows up.
+    """
+    _write_listing(tmp_path)
+    fs_client = fsspec.filesystem("file")
+
+    def file_names(source_module, **cursor):
+        return [
+            item["file_name"]
+            for item in source_module.filesystem(
+                str(tmp_path), fs_client, file_glob="*.csv", **cursor
+            )
+        ]
+
+    unordered = file_names(adapter)
+    bare_cursor = {"incremental": dlt.sources.incremental("modification_date")}
+
+    assert file_names(adapter, **bare_cursor) == unordered
+    assert file_names(adapter, **bare_cursor) == file_names(
+        dlt_filesystem_source, **bare_cursor
+    )
+    assert unordered != ["c.csv", "a.csv", "b.csv"], (
+        "fixture no longer distinguishes glob order from modification order"
+    )
+
+
+def test_readers_pipes_one_shared_lister_where_dlt_builds_one_each():
+    """A deliberate divergence from dlt, and the reason `readers` forwards once."""
+    ours = readers("memory://bucket", MemoryFileSystem(), file_glob="*.none")
+    theirs = dlt_filesystem_source.readers(
+        "memory://bucket", MemoryFileSystem(), file_glob="*.none"
+    )
+
+    def listers(source):
+        return {id(resource._parent) for resource in source.resources.values()}
+
+    assert len(listers(ours)) == 1
+    assert len(listers(theirs)) == len(theirs.resources)
+
+
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)
 def test_the_three_additions_are_keyword_only(entry_point: str):
     """Appended keyword-only, not placed where dlt has them.
@@ -257,7 +301,7 @@ def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
 def test_readers_forwards_the_incremental_cursor_to_its_lister(
     tmp_path: Path, row_order: TSortOrder, expected: list[str]
 ):
-    """`readers` builds one lister where dlt builds four, a separate forwarding path."""
+    """`readers` forwards through its own call site, so it needs its own case."""
     for name, modified_at in (("b.csv", 1_700_000_000), ("a.csv", 1_700_000_100)):
         listed_file = tmp_path / name
         listed_file.write_text("name\nAlice\n")

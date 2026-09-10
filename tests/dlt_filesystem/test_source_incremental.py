@@ -83,6 +83,9 @@ def test_disabled_mode_preserves_the_existing_lister_and_output_identity(tmp_pat
     wrapper = resource._parent.incremental
     assert isinstance(wrapper, IncrementalResourceWrapper)
     assert wrapper.incremental is None
+    # The wrapper sits in the pipe with no cursor applied, so it has to pass items
+    # through untouched; asserting the names alone would not show that.
+    assert [item["file_name"] for item in resource._parent] == ["people.csv"]
 
 
 def test_every_reader_stays_downstream_of_the_incremental_lister(tmp_path):
