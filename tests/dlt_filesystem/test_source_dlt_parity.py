@@ -17,10 +17,12 @@ import dlt.sources.filesystem as dlt_filesystem_source
 import fsspec
 import pytest
 from dlt.common.typing import TSortOrder
+from dlt.extract.exceptions import ResourceExtractionError
 from fsspec.implementations.memory import MemoryFileSystem
 
 from dlt_filesystem.source import adapter
 from dlt_filesystem.source.adapter import filesystem, readers
+from dlt_filesystem.source.error import NoFilesFoundError
 
 ENTRY_POINTS = ("filesystem", "readers")
 
@@ -131,26 +133,36 @@ def test_a_constructed_filesystem_ignores_kwargs_and_client_kwargs(tmp_path: Pat
     assert [item["file_name"] for item in listed] == ["people.csv"]
 
 
-@pytest.mark.parametrize("row_order", ("asc", "desc"))
-@pytest.mark.parametrize("last_value_func", (max, min))
-def test_row_order_yields_the_same_listing_as_dlt(
-    tmp_path: Path, row_order: TSortOrder, last_value_func
-):
-    """Differential against dlt, so a change to its ordering rule is caught here.
+def _write_listing(tmp_path: Path) -> None:
+    """Three files whose alphabetical order is not their modification order.
 
-    Both halves of dlt's `reverse` expression need exercising: it is true for
-    (`asc`, `min`) and for (`desc`, `max`), so the default `max` alone leaves a
-    swapped comparison passing.
+    Sorting by `file_name` would otherwise reproduce sorting by `modification_date`,
+    which leaves the cursor field itself unasserted.
     """
     for name, modified_at in (
-        ("b.csv", 1_700_000_100),
-        ("a.csv", 1_700_000_000),
-        ("c.csv", 1_700_000_200),
+        ("c.csv", 1_700_000_000),
+        ("a.csv", 1_700_000_100),
+        ("b.csv", 1_700_000_200),
     ):
         listed_file = tmp_path / name
         listed_file.write_text("name\nAlice\n")
         os.utime(listed_file, (modified_at, modified_at))
 
+
+@pytest.mark.parametrize("cursor_path", ("modification_date", "file_name"))
+@pytest.mark.parametrize("row_order", ("asc", "desc"))
+@pytest.mark.parametrize("last_value_func", (max, min))
+def test_row_order_yields_the_same_listing_as_dlt(
+    tmp_path: Path, row_order: TSortOrder, last_value_func, cursor_path: str
+):
+    """Differential against dlt, so a change to its ordering rule is caught here.
+
+    Both halves of dlt's `reverse` expression need exercising: it is true for
+    (`asc`, `min`) and for (`desc`, `max`), so the default `max` alone leaves a
+    swapped comparison passing. Two cursor fields, because a sort key hard-coded to
+    `modification_date` passes every case that only uses it.
+    """
+    _write_listing(tmp_path)
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module):
@@ -161,7 +173,7 @@ def test_row_order_yields_the_same_listing_as_dlt(
                 fs_client,
                 file_glob="*.csv",
                 incremental=dlt.sources.incremental(
-                    "modification_date",
+                    cursor_path,
                     row_order=row_order,
                     last_value_func=last_value_func,
                 ),
@@ -172,16 +184,81 @@ def test_row_order_yields_the_same_listing_as_dlt(
     assert ordered == file_names(dlt_filesystem_source)
     assert sorted(ordered) == ["a.csv", "b.csv", "c.csv"]
 
+    by_modification = ["c.csv", "a.csv", "b.csv"]
+    expected = (
+        by_modification if cursor_path == "modification_date" else sorted(ordered)
+    )
+    if (row_order == "asc") is (last_value_func is max):
+        assert ordered == expected
+    else:
+        assert ordered == list(reversed(expected))
+
+
+@pytest.mark.parametrize("entry_point", ENTRY_POINTS)
+def test_the_three_additions_are_keyword_only(entry_point: str):
+    """Appended keyword-only, not placed where dlt has them.
+
+    dlt puts `kwargs` and `client_kwargs` where our `require_file_match` and
+    `filesystem_incremental` sit, so adopting dlt's order would rebind an existing
+    positional call's two booleans and silently disarm the strict lister.
+    """
+    parameters = inspect.signature(getattr(adapter, entry_point)).parameters
+
+    for name in ("kwargs", "client_kwargs", "incremental"):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_a_legacy_positional_call_still_binds_to_its_own_flags(tmp_path: Path):
+    """The seventh and eighth positional arguments stay `require_file_match` etc."""
+    bound = inspect.signature(filesystem).bind(
+        str(tmp_path), fsspec.filesystem("file"), "*.csv", 100, False, True, True
+    )
+
+    assert bound.arguments["require_file_match"] is True
+    assert bound.arguments["filesystem_incremental"] is True
+
+    # `require_file_match` is still armed: nothing matches, so the strict lister
+    # raises rather than yielding an empty listing.
+    with pytest.raises(ResourceExtractionError) as raised:
+        list(filesystem(*bound.args, **bound.kwargs))
+
+    assert isinstance(raised.value.__cause__, NoFilesFoundError)
+
+
+def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
+    """Pins our clone semantics to dlt's, which is what declaring `incremental` buys.
+
+    dlt's bound cloning shallow-copies the pipe steps and does not reinject the
+    wrapper, so hints applied to one clone reach every clone. That is dlt's own
+    behaviour, and diverging from it in the package positioned as dlt's drop-in would
+    cost more than it buys; this test fails if either side changes.
+    """
+    for name in ("a.csv", "b.csv", "c.csv"):
+        (tmp_path / name).write_text("name\nAlice\n")
+
+    fs_client = fsspec.filesystem("file")
+
+    def clone_listings(source_module):
+        base = source_module.filesystem(str(tmp_path), fs_client, file_glob="*.csv")
+        first, second = base.with_name("first"), base.with_name("second")
+        first.apply_hints(incremental=dlt.sources.incremental("file_name", "b.csv"))
+        second.apply_hints(incremental=dlt.sources.incremental("file_name", "c.csv"))
+        return [
+            [item["file_name"] for item in resource] for resource in (first, second)
+        ]
+
+    assert clone_listings(adapter) == clone_listings(dlt_filesystem_source)
+
 
 @pytest.mark.parametrize(
     ("row_order", "expected"),
-    (("asc", ["a.csv", "b.csv"]), ("desc", ["b.csv", "a.csv"])),
+    (("asc", ["b.csv", "a.csv"]), ("desc", ["a.csv", "b.csv"])),
 )
 def test_readers_forwards_the_incremental_cursor_to_its_lister(
     tmp_path: Path, row_order: TSortOrder, expected: list[str]
 ):
     """`readers` builds one lister where dlt builds four, a separate forwarding path."""
-    for name, modified_at in (("b.csv", 1_700_000_100), ("a.csv", 1_700_000_000)):
+    for name, modified_at in (("b.csv", 1_700_000_000), ("a.csv", 1_700_000_100)):
         listed_file = tmp_path / name
         listed_file.write_text("name\nAlice\n")
         os.utime(listed_file, (modified_at, modified_at))
