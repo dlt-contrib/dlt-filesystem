@@ -7,9 +7,10 @@ a hand-typed list, so a dlt release that adds a keyword fails here instead of in
 caller's pipeline.
 """
 
+import glob
 import inspect
-import itertools
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -134,44 +135,45 @@ def test_a_constructed_filesystem_ignores_kwargs_and_client_kwargs(tmp_path: Pat
     assert [item["file_name"] for item in listed] == ["people.csv"]
 
 
-def _listed_names(tmp_path: Path) -> list[str]:
-    return [
-        item["file_name"]
-        for item in filesystem(
-            str(tmp_path), fsspec.filesystem("file"), file_glob="*.csv"
-        )
-    ]
+#: The three orders a cursor sort has to be told apart from, all mutually distinct.
+#: A sort is only observable where its output differs from the order the lister
+#: already returns, and a `file_name` cursor is only distinguishable from a
+#: `modification_date` one where those two differ as well. Leaving any pair to
+#: coincide leaves a missing sort passing.
+LISTING_ORDER = ["b.csv", "c.csv", "a.csv"]
+MODIFICATION_ORDER = ["c.csv", "b.csv", "a.csv"]
+NAME_ORDER = ["a.csv", "b.csv", "c.csv"]
 
 
-def _write_listing(tmp_path: Path) -> tuple[list[str], list[str]]:
-    """Write three files, then time them so no two of the three orders coincide.
+@contextmanager
+def _listing_order_pinned():
+    """Serve `glob.glob` in `LISTING_ORDER`, for dlt's local lister and for ours.
 
-    A cursor sort is only observable where the sorted order differs from the order
-    the lister already returns, and sorting by `file_name` is only distinguishable
-    from sorting by `modification_date` where those differ too. The listing order is
-    `glob.glob`'s, which Python documents as the filesystem's own and therefore
-    arbitrary, so timestamps assigned by name can silently coincide with it and leave
-    both properties unasserted on one machine while holding on another. Assigning
-    them against the order actually observed makes all three disagree anywhere.
-
-    Returns the listing order and the modification order.
+    Both read a local directory through `glob.glob`, whose order Python documents as
+    the filesystem's own and therefore arbitrary. A fixture that lets it stand cannot
+    keep the three orders apart: a filesystem that enumerates in name order silently
+    hides a missing `file_name` sort, on that machine only. Patching the module both
+    listers call keeps the differential comparing like with like.
     """
-    names = ["a.csv", "b.csv", "c.csv"]
-    for name in names:
-        (tmp_path / name).write_text("name\nAlice\n")
+    real_glob = glob.glob
 
-    listed = _listed_names(tmp_path)
-    by_name = sorted(names)
-    modification_order = next(
-        candidate
-        for candidate in map(list, itertools.permutations(names))
-        if candidate != listed and candidate != by_name
-    )
-    for position, name in enumerate(modification_order):
+    def ordered_glob(*args, **kwargs):
+        found = {Path(path).name: path for path in real_glob(*args, **kwargs)}
+        return [found[name] for name in LISTING_ORDER if name in found] + [
+            path for name, path in found.items() if name not in LISTING_ORDER
+        ]
+
+    with patch.object(glob, "glob", ordered_glob):
+        yield
+
+
+def _write_listing(tmp_path: Path) -> None:
+    """Write the three files and time them into `MODIFICATION_ORDER`."""
+    for position, name in enumerate(MODIFICATION_ORDER):
+        listed_file = tmp_path / name
+        listed_file.write_text("name\nAlice\n")
         modified_at = 1_700_000_000 + position * 100
-        os.utime(tmp_path / name, (modified_at, modified_at))
-
-    return listed, modification_order
+        os.utime(listed_file, (modified_at, modified_at))
 
 
 @pytest.mark.parametrize("cursor_path", ("modification_date", "file_name"))
@@ -187,31 +189,30 @@ def test_row_order_yields_the_same_listing_as_dlt(
     swapped comparison passing. Two cursor fields, because a sort key hard-coded to
     `modification_date` passes every case that only uses it.
     """
-    _, modification_order = _write_listing(tmp_path)
+    _write_listing(tmp_path)
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module):
-        return [
-            item["file_name"]
-            for item in source_module.filesystem(
-                str(tmp_path),
-                fs_client,
-                file_glob="*.csv",
-                incremental=dlt.sources.incremental(
-                    cursor_path,
-                    row_order=row_order,
-                    last_value_func=last_value_func,
-                ),
-            )
-        ]
+        with _listing_order_pinned():
+            return [
+                item["file_name"]
+                for item in source_module.filesystem(
+                    str(tmp_path),
+                    fs_client,
+                    file_glob="*.csv",
+                    incremental=dlt.sources.incremental(
+                        cursor_path,
+                        row_order=row_order,
+                        last_value_func=last_value_func,
+                    ),
+                )
+            ]
 
     ordered = file_names(adapter)
     assert ordered == file_names(dlt_filesystem_source)
-    assert sorted(ordered) == ["a.csv", "b.csv", "c.csv"]
+    assert sorted(ordered) == NAME_ORDER
 
-    expected = (
-        modification_order if cursor_path == "modification_date" else sorted(ordered)
-    )
+    expected = MODIFICATION_ORDER if cursor_path == "modification_date" else NAME_ORDER
     if (row_order == "asc") is (last_value_func is max):
         assert ordered == expected
     else:
@@ -226,22 +227,22 @@ def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
     lazy. The fixture times its files so the two orders differ, which is what makes a
     stray sort visible here.
     """
-    listed, modification_order = _write_listing(tmp_path)
-    assert listed != modification_order
+    _write_listing(tmp_path)
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module, **cursor):
-        return [
-            item["file_name"]
-            for item in source_module.filesystem(
-                str(tmp_path), fs_client, file_glob="*.csv", **cursor
-            )
-        ]
+        with _listing_order_pinned():
+            return [
+                item["file_name"]
+                for item in source_module.filesystem(
+                    str(tmp_path), fs_client, file_glob="*.csv", **cursor
+                )
+            ]
 
-    unordered = file_names(adapter)
     bare_cursor = {"incremental": dlt.sources.incremental("modification_date")}
 
-    assert file_names(adapter, **bare_cursor) == unordered
+    assert file_names(adapter) == LISTING_ORDER
+    assert file_names(adapter, **bare_cursor) == LISTING_ORDER
     assert file_names(adapter, **bare_cursor) == file_names(
         dlt_filesystem_source, **bare_cursor
     )
