@@ -4,6 +4,7 @@ from typing import Any
 from unittest.mock import patch
 
 from dlt.extract.incremental import Incremental, IncrementalResourceWrapper
+from dlt.sources.filesystem import FileItemDict
 from fsspec import AbstractFileSystem
 from fsspec.implementations.arrow import ArrowFSWrapper
 from pyarrow.fs import LocalFileSystem
@@ -84,8 +85,16 @@ def test_disabled_mode_preserves_the_existing_lister_and_output_identity(tmp_pat
     assert isinstance(wrapper, IncrementalResourceWrapper)
     assert wrapper.incremental is None
     # The wrapper sits in the pipe with no cursor applied, so it has to pass items
-    # through untouched; asserting the names alone would not show that.
-    assert [item["file_name"] for item in resource._parent] == ["people.csv"]
+    # through untouched. Names alone would survive a wrapper that rebuilt each item
+    # as a plain dict, losing the url, the metadata and the reader's own handle on
+    # the file, so the record has to be checked as a record and then read.
+    listed = list(resource._parent)
+    assert len(listed) == 1
+    assert isinstance(listed[0], FileItemDict)
+    assert listed[0]["file_name"] == "people.csv"
+    assert listed[0]["file_url"].endswith("/people.csv")
+    assert listed[0]["size_in_bytes"] == len("name\nAlice\n")
+    assert list(resource) == [{"name": "Alice"}]
 
 
 def test_every_reader_stays_downstream_of_the_incremental_lister(tmp_path):

@@ -8,6 +8,7 @@ caller's pipeline.
 """
 
 import inspect
+import itertools
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -133,20 +134,44 @@ def test_a_constructed_filesystem_ignores_kwargs_and_client_kwargs(tmp_path: Pat
     assert [item["file_name"] for item in listed] == ["people.csv"]
 
 
-def _write_listing(tmp_path: Path) -> None:
-    """Three files whose alphabetical order is not their modification order.
+def _listed_names(tmp_path: Path) -> list[str]:
+    return [
+        item["file_name"]
+        for item in filesystem(
+            str(tmp_path), fsspec.filesystem("file"), file_glob="*.csv"
+        )
+    ]
 
-    Sorting by `file_name` would otherwise reproduce sorting by `modification_date`,
-    which leaves the cursor field itself unasserted.
+
+def _write_listing(tmp_path: Path) -> tuple[list[str], list[str]]:
+    """Write three files, then time them so no two of the three orders coincide.
+
+    A cursor sort is only observable where the sorted order differs from the order
+    the lister already returns, and sorting by `file_name` is only distinguishable
+    from sorting by `modification_date` where those differ too. The listing order is
+    `glob.glob`'s, which Python documents as the filesystem's own and therefore
+    arbitrary, so timestamps assigned by name can silently coincide with it and leave
+    both properties unasserted on one machine while holding on another. Assigning
+    them against the order actually observed makes all three disagree anywhere.
+
+    Returns the listing order and the modification order.
     """
-    for name, modified_at in (
-        ("c.csv", 1_700_000_000),
-        ("a.csv", 1_700_000_100),
-        ("b.csv", 1_700_000_200),
-    ):
-        listed_file = tmp_path / name
-        listed_file.write_text("name\nAlice\n")
-        os.utime(listed_file, (modified_at, modified_at))
+    names = ["a.csv", "b.csv", "c.csv"]
+    for name in names:
+        (tmp_path / name).write_text("name\nAlice\n")
+
+    listed = _listed_names(tmp_path)
+    by_name = sorted(names)
+    modification_order = next(
+        candidate
+        for candidate in map(list, itertools.permutations(names))
+        if candidate != listed and candidate != by_name
+    )
+    for position, name in enumerate(modification_order):
+        modified_at = 1_700_000_000 + position * 100
+        os.utime(tmp_path / name, (modified_at, modified_at))
+
+    return listed, modification_order
 
 
 @pytest.mark.parametrize("cursor_path", ("modification_date", "file_name"))
@@ -162,7 +187,7 @@ def test_row_order_yields_the_same_listing_as_dlt(
     swapped comparison passing. Two cursor fields, because a sort key hard-coded to
     `modification_date` passes every case that only uses it.
     """
-    _write_listing(tmp_path)
+    _, modification_order = _write_listing(tmp_path)
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module):
@@ -184,9 +209,8 @@ def test_row_order_yields_the_same_listing_as_dlt(
     assert ordered == file_names(dlt_filesystem_source)
     assert sorted(ordered) == ["a.csv", "b.csv", "c.csv"]
 
-    by_modification = ["c.csv", "a.csv", "b.csv"]
     expected = (
-        by_modification if cursor_path == "modification_date" else sorted(ordered)
+        modification_order if cursor_path == "modification_date" else sorted(ordered)
     )
     if (row_order == "asc") is (last_value_func is max):
         assert ordered == expected
@@ -199,9 +223,11 @@ def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
 
     dlt sorts on `incremental.row_order` alone, so a condition widened to any cursor
     would reorder every incremental run and materialise a listing that should stay
-    lazy. The fixture's modification order is not its glob order, so a sort shows up.
+    lazy. The fixture times its files so the two orders differ, which is what makes a
+    stray sort visible here.
     """
-    _write_listing(tmp_path)
+    listed, modification_order = _write_listing(tmp_path)
+    assert listed != modification_order
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module, **cursor):
@@ -219,9 +245,34 @@ def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
     assert file_names(adapter, **bare_cursor) == file_names(
         dlt_filesystem_source, **bare_cursor
     )
-    assert unordered != ["c.csv", "a.csv", "b.csv"], (
-        "fixture no longer distinguishes glob order from modification order"
-    )
+
+
+def test_the_default_listing_stays_lazy(tmp_path: Path):
+    """Ordering is the one branch allowed to materialise the listing.
+
+    Everything else pages through `glob_files` as it yields, so a page reaches the
+    caller before the last file has been listed. A `list()` or `sorted()` on the
+    default path is invisible to every other test here.
+    """
+    _write_listing(tmp_path)
+    listed_before_first_page: list[int] = []
+    real_glob_files = adapter.glob_files
+
+    def counting_glob_files(*args, **kwargs):
+        for count, file_model in enumerate(real_glob_files(*args, **kwargs), start=1):
+            listed_before_first_page.append(count)
+            yield file_model
+
+    with patch.object(adapter, "glob_files", counting_glob_files):
+        pages = filesystem(
+            str(tmp_path),
+            fsspec.filesystem("file"),
+            file_glob="*.csv",
+            files_per_page=1,
+        )
+        next(iter(pages))
+
+    assert listed_before_first_page == [1]
 
 
 def test_readers_pipes_one_shared_lister_where_dlt_builds_one_each():
@@ -232,7 +283,17 @@ def test_readers_pipes_one_shared_lister_where_dlt_builds_one_each():
     )
 
     def listers(source):
-        return {id(resource._parent) for resource in source.resources.values()}
+        parents = [resource._parent for resource in source.resources.values()]
+        # An unpiped transformer still reports a `_parent`: one shared empty
+        # placeholder, named `None`, which counts as a single identity just as a real
+        # shared lister does. Only the pipe tells the two apart.
+        assert parents and all(
+            parent is not None
+            and parent.name == "filesystem"
+            and not parent._pipe.is_empty
+            for parent in parents
+        )
+        return {id(parent) for parent in parents}
 
     assert len(listers(ours)) == 1
     assert len(listers(theirs)) == len(theirs.resources)
@@ -252,21 +313,38 @@ def test_the_three_additions_are_keyword_only(entry_point: str):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
 
 
-def test_a_legacy_positional_call_still_binds_to_its_own_flags(tmp_path: Path):
-    """The seventh and eighth positional arguments stay `require_file_match` etc."""
+@pytest.mark.parametrize(
+    ("require_file_match", "filesystem_incremental"), ((True, False), (False, True))
+)
+def test_a_legacy_positional_call_still_binds_to_its_own_flags(
+    tmp_path: Path, require_file_match: bool, filesystem_incremental: bool
+):
+    """The sixth and seventh positional arguments stay ours, and stay in that order.
+
+    Both orderings are driven because two equal booleans bind the same way whichever
+    parameter receives which, so a swap of the two would pass unnoticed.
+    """
     bound = inspect.signature(filesystem).bind(
-        str(tmp_path), fsspec.filesystem("file"), "*.csv", 100, False, True, True
+        str(tmp_path),
+        fsspec.filesystem("file"),
+        "*.csv",
+        100,
+        False,
+        require_file_match,
+        filesystem_incremental,
     )
 
-    assert bound.arguments["require_file_match"] is True
-    assert bound.arguments["filesystem_incremental"] is True
+    assert bound.arguments["require_file_match"] is require_file_match
+    assert bound.arguments["filesystem_incremental"] is filesystem_incremental
 
-    # `require_file_match` is still armed: nothing matches, so the strict lister
-    # raises rather than yielding an empty listing.
-    with pytest.raises(ResourceExtractionError) as raised:
-        list(filesystem(*bound.args, **bound.kwargs))
-
-    assert isinstance(raised.value.__cause__, NoFilesFoundError)
+    if require_file_match:
+        # Still armed: nothing matches, so the strict lister raises rather than
+        # yielding an empty listing.
+        with pytest.raises(ResourceExtractionError) as raised:
+            list(filesystem(*bound.args, **bound.kwargs))
+        assert isinstance(raised.value.__cause__, NoFilesFoundError)
+    else:
+        assert list(filesystem(*bound.args, **bound.kwargs)) == []
 
 
 def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
@@ -275,7 +353,9 @@ def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
     dlt's bound cloning shallow-copies the pipe steps and does not reinject the
     wrapper, so hints applied to one clone reach every clone. That is dlt's own
     behaviour, and diverging from it in the package positioned as dlt's drop-in would
-    cost more than it buys; this test fails if either side changes.
+    cost more than it buys. This pins the two together, not the sharing itself: an
+    upstream change that isolates both leaves it green, and a caller who needs
+    isolation today builds separate resources.
     """
     for name in ("a.csv", "b.csv", "c.csv"):
         (tmp_path / name).write_text("name\nAlice\n")
