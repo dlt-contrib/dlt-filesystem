@@ -158,7 +158,7 @@ MIDDLE_MODIFICATION_TIME = datetime.fromtimestamp(
 
 
 @contextmanager
-def _listing_order_pinned():
+def _listing_order_pinned(tmp_path: Path):
     """Serve `glob.glob` in `LISTING_ORDER`, for dlt's local lister and for ours.
 
     Both read a local directory through `glob.glob`, whose order Python documents as
@@ -170,16 +170,20 @@ def _listing_order_pinned():
     assert (
         len({tuple(LISTING_ORDER), tuple(MODIFICATION_ORDER), tuple(NAME_ORDER)}) == 3
     )
+    expected = {os.path.realpath(tmp_path / name) for name in LISTING_ORDER}
     real_glob = glob.glob
 
     def ordered_glob(*args, **kwargs):
         found = real_glob(*args, **kwargs)
-        # Only this fixture's own listing is reordered. Anything else, including a
-        # `bytes` path this cannot take a basename of, is handed back exactly as glob
-        # returned it: no dedup, no reordering, nothing dropped.
+        # Only this fixture's own listing is reordered, matched as whole paths and by
+        # cardinality. A subset test is not enough: it also reorders a listing from
+        # another directory whose names happen to be some of these. Anything else, a
+        # `bytes` path included, is handed back exactly as glob returned it.
         if not all(isinstance(path, str) for path in found):
             return found
-        if {Path(path).name for path in found} - set(LISTING_ORDER):
+        if len(found) != len(expected):
+            return found
+        if {os.path.realpath(path) for path in found} != expected:
             return found
         return sorted(found, key=lambda path: LISTING_ORDER.index(Path(path).name))
 
@@ -194,6 +198,30 @@ def _write_listing(tmp_path: Path) -> None:
         listed_file.write_bytes(b"name\nAlice\n")
         modified_at = FIRST_MODIFICATION_TIME + position * 100
         os.utime(listed_file, (modified_at, modified_at))
+
+
+def test_the_pinned_listing_order_leaves_other_listings_alone(tmp_path: Path):
+    """The helper reorders one directory's listing and must not touch any other.
+
+    It is a `glob.glob` patch, so every glob inside its context passes through it,
+    including the ones a reader or an unrelated fixture makes. Matching on basenames
+    alone reordered a same-named listing from elsewhere and collapsed duplicates.
+    """
+    fixture = tmp_path / "fixture"
+    elsewhere = tmp_path / "elsewhere"
+    for directory in (fixture, elsewhere):
+        directory.mkdir()
+        for name in LISTING_ORDER:
+            (directory / name).write_bytes(b"name\nAlice\n")
+
+    def names(directory: Path) -> list[str]:
+        return [Path(path).name for path in glob.glob(str(directory / "*.csv"))]
+
+    before = names(elsewhere)
+    with _listing_order_pinned(fixture):
+        assert names(fixture) == LISTING_ORDER
+        # Same file names, same count, different directory: untouched.
+        assert names(elsewhere) == before
 
 
 @pytest.mark.parametrize("cursor_path", ("modification_date", "file_name"))
@@ -213,7 +241,7 @@ def test_row_order_yields_the_same_listing_as_dlt(
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module):
-        with _listing_order_pinned():
+        with _listing_order_pinned(tmp_path):
             return [
                 item["file_name"]
                 for item in source_module.filesystem(
@@ -251,7 +279,7 @@ def test_a_cursor_without_row_order_leaves_the_listing_alone(tmp_path: Path):
     fs_client = fsspec.filesystem("file")
 
     def file_names(source_module, **cursor):
-        with _listing_order_pinned():
+        with _listing_order_pinned(tmp_path):
             return [
                 item["file_name"]
                 for item in source_module.filesystem(
@@ -273,33 +301,47 @@ def test_the_unordered_listing_stays_lazy(tmp_path: Path, cursor: str):
     """Ordering is the one branch allowed to materialise the listing.
 
     Every other path pages through `glob_files` as it yields, so a page reaches the
-    caller before the last file has been listed. Both unordered paths are driven,
-    because materialising only the one carrying a cursor is invisible to the other.
+    caller before the last file has been listed, and each later page costs its own
+    listing rather than one taken up front. Both unordered paths are driven, because
+    materialising only the one carrying a cursor is invisible to the other, and the page
+    holds more than one file so a per-item listing is distinguishable from a per-page
+    one.
     """
     _write_listing(tmp_path)
     cursors: dict[str, dict[str, Any]] = {
         "none": {},
         "no row_order": {"incremental": dlt.sources.incremental("modification_date")},
     }
-    listed_before_first_page: list[int] = []
+    listed_files: list[int] = []
     real_glob_files = adapter.glob_files
 
     def counting_glob_files(*args, **kwargs):
         for count, file_model in enumerate(real_glob_files(*args, **kwargs), start=1):
-            listed_before_first_page.append(count)
+            listed_files.append(count)
             yield file_model
 
     with patch.object(adapter, "glob_files", counting_glob_files):
-        pages = filesystem(
-            str(tmp_path),
-            fsspec.filesystem("file"),
-            file_glob="*.csv",
-            files_per_page=1,
-            **cursors[cursor],
+        items = iter(
+            filesystem(
+                str(tmp_path),
+                fsspec.filesystem("file"),
+                file_glob="*.csv",
+                files_per_page=2,
+                **cursors[cursor],
+            )
         )
-        next(iter(pages))
+        next(items)
+        # One page built, so one page's worth is listed. A listing materialised up
+        # front would already have read all three.
+        assert listed_files == [1, 2]
+        next(items)
+        # Still inside that page, so nothing further is listed to serve it.
+        assert listed_files == [1, 2]
+        next(items)
 
-    assert listed_before_first_page == [1]
+    # Only the page boundary advances the listing, so laziness holds past the first
+    # page as well as up to it.
+    assert listed_files == [1, 2, 3]
 
 
 def test_readers_pipes_one_shared_lister_where_dlt_builds_one_each():
@@ -402,35 +444,58 @@ def test_bound_clones_share_one_cursor_exactly_as_dlts_do(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    ("row_order", "last_value_func", "expected"),
+    ("cursor_path", "initial_value", "row_order", "last_value_func", "expected"),
     (
-        ("asc", max, ["b.csv", "a.csv"]),
-        ("desc", max, ["a.csv", "b.csv"]),
-        ("asc", min, ["b.csv", "c.csv"]),
-        ("desc", min, ["c.csv", "b.csv"]),
+        ("modification_date", MIDDLE_MODIFICATION_TIME, "asc", max, ["b.csv", "a.csv"]),
+        (
+            "modification_date",
+            MIDDLE_MODIFICATION_TIME,
+            "desc",
+            max,
+            ["a.csv", "b.csv"],
+        ),
+        ("modification_date", MIDDLE_MODIFICATION_TIME, "asc", min, ["b.csv", "c.csv"]),
+        (
+            "modification_date",
+            MIDDLE_MODIFICATION_TIME,
+            "desc",
+            min,
+            ["c.csv", "b.csv"],
+        ),
+        ("file_name", "b.csv", "asc", max, ["b.csv", "c.csv"]),
+        ("file_name", "b.csv", "desc", max, ["c.csv", "b.csv"]),
+        ("file_name", "b.csv", "asc", min, ["b.csv", "a.csv"]),
+        ("file_name", "b.csv", "desc", min, ["a.csv", "b.csv"]),
     ),
 )
 def test_readers_forwards_the_incremental_cursor_to_its_lister(
-    tmp_path: Path, row_order: TSortOrder, last_value_func, expected: list[str]
+    tmp_path: Path,
+    cursor_path: str,
+    initial_value,
+    row_order: TSortOrder,
+    last_value_func,
+    expected: list[str],
 ):
     """`readers` forwards through its own call site, so it needs its own case.
 
     The cursor carries a field, an initial value, an order and an aggregation, and all
     four have to arrive: a forwarding that rebuilt the cursor keeping only `row_order`
     would still order the listing correctly while loading a file the initial value
-    excludes. `initial_value` drops the oldest file under `max` and the newest under
-    `min`, so what is missing shows as much as what is out of order.
+    excludes. `initial_value` drops one file at each end, so what is missing shows as
+    much as what is out of order. Two cursor fields, because the field is the setting a
+    rebuilt cursor can hard-code while satisfying every other assertion here, and the
+    two-field matrix on `filesystem()` cannot see it, that being a different call site.
     """
     _write_listing(tmp_path)
 
-    with _listing_order_pinned():
+    with _listing_order_pinned(tmp_path):
         source = readers(
             str(tmp_path),
             fsspec.filesystem("file"),
             file_glob="*.csv",
             incremental=dlt.sources.incremental(
-                "modification_date",
-                initial_value=MIDDLE_MODIFICATION_TIME,
+                cursor_path,
+                initial_value=initial_value,
                 row_order=row_order,
                 last_value_func=last_value_func,
             ),
