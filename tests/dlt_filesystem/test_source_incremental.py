@@ -3,7 +3,7 @@ import re
 from typing import Any
 from unittest.mock import patch
 
-from dlt.extract.incremental import Incremental
+from dlt.extract.incremental import Incremental, IncrementalResourceWrapper
 from fsspec import AbstractFileSystem
 from fsspec.implementations.arrow import ArrowFSWrapper
 from pyarrow.fs import LocalFileSystem
@@ -55,7 +55,11 @@ def test_incremental_hint_is_applied_to_metadata_only_parent_lister(tmp_path):
     assert resource.table_name == "read_csv"
     assert lister.name == _reference(tmp_path).incremental_resource_name
     assert re.fullmatch(r"filesystem_[0-9a-f]{32}", lister.name)
-    incremental = lister.incremental
+    # The lister declares an `incremental` parameter, so dlt attaches its wrapper
+    # and the applied cursor is read through it, exactly as on dlt's own resource.
+    wrapper = lister.incremental
+    assert isinstance(wrapper, IncrementalResourceWrapper)
+    incremental = wrapper.incremental
     assert isinstance(incremental, Incremental)
     assert incremental.cursor_path == "modification_date"
     assert incremental.range_start == "closed"
@@ -74,7 +78,11 @@ def test_disabled_mode_preserves_the_existing_lister_and_output_identity(tmp_pat
     assert resource.name == "read_csv"
     assert resource.table_name == "read_csv"
     assert resource._parent.name == "filesystem"
-    assert resource._parent.incremental is None
+    # The wrapper is present on every filesystem resource, dlt's own included;
+    # what disabled mode means is that no cursor was applied to it.
+    wrapper = resource._parent.incremental
+    assert isinstance(wrapper, IncrementalResourceWrapper)
+    assert wrapper.incremental is None
 
 
 def test_every_reader_stays_downstream_of_the_incremental_lister(tmp_path):
@@ -88,7 +96,9 @@ def test_every_reader_stays_downstream_of_the_incremental_lister(tmp_path):
 
         assert resource.name == reader_name
         assert resource.table_name == reader_name
-        incremental = resource._parent.incremental
+        wrapper = resource._parent.incremental
+        assert isinstance(wrapper, IncrementalResourceWrapper)
+        incremental = wrapper.incremental
         assert isinstance(incremental, Incremental)
         assert incremental.cursor_path == "modification_date"
 

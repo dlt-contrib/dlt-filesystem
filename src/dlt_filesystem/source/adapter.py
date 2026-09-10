@@ -14,7 +14,7 @@
 
 """Reads files in s3, gs or azure buckets using fsspec and provides convenience resources for chunked reading of various file formats"""
 
-from typing import Iterator, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 import dlt
 from dlt.sources import DltResource
@@ -47,9 +47,13 @@ def _resolve_reader(registration: ReaderRegistration):
 
 @dlt.source(_impl_cls=ReadersSource, spec=FilesystemConfigurationResource)
 def readers(
-    bucket_url: str,
-    credentials: Union[FileSystemCredentials, AbstractFileSystem],
+    bucket_url: str = dlt.secrets.value,
+    credentials: Union[FileSystemCredentials, AbstractFileSystem] = dlt.secrets.value,
     file_glob: Optional[str] = "*",
+    *,
+    kwargs: Optional[Dict[str, Any]] = None,
+    client_kwargs: Optional[Dict[str, Any]] = None,
+    incremental: Optional[dlt.sources.incremental[Any]] = None,
 ) -> Tuple[DltResource, ...]:
     """This source provides a few resources that are chunked file readers. Readers can be further parametrized before use
        read_csv(chunksize, **pandas_kwargs)
@@ -61,8 +65,19 @@ def readers(
         bucket_url (str): The url to the bucket.
         credentials (FileSystemCredentials | AbstractFilesystem): The credentials to the filesystem of fsspec `AbstractFilesystem` instance.
         file_glob (str, optional): The filter to apply to the files in glob format. by default lists all files in bucket_url non-recursively
+        kwargs (Optional[Dict[str, Any]]): Additional arguments passed to the fsspec constructor, ie. dict(use_ssl=True) for s3fs
+        client_kwargs (Optional[Dict[str, Any]]): Additional arguments passed to the underlying fsspec native client, ie. dict(verify="public.crt") for botocore
+        incremental (Optional[dlt.sources.incremental[Any]]): Defines an incremental cursor on the listed files, with `modification_date`
+            being the most common choice, which returns only files created since the previous run.
     """
-    filesystem_resource = filesystem(bucket_url, credentials, file_glob=file_glob)
+    filesystem_resource = filesystem(
+        bucket_url,
+        credentials,
+        file_glob=file_glob,
+        kwargs=kwargs,
+        client_kwargs=client_kwargs,
+        incremental=incremental,
+    )
 
     return tuple(
         filesystem_resource
@@ -82,9 +97,13 @@ def filesystem(
     credentials: Union[FileSystemCredentials, AbstractFileSystem] = dlt.secrets.value,
     file_glob: Optional[str] = "*",
     files_per_page: int = 100,
-    extract_content: bool = True,
+    extract_content: bool = False,
     require_file_match: bool = False,
     filesystem_incremental: bool = False,
+    *,
+    kwargs: Optional[Dict[str, Any]] = None,
+    client_kwargs: Optional[Dict[str, Any]] = None,
+    incremental: Optional[dlt.sources.incremental[Any]] = None,
 ) -> Iterator[List[FileItem]]:
     """This resource lists files in `bucket_url` using `file_glob` pattern. The files are yielded as FileItem which also
     provide methods to open and read file data. It should be combined with transformers that further process (ie. load files)
@@ -100,6 +119,11 @@ def filesystem(
             matches no file. Defaults to False for direct uses of this resource.
         filesystem_incremental (bool, optional): Resolve trustworthy modification
             times when the listing itself does not carry one. Defaults to False.
+        kwargs (Optional[Dict[str, Any]]): Additional arguments passed to the fsspec constructor, ie. dict(use_ssl=True) for s3fs
+        client_kwargs (Optional[Dict[str, Any]]): Additional arguments passed to the underlying fsspec native client, ie. dict(verify="public.crt") for botocore
+        incremental (Optional[dlt.sources.incremental[Any]]): Defines an incremental cursor on the listed files, with `modification_date`
+            being the most common choice, which returns only files created since the previous run.
+            A cursor carrying `row_order` also orders the listing by its cursor field.
 
     Returns:
         Iterator[List[FileItem]]: The list of files.
@@ -107,18 +131,40 @@ def filesystem(
 
     fs_client: AbstractFileSystem
     if isinstance(credentials, AbstractFileSystem):
+        # A caller who hands over a constructed filesystem has already spent
+        # `kwargs` and `client_kwargs` on building it, so both are ignored here,
+        # exactly as they are in dlt's own resource.
         fs_client = credentials
     else:
-        fs_client = fsspec_filesystem(bucket_url, credentials)[0]
+        fs_client = fsspec_filesystem(
+            bucket_url, credentials, kwargs=kwargs, client_kwargs=client_kwargs
+        )[0]
 
-    matched_files = 0
-    files_chunk: List[FileItem] = []
-    for file_model in glob_files(
+    file_models: Iterable[FileItem] = glob_files(
         fs_client,
         bucket_url,
         file_glob or "**",
         filesystem_incremental=filesystem_incremental,
-    ):
+    )
+    if incremental and incremental.row_order:
+        # `row_order` is ascending or descending *in the direction `last_value_func`
+        # advances*, so it maps onto a raw sort only through that function: `max`
+        # advances upwards and `min` advances downwards, which inverts the
+        # comparison for `min`. Mirrors dlt's own expression.
+        reverse = (
+            incremental.row_order == "asc" and incremental.last_value_func is min
+        ) or (incremental.row_order == "desc" and incremental.last_value_func is max)
+        # The listing has to be materialised to be ordered. Only this branch pays
+        # for it; the default stays lazy.
+        file_models = sorted(
+            file_models,
+            key=lambda listed: listed[incremental.cursor_path],  # ty: ignore[invalid-key]
+            reverse=reverse,
+        )
+
+    matched_files = 0
+    files_chunk: List[FileItem] = []
+    for file_model in file_models:
         matched_files += 1
         file_dict = FileItemDict(file_model, fs_client)
         if extract_content:
