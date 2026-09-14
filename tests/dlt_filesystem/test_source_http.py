@@ -56,8 +56,9 @@ EXPECTED = [("Alice", 30), ("Bob", 41), ("Charlie", 25)]
 #: the reader instead of leaking into the fsspec constructor the way an undeclared
 #: name would. Only its *keys* are read, and only for a headerless CSV, which has
 #: nothing else to name its columns from (`source/core.py`, the `read_csv_headless`
-#: branch). The values are inert here: every other format in the matrix infers, and
-#: infers the same types this names.
+#: branch). `run_pipeline` turns the values into schema hints separately, which is
+#: what the loader used to do for this matrix and what pins all six formats to one
+#: type instead of six readers' inference.
 TYPED_COLUMNS = {"name": "text", "age": "bigint"}
 
 #: A presigned-URL shape. `%2F` must survive to the wire byte for byte, because a
@@ -107,6 +108,20 @@ def run_pipeline(
     """
     database = destination if destination is not None else tmp_path / "warehouse.duckdb"
     source = HttpFilesystemSource().dlt_source(url, table, **options)
+    # The package reads `column_types` for its keys alone, to name a headerless
+    # CSV's columns. Turning the values into schema hints is the caller's job, so
+    # the matrix below compares six formats at one pinned type rather than at six
+    # readers' inference.
+    if options.get("column_types"):
+        hints = {
+            name: {"data_type": data_type}
+            for name, data_type in options["column_types"].items()
+        }
+        # `dlt_source` returns a source or a bare resource, depending on the
+        # reader, so hint whichever this is.
+        selected = getattr(source, "selected_resources", None)
+        for resource in selected.values() if selected else [source]:
+            resource.apply_hints(columns=hints)
     pipeline = dlt.pipeline(
         pipeline_name="http_source",
         destination=dlt.destinations.duckdb(str(database)),
