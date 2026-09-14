@@ -2,7 +2,7 @@
 
 The package-level property (`dlt_source` consumes exactly its declared names and
 passes everything else straight to the connector) lives in
-`tests/dlt_filesystem/test_source_option_ownership.py`, driven by calling
+`tests/main/test_source_option_ownership.py`, driven by calling
 `dlt_source` directly. This file is the other half: what `run_ingest` itself
 sends, which is what actually enforces that boundary in a real pipeline.
 
@@ -135,3 +135,27 @@ def test_sql_source_still_receives_every_run_option(tmp_path):
     finally:
         con.close()
     assert rows == [(1, "alpha")]
+
+
+def test_incremental_key_is_refused_for_an_http_run(tmp_path):
+    """A run is the only path that still rejects `incremental_key` for this family.
+
+    The check is centralized in `omniload.api`, keyed on the source's declared
+    `consumed_run_options()` rather than on a per-source guard reading the name
+    out of `**kwargs`. A direct `dlt_source(..., incremental_key=...)` call no
+    longer raises: the name is not in the declared signature, so it lands in
+    `**kwargs` and merges into the fsspec constructor untouched, the same fate
+    any other undeclared run option now has.
+
+    The URL is never fetched. The refusal is a property of the source object,
+    raised before anything opens a connection, which is why this needs no server.
+    """
+    with pytest.raises(ValueError, match="you should not provide incremental_key"):
+        run_ingest(
+            source_uri="http://example.invalid/people.csv",
+            dest_uri=f"duckdb:///{tmp_path / 'warehouse.duckdb'}",
+            source_table="",
+            dest_table="out.people",
+            incremental_key="modified_at",
+            progress="log",
+        )

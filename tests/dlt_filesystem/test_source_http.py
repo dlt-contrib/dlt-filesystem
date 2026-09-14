@@ -1,9 +1,10 @@
-"""The contract omniload offers for an `http://` or `https://` source URL.
+"""The contract this package offers for an `http://` or `https://` source URL.
 
-Driven through the registered scheme (`run_ingest` and `SourceDestinationFactory`)
-rather than a named class, so the matrix reads the same before and after the
-connector behind that scheme is replaced. What it pins is what reaches the wire
-and what lands in the destination, not one implementation of it.
+Driven through `dlt_source` and a bare dlt pipeline, so this tree depends on no
+loader. What it pins is what reaches the wire and what lands in the destination.
+That the `http` and `https` schemes resolve to this connector at all is a
+property of the consumer's registry, pinned on that side by
+`tests/main/test_source_option_ownership.py`.
 
 Six server behaviours are covered because discovery and reading take different
 code paths through them: a server that honours `Range`, one that ignores it, one
@@ -20,8 +21,11 @@ network.
 import ssl
 from contextlib import contextmanager
 from datetime import timedelta
+from pathlib import Path
+from tempfile import mkdtemp
 from unittest.mock import patch
 
+import dlt
 import duckdb
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
@@ -35,7 +39,6 @@ from dlt_filesystem.source.fsspec.http import (
 )
 from dlt_filesystem.source.lister import glob_files
 from dlt_filesystem.source.model import FilesystemReference
-from omniload import run_ingest
 from tests.dlt_filesystem.http_server import (
     AUTH_PASSWORD_ENCODED,
     AUTH_USERNAME,
@@ -48,6 +51,11 @@ from tests.dlt_filesystem.http_server import (
 
 #: The rows every document in the fixture root carries, in query order.
 EXPECTED = [("Alice", 30), ("Bob", 41), ("Charlie", 25)]
+
+#: `column_types` is one of the two run options this family declares. It types the
+#: rows across six formats rather than leaving six readers to infer, and for a
+#: headerless CSV it is also where the column *names* come from.
+TYPED_COLUMNS = {"name": "text", "age": "bigint"}
 
 #: A presigned-URL shape. `%2F` must survive to the wire byte for byte, because a
 #: signature is computed over the encoded form; `%7E` normalizes to `~`, which is
@@ -67,16 +75,43 @@ def load(
     **options,
 ):
     """Ingest one document from the fixture server into a fresh duckdb file."""
-    destination = tmp_path / "warehouse.duckdb"
-    run_ingest(
-        source_uri=server.url(document, query=query, fragment=fragment),
-        dest_uri=f"duckdb:///{destination}",
-        source_table=table,
-        dest_table="out.people",
-        progress="log",
+    return run_pipeline(
+        server.url(document, query=query, fragment=fragment),
+        tmp_path,
+        table=table,
         **options,
     )
-    return destination
+
+
+def run_pipeline(
+    url: str,
+    tmp_path,
+    *,
+    table: str = "",
+    destination: Path | None = None,
+    dest_table: str = "people",
+    pipelines_dir: str | None = None,
+    **options,
+) -> Path:
+    """Load one URL into a duckdb file through the connector and a bare pipeline.
+
+    The dataset is always `out`, so every assertion in this file reads
+    `out.<table>` the way it did when the loader composed the destination table.
+
+    A run gets a state directory of its own unless the caller names one, which
+    is what an incrementality test does: two calls that must share a cursor pass
+    the same `pipelines_dir`, and everything else stays isolated per call.
+    """
+    database = destination if destination is not None else tmp_path / "warehouse.duckdb"
+    source = HttpFilesystemSource().dlt_source(url, table, **options)
+    pipeline = dlt.pipeline(
+        pipeline_name="http_source",
+        destination=dlt.destinations.duckdb(str(database)),
+        dataset_name="out",
+        pipelines_dir=pipelines_dir or mkdtemp(dir=tmp_path),
+    )
+    pipeline.run(source, table_name=dest_table)
+    return database
 
 
 def records(source) -> list:
@@ -124,7 +159,7 @@ def test_document_formats_load(range_server, tmp_path, document, table):
         document,
         tmp_path,
         table=table,
-        columns=["name:text,age:bigint"],
+        column_types=TYPED_COLUMNS,
     )
 
     assert rows(destination) == EXPECTED
@@ -194,14 +229,7 @@ def test_percent_encoded_password_authenticates(auth_server, tmp_path):
     scheme, _, remainder = url.partition("://")
     credentialed = f"{scheme}://{AUTH_USERNAME}:{AUTH_PASSWORD_ENCODED}@{remainder}"
 
-    destination = tmp_path / "warehouse.duckdb"
-    run_ingest(
-        source_uri=credentialed,
-        dest_uri=f"duckdb:///{destination}",
-        source_table="",
-        dest_table="out.people",
-        progress="log",
-    )
+    destination = run_pipeline(credentialed, tmp_path)
 
     assert rows(destination) == EXPECTED
     assert [request.status for request in auth_server.requests].count(401) <= 2
@@ -215,13 +243,8 @@ def test_reader_reads_in_ranges(range_server, tmp_path):
     opens it, and range support is established with a one-byte request, so those
     two are the only unranged reads the exchange may contain.
     """
-    destination = tmp_path / "warehouse.duckdb"
-    run_ingest(
-        source_uri=range_server.url("events.jsonl"),
-        dest_uri=f"duckdb:///{destination}",
-        source_table="",
-        dest_table="out.events",
-        progress="log",
+    destination = run_pipeline(
+        range_server.url("events.jsonl"), tmp_path, dest_table="events"
     )
 
     assert rows(destination, "select count(*) from out.events") == [(EVENT_COUNT,)]
@@ -240,9 +263,9 @@ def test_reader_reads_in_ranges(range_server, tmp_path):
 def test_first_records_arrive_before_the_whole_body_is_served(range_server):
     """The first batch yields while most of the document is still on the server.
 
-    Driven through the source rather than `run_ingest` because `block_size` is a
-    connection argument, and an HTTP URL's query string is its address, so the
-    only way to set one is programmatically. It has to be set at all: fsspec's
+    Driven without the `load` helper because `block_size` is a connection
+    argument, and an HTTP URL's query string is its address, so the only way to
+    set one is programmatically. It has to be set at all: fsspec's
     default block is 5 MB, larger than any fixture here, and one block covering
     the whole file is indistinguishable from a download.
 
@@ -645,20 +668,18 @@ def test_a_failed_whole_body_read_does_not_leak_the_query(no_range_server):
     ), "the signature never reached the server, so the test proves nothing"
 
 
-def test_filesystem_incremental_is_supported_by_run_and_dry_run(range_server, tmp_path):
+def test_filesystem_incremental_loads_over_http(range_server, tmp_path):
+    """Incremental is available on this transport, and a first pass loads everything.
+
+    Transport-specific because the cursor is the file's `Last-Modified` header,
+    which a server may not send at all (covered below).
+    """
     destination = load(
         range_server, "people.csv", tmp_path, filesystem_incremental=True
     )
 
     assert rows(destination) == EXPECTED
     assert HttpFilesystemSource().supports_filesystem_incremental() is True
-    load(
-        range_server,
-        "people.csv",
-        tmp_path,
-        filesystem_incremental=True,
-        dry_run=True,
-    )
 
 
 def test_filesystem_incremental_is_supported_by_the_source_itself(range_server):
@@ -698,14 +719,13 @@ def test_incremental_html_index_loads_unchanged_files_once_then_one_modified_fil
     pipelines_dir = tmp_path / "state"
 
     def run(query: str = "") -> None:
-        run_ingest(
-            source_uri=index_server.url("**/*.csv", query=query),
-            dest_uri=f"duckdb:///{destination}",
-            source_table="",
-            dest_table="out.index_values",
+        run_pipeline(
+            index_server.url("**/*.csv", query=query),
+            tmp_path,
+            destination=destination,
+            dest_table="index_values",
             pipelines_dir=str(pipelines_dir),
             filesystem_incremental=True,
-            progress="log",
         )
 
     try:
@@ -736,35 +756,19 @@ def test_incremental_cursor_identity_survives_signed_query_rotation(
     pipelines_dir = tmp_path / "signed-state"
 
     for signature in ("one", "two"):
-        run_ingest(
-            source_uri=index_server.url("*.csv", query=f"X-Amz-Signature={signature}"),
-            dest_uri=f"duckdb:///{destination}",
-            source_table="",
-            dest_table="out.signed_values",
+        run_pipeline(
+            index_server.url("*.csv", query=f"X-Amz-Signature={signature}"),
+            tmp_path,
+            destination=destination,
+            dest_table="signed_values",
             pipelines_dir=str(pipelines_dir),
             filesystem_incremental=True,
-            progress="log",
         )
 
     assert rows(
         destination,
         "select value, count(*) from out.signed_values group by value order by value",
     ) == [("alpha", 1), ("bravo", 1)]
-
-
-def test_incremental_key_is_refused_through_a_run(range_server, tmp_path):
-    """The only path that still rejects it: the check is centralized in
-    `omniload.api` (Phase 3 of GH-316's extraction prep), keyed on the source's
-    declared `consumed_run_options()` rather than on a per-source guard reading
-    `incremental_key` or `requested_incremental_key` out of `**kwargs`. A direct
-    `HttpFilesystemSource().dlt_source(..., incremental_key=...)` call no longer
-    raises: the name is not part of the declared signature, so it lands in
-    `**kwargs` and merges into the fsspec constructor untouched, which is the
-    same fate any other undeclared run option now has (see
-    `tests/dlt_filesystem/test_source_option_ownership.py`).
-    """
-    with pytest.raises(ValueError, match="should not provide incremental_key"):
-        load(range_server, "people.csv", tmp_path, incremental_key="modified_at")
 
 
 def test_file_format_argument_names_the_reader(range_server):

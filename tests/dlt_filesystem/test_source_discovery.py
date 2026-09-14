@@ -6,7 +6,22 @@ from fsspec.implementations.memory import MemoryFileSystem
 from dlt_filesystem.source.core import infer_resource, resource_for_reader
 from dlt_filesystem.source.error import NoFilesFoundError
 from dlt_filesystem.source.model import FilesystemLocator, FilesystemReference
-from tests.util.common import has_exception
+
+
+def has_exception(exception, exc_type) -> bool:
+    """Is `exc_type` anywhere in this exception's `__cause__` chain?
+
+    dlt wraps an extraction failure several layers deep, so the type a test cares
+    about is rarely the one raised.
+    """
+    if isinstance(exception, pytest.ExceptionInfo):
+        exception = exception.value
+
+    while exception:
+        if isinstance(exception, exc_type):
+            return True
+        exception = exception.__cause__
+    return False
 
 
 def _reference(*, require_file_match: bool) -> FilesystemReference:
