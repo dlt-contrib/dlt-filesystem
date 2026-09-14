@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 #: accepts; every name below is filtered against that declared subset before the
 #: call, so an unfiltered source keeps receiving all fifteen unchanged. Kept in
 #: step with the keywords the call site below actually passes by
-#: ``tests/dlt_filesystem/test_source_option_ownership.py::test_run_option_keys_match_the_api_call_site``.
+#: ``tests/main/test_source_option_ownership.py::test_run_option_keys_match_the_api_call_site``.
 RUN_OPTION_KEYS: frozenset[str] = frozenset(
     {
         "column_types",

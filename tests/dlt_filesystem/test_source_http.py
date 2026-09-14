@@ -52,9 +52,12 @@ from tests.dlt_filesystem.http_server import (
 #: The rows every document in the fixture root carries, in query order.
 EXPECTED = [("Alice", 30), ("Bob", 41), ("Charlie", 25)]
 
-#: `column_types` is one of the two run options this family declares. It types the
-#: rows across six formats rather than leaving six readers to infer, and for a
-#: headerless CSV it is also where the column *names* come from.
+#: `column_types` is one of the two run options this family declares, so it reaches
+#: the reader instead of leaking into the fsspec constructor the way an undeclared
+#: name would. Only its *keys* are read, and only for a headerless CSV, which has
+#: nothing else to name its columns from (`source/core.py`, the `read_csv_headless`
+#: branch). The values are inert here: every other format in the matrix infers, and
+#: infers the same types this names.
 TYPED_COLUMNS = {"name": "text", "age": "bigint"}
 
 #: A presigned-URL shape. `%2F` must survive to the wire byte for byte, because a
