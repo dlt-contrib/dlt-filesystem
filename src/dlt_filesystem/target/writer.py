@@ -278,6 +278,64 @@ def write_orc(path: str, rows: list[dict]) -> None:
     orc.write_table(pa.table(columns), path)
 
 
+def _narrowed_for_parquet(dtype):
+    """The same dtype with every 128-bit integer replaced by ``UInt64``.
+
+    Recursive because dlt keeps a nested column as one JSON column, and a struct
+    field is typed exactly as a column is: a lone ``2**64-1`` field infers
+    ``Int128``, and narrowing it is what makes the file readable. A list of structs,
+    which is the shape a repeated JSON object arrives as, infers
+    ``List(Struct({...: Int128}))`` and narrows the same way.
+
+    A bare list of integers is the one shape that does not. ``from_dicts`` infers
+    ``List(UInt64)`` for one whose elements all fit, so such a list reaches 128-bit
+    only by holding a value the cast then refuses, and walking it turns an
+    unreadable file into a named error rather than into a narrower column.
+    """
+    import polars as pl
+
+    if dtype in (pl.Int128, pl.UInt128):
+        return pl.UInt64
+    if isinstance(dtype, pl.Struct):
+        return pl.Struct(
+            {field.name: _narrowed_for_parquet(field.dtype) for field in dtype.fields}
+        )
+    if isinstance(dtype, pl.List):
+        return pl.List(_narrowed_for_parquet(dtype.inner))
+    return dtype
+
+
+def _narrow_wide_integers(frame):
+    """Cast 128-bit integer columns to ``UInt64``, refusing values that will not fit.
+
+    Polars widens an integer past the ``Int64`` range to ``Int128``, and past 2**127
+    to ``UInt128``. Parquet has no 128-bit integer type, so a column of either is
+    written as an untyped 16-byte ``FIXED_LEN_BYTE_ARRAY``: PyArrow refuses to read
+    the file back at all (``Integers with more than 64 bits not implemented``) and
+    DuckDB opens it and hands back a ``BLOB``, so the export leaves carrying a value
+    no consumer can spend and nothing says so.
+
+    A value in ``0..2**64-1`` is exactly what a ``UBIGINT`` source column produces, and
+    ``UInt64`` is a type every Parquet reader has, so those narrow and read back
+    unchanged. Above ``2**63`` that band is where this writer is the alternative
+    ``write_feather`` and ``write_orc`` are not: PyArrow's inference from a Python
+    int stops at a signed 64-bit, so both refuse from there up. Past ``2**64-1``, or on
+    any negative in a column another row widened, all three refuse; the strict cast
+    names the offending values, and the column they sit in except inside a bare
+    list, so the write fails where the operator can see it rather than at whoever
+    opens the file.
+
+    Here rather than in ``_frame``: ``write_csv`` builds on that too, and writes these
+    values correctly as text today.
+    """
+    target = {
+        name: _narrowed_for_parquet(dtype)
+        for name, dtype in frame.schema.items()
+        if _narrowed_for_parquet(dtype) != dtype
+    }
+    return frame.cast(target, strict=True) if target else frame
+
+
 def write_parquet(path: str, rows: list[dict]) -> None:
     """Parquet writer using Polars.
 
@@ -287,7 +345,7 @@ def write_parquet(path: str, rows: list[dict]) -> None:
     or fails on, so it is named here rather than changed as a side effect of moving
     libraries.
     """
-    _frame(rows).write_parquet(path, compression="snappy")
+    _narrow_wide_integers(_frame(rows)).write_parquet(path, compression="snappy")
 
 
 def write_yaml(path: str, rows: list[dict]) -> None:

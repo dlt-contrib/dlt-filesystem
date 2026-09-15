@@ -517,9 +517,7 @@ def test_write_refuses_an_unsigned_integer_wider_than_a_signed_64(tmp_path):
         writer_for_format("feather")(str(out), [row])
 
     # The alternatives the page names, asserted rather than assumed: all four keep the
-    # value digit for digit. Parquet is named as a non-alternative for the same reason,
-    # and that is the case worth pinning: it writes without complaint and its own reader
-    # refuses the result, which is a worse failure than this one and easy to walk into.
+    # value digit for digit.
     import json
 
     for file_format, decode in (
@@ -532,10 +530,14 @@ def test_write_refuses_an_unsigned_integer_wider_than_a_signed_64(tmp_path):
         writer_for_format(file_format)(str(alt), [row])
         assert str(decode(alt)) == str(2**64 - 1), file_format
 
+    # Parquet is an alternative too, and by a different route: it has no 128-bit integer
+    # either, so its writer narrows the column to `uint64` rather than building a table
+    # from the Python value. `test_parquet.py` holds that behaviour; what belongs here is
+    # that the two writers disagree about this value, which is why the page names one and
+    # not the other.
     parquet_out = tmp_path / "alt.parquet"
     writer_for_format("parquet")(str(parquet_out), [row])
-    with pytest.raises(pa.lib.ArrowNotImplementedError, match="more than 64 bits"):
-        pa.parquet.read_table(str(parquet_out))
+    assert pa.parquet.read_table(str(parquet_out)).column("u")[0].as_py() == 2**64 - 1
 
 
 def test_written_columns_are_not_arrow_view_types(tmp_path):
