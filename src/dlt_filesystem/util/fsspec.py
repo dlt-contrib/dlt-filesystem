@@ -26,7 +26,7 @@ class ReadIntoArrowFSMixin:
     re-boxing a handle would leave the discarded wrapper to close the stream from its
     finalizer.
 
-    Above 2026.9.0 the `hasattr` guard below makes this a no-op.
+    From 2026.9.0 the `hasattr` guard below makes this a no-op.
 
     TODO: Drop once the fsspec floor reaches 2026.9.0, which mirrors `readinto` on
     `ArrowFile` itself.
@@ -36,8 +36,11 @@ class ReadIntoArrowFSMixin:
         """Return an Arrow handle, `readinto` included when the handle is readable."""
         # A mixin has no `_open` on its own MRO; the filesystem it composes with does.
         handle = super()._open(path, mode, *args, **kwargs)  # ty: ignore[unresolved-attribute]
-        # Only read handles, so `hasattr(handle, "readinto")` keeps reading as a
-        # readability probe on a write handle, as it does on a plain `ArrowFile`.
+        # The `"r" in mode` gate is what leaves write handles untouched. `hasattr` never
+        # made that distinction: measured on a plain `ArrowFile`, it answers False for
+        # both modes below fsspec 2026.9.0 and True for both from it. It is here to
+        # leave a handle that already carries the method alone, which from 2026.9.0 is
+        # all of them.
         if "r" in mode and not hasattr(handle, "readinto"):
             handle.readinto = handle.stream.readinto
         return handle

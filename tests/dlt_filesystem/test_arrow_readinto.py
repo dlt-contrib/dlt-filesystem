@@ -3,8 +3,9 @@
 fsspec's ``ArrowFile`` mirrors a fixed list of methods from the pyarrow stream it wraps,
 and ``readinto`` joined that list in fsspec 2026.9.0. Every version from the ``>=2024.6``
 floor up to 2026.7.0 hands out a handle without it. Nothing in a default install notices,
-because the stdlib gzip reader only ever calls ``read()``. fsspec picks isal's ``IGzipFile`` as its ``gzip``
-codec whenever ``isal`` is importable, which any dependency pulling ``xopen`` arranges on
+because the stdlib gzip reader only ever calls ``read()``. fsspec picks isal's
+``IGzipFile`` as its ``gzip`` codec whenever ``isal`` is importable, which any dependency
+pulling ``xopen`` arranges on
 x86-64 and AArch64, and that reader decompresses through ``readinto``: every ``.gz`` file
 read through ``file://``, ``s3://``, ``az://``, ``hdfs://`` or ``rsync://`` then failed
 with
@@ -96,11 +97,12 @@ def test_every_blob_wrapper_carries_the_shim(wrapper):
 def test_write_handles_are_left_alone(tmp_path):
     """A write handle is not a read handle, and the shim does not pretend otherwise.
 
-    Read off the instance rather than with ``hasattr``, which stopped separating the two
-    in fsspec 2026.9.0: from there ``ArrowFile`` carries ``readinto`` on the class for
-    every mode, so ``hasattr`` answers for fsspec on a new version and for the shim on an
-    old one. What the shim promises is narrower and holds on both, that a handle opened
-    for writing is handed back untouched.
+    ``hasattr`` cannot answer this one. From fsspec 2026.9.0 it reports the method on any
+    handle, ``ArrowFile`` mirroring ``readinto`` for every mode; below that version a True
+    answer meant the shim had injected one. So it conflates fsspec's method with the
+    shim's, and only the instance says which is present. What the shim promises is
+    narrower and holds on every version: a handle opened for writing is handed back
+    untouched.
     """
     path = tmp_path / "written.bin"
 
@@ -110,6 +112,63 @@ def test_write_handles_are_left_alone(tmp_path):
         handle.write(b"payload")
 
     assert path.read_bytes() == b"payload"
+
+
+class _StreamWithReadInto:
+    """Stand in for the pyarrow stream, which implements ``readinto`` itself."""
+
+    def __init__(self) -> None:
+        self.payload = b"0123456789"
+
+    def readinto(self, buffer: bytearray) -> int:
+        count = min(len(buffer), len(self.payload))
+        buffer[:count] = self.payload[:count]
+        return count
+
+
+class _HandleWithoutReadInto:
+    """An ``ArrowFile`` as every fsspec below 2026.9.0 hands one out."""
+
+    def __init__(self) -> None:
+        self.stream = _StreamWithReadInto()
+
+
+class _BareArrowFilesystem:
+    """The parent ``_open`` the mixin composes with."""
+
+    def _open(
+        self, path: str, mode: str = "rb", *args: object, **kwargs: object
+    ) -> _HandleWithoutReadInto:
+        return _HandleWithoutReadInto()
+
+
+class _ShimmedFilesystem(ReadIntoArrowFSMixin, _BareArrowFilesystem):
+    """The mixin over a filesystem whose handles never carry ``readinto``."""
+
+
+def test_the_shim_injects_readinto_on_a_read_handle_that_lacks_it():
+    """Pin the injection on every fsspec, not only on the versions that need it.
+
+    Every test above that opens a handle reads through fsspec's own ``ArrowFile``, which
+    carries ``readinto`` from 2026.9.0. There the guard's ``not hasattr(...)`` term is
+    already false for a read handle, so nothing is injected whatever the mode gate does
+    and those tests pass with the gate removed: on the version CI resolves today they
+    assert nothing about the mode gate. Supplying the pre-2026.9.0 handle shape directly
+    keeps the contract under test across the whole ``>=2024.6`` range.
+    """
+    handle = _ShimmedFilesystem()._open("irrelevant", "rb")
+
+    assert "readinto" in vars(handle)
+    buffer = bytearray(4)
+    assert handle.readinto(buffer) == 4
+    assert bytes(buffer) == b"0123"
+
+
+def test_the_shim_injects_nothing_on_a_write_handle_that_lacks_it():
+    """The mode decides, not the handle's own missing attribute."""
+    handle = _ShimmedFilesystem()._open("irrelevant", "wb")
+
+    assert "readinto" not in vars(handle)
 
 
 def _bare_arrow_constructions(module: pathlib.Path) -> list[int]:
