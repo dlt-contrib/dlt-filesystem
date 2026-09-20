@@ -1,8 +1,9 @@
 """Arrow-backed filesystems hand out read handles that fill a caller's buffer.
 
 fsspec's ``ArrowFile`` mirrors a fixed list of methods from the pyarrow stream it wraps,
-and ``readinto`` is not on it. Nothing in a default install notices, because the stdlib
-gzip reader only ever calls ``read()``. fsspec picks isal's ``IGzipFile`` as its ``gzip``
+and ``readinto`` joined that list in fsspec 2026.9.0. Every version from the ``>=2024.6``
+floor up to 2026.7.0 hands out a handle without it. Nothing in a default install notices,
+because the stdlib gzip reader only ever calls ``read()``. fsspec picks isal's ``IGzipFile`` as its ``gzip``
 codec whenever ``isal`` is importable, which any dependency pulling ``xopen`` arranges on
 x86-64 and AArch64, and that reader decompresses through ``readinto``: every ``.gz`` file
 read through ``file://``, ``s3://``, ``az://``, ``hdfs://`` or ``rsync://`` then failed
@@ -10,7 +11,8 @@ with
 ``AttributeError: 'ArrowFile' object has no attribute 'readinto'``.
 
 The tests below pin the handle contract itself, so they hold whether or not isal is
-installed in the environment running them.
+installed in the environment running them, and on either side of the fsspec version that
+mirrors ``readinto``.
 """
 
 import ast
@@ -92,12 +94,19 @@ def test_every_blob_wrapper_carries_the_shim(wrapper):
 
 
 def test_write_handles_are_left_alone(tmp_path):
-    """A write handle is not a read handle, and the shim does not pretend otherwise."""
+    """A write handle is not a read handle, and the shim does not pretend otherwise.
+
+    Read off the instance rather than with ``hasattr``, which stopped separating the two
+    in fsspec 2026.9.0: from there ``ArrowFile`` carries ``readinto`` on the class for
+    every mode, so ``hasattr`` answers for fsspec on a new version and for the shim on an
+    old one. What the shim promises is narrower and holds on both, that a handle opened
+    for writing is handed back untouched.
+    """
     path = tmp_path / "written.bin"
 
     fs = ReadIntoArrowFSWrapper(LocalFileSystem())
     with fs.open(str(path), "wb") as handle:
-        assert not hasattr(handle, "readinto")
+        assert "readinto" not in vars(handle)
         handle.write(b"payload")
 
     assert path.read_bytes() == b"payload"

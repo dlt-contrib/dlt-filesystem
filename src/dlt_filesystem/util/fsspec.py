@@ -10,8 +10,9 @@ class ReadIntoArrowFSMixin:
     """Hand out Arrow read handles that satisfy `readinto`.
 
     fsspec's ``ArrowFile`` mirrors a fixed list of methods from the pyarrow stream it
-    wraps, and ``readinto`` is not on that list, so the handle serves ``read()`` but
-    fails anything that fills a caller-supplied buffer.
+    wraps, and ``readinto`` joined that list in fsspec 2026.9.0, so every version from
+    this project's ``>=2024.6`` floor up to 2026.7.0 hands out a handle that serves
+    ``read()`` and fails anything that fills a caller-supplied buffer.
 
     Gzip is where that surfaces. fsspec registers isal's ``IGzipFile`` as its ``gzip``
     codec whenever ``isal`` is importable and falls back to the stdlib ``GzipFile`` only
@@ -25,7 +26,10 @@ class ReadIntoArrowFSMixin:
     re-boxing a handle would leave the discarded wrapper to close the stream from its
     finalizer.
 
-    TODO: Drop once fsspec mirrors `readinto` on `ArrowFile`.
+    Above 2026.9.0 the `hasattr` guard below makes this a no-op.
+
+    TODO: Drop once the fsspec floor reaches 2026.9.0, which mirrors `readinto` on
+    `ArrowFile` itself.
     """
 
     def _open(self, path: str, mode: str = "rb", *args: Any, **kwargs: Any) -> Any:
