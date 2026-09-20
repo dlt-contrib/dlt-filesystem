@@ -22,7 +22,32 @@ class _IsolatedMemoryFileSystem(MemoryFileSystem):
 
     def __init__(self) -> None:
         super().__init__()
+        # `store` and `pseudo_dirs` are class attributes on `MemoryFileSystem`, and a
+        # subclass inherits the very same objects, so a subclass alone isolates nothing
+        # and this fixture's `clear()` would empty the store every other memory
+        # filesystem in the process is reading from. fsspec 2026.9.0 does this through
+        # `global_store=False`, which the supported floor of `fsspec>=2024.6` cannot
+        # reach, so the instance replaces both attributes itself.
+        self.store = {}
         self.pseudo_dirs = [""]
+
+
+def test_isolated_filesystem_leaves_the_process_global_store_alone():
+    """These fixtures' `clear()` must not reach objects another test module wrote.
+
+    `tests/warehouse/filesystem/test_remote.py` writes its fixtures into the shared
+    memory store at import time, so a clear that reaches it turns every later case
+    there into `NoFilesFoundError`.
+    """
+    shared = MemoryFileSystem()
+    shared.pipe_file("/another-module-fixture", b"payload")
+    try:
+        isolated = _IsolatedMemoryFileSystem()
+        isolated.store.clear()
+
+        assert shared.cat_file("/another-module-fixture") == b"payload"
+    finally:
+        shared.rm_file("/another-module-fixture")
 
 
 def _remote_uri(object_name: str = "database.duckdb") -> str:
