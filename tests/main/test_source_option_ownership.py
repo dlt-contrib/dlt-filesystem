@@ -510,7 +510,7 @@ def test_reference_defaults_read_as_a_run_that_enabled_nothing():
 
 def test_declared_options_never_appear_in_the_package_as_omniload_names():
     """Grep-based guardrail: the 13 omniload owns and this package does not must
-    never appear as an identifier under `src/dlt_filesystem/`.
+    never appear as an identifier under the package's own source tree.
 
     Sourced from both sides so it cannot drift: `RUN_OPTION_KEYS` from
     `omniload.api` (what a run can carry) minus `consumed_run_options()` from
@@ -525,7 +525,13 @@ def test_declared_options_never_appear_in_the_package_as_omniload_names():
     forbidden = sorted(set(RUN_OPTION_KEYS) - package_names)
     assert forbidden, "sanity: the omniload-only set should not be empty"
 
-    package_root = Path(__file__).resolve().parents[2] / "src" / "dlt_filesystem"
+    package_root = (
+        Path(__file__).resolve().parents[2]
+        / "packages"
+        / "dlt-filesystem"
+        / "src"
+        / "dlt_filesystem"
+    )
     pattern = re.compile(
         r"\b(" + "|".join(re.escape(name) for name in forbidden) + r")\b"
     )

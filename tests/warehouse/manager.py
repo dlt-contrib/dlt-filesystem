@@ -65,8 +65,8 @@ def get_remote_filesystem_services() -> dict[str, DockerService]:
     if _REMOTE_FILESYSTEM_SERVICES is None:
         from testcontainers.azurite import AzuriteContainer
 
-        from tests.dlt_filesystem.gcs import GCSFakeServerContainer
         from tests.util.container.impl.floci import FlociContainer
+        from tests.warehouse.gcs import GCSFakeServerContainer
 
         _REMOTE_FILESYSTEM_SERVICES = {
             "s3": DockerService(
