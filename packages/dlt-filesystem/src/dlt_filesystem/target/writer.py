@@ -6,7 +6,9 @@ rejects anything else, and Polars defaults to it), so a locale-encoded export wo
 read back on the machine that wrote it.
 """
 
+import datetime
 import decimal
+import functools
 
 from dlt_filesystem.source.error import MissingDecoderError
 
@@ -346,6 +348,126 @@ def write_parquet(path: str, rows: list[dict]) -> None:
     libraries.
     """
     _narrow_wide_integers(_frame(rows)).write_parquet(path, compression="snappy")
+
+
+def write_vortex(path: str, rows: list[dict]) -> None:
+    """Vortex writer.
+
+    Zero rows are written as a zero-column table, since ``vortex.array`` cannot infer
+    a schema from an empty list. A datetime is written in its own zone only when that
+    is an IANA zone matching its offset and one Vortex's compiled-in zone database
+    carries; anything else, such as a fixed offset, is written as the same instant in
+    UTC. Vortex resolves a timezone by name, has no entry for ``+12:00``, and aborts
+    with a Rust panic that ``except Exception`` does not catch, after truncating the
+    destination.
+    """
+    try:
+        import pyarrow as pa
+        import vortex as vx  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+        import vortex.io as vxio  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+    except ImportError as e:
+        raise MissingDecoderError(
+            "Writing Vortex files needs the vortex-data package, which requires "
+            "Python 3.11 or newer. "
+            "Install it with: pip install 'dlt-filesystem[vortex]'"
+        ) from e
+
+    data = vx.array(_utc_unnamed_zones(rows)) if rows else pa.table({})
+    vxio.write(data, path)
+
+
+def _utc_unnamed_zones(value, _cache: dict | None = None):
+    """Return ``value`` with every datetime Vortex cannot name converted to UTC.
+
+    Vortex looks a timestamp's zone up by the name Arrow gives its ``tzinfo``, and
+    panics when that is not a zone it knows: a fixed offset (``+12:00``, from
+    ``datetime.timezone``, dateutil's ``tzoffset`` or pendulum's ``FixedTimezone``), a
+    custom name, a system-only zone, a zone newer than Vortex's own zone database, or
+    a ``tzinfo`` Arrow cannot name at all. So a zone is kept only when its Arrow name
+    is an IANA zone Vortex writes and that gives the same offset at that instant (a
+    fixed offset labelled with a zone name would otherwise be written as that zone's
+    wall time), and anything else is converted to UTC, which keeps the instant.
+
+    Walks dicts, lists and tuples, and builds new containers only where it has to, so
+    the caller's rows are never modified.
+    """
+    if _cache is None:
+        _cache = {}
+    if isinstance(value, datetime.datetime):
+        tz = value.tzinfo
+        if tz is None:
+            return value
+        # Keyed by identity, holding the tzinfo so the id stays valid: several tzinfo
+        # classes (dateutil, pendulum) are unhashable.
+        entry = _cache.get(id(tz))
+        if entry is None:
+            entry = _cache[id(tz)] = (tz, _named_zone(tz))
+        zone = entry[1]
+        if zone is not None and value.astimezone(zone).utcoffset() == value.utcoffset():
+            return value
+        return value.astimezone(datetime.timezone.utc)
+    if isinstance(value, dict):
+        converted = {
+            key: _utc_unnamed_zones(item, _cache) for key, item in value.items()
+        }
+        return value if all(converted[k] is value[k] for k in value) else converted
+    if isinstance(value, (list, tuple)):
+        items = [_utc_unnamed_zones(item, _cache) for item in value]
+        if all(a is b for a, b in zip(items, value)):
+            return value
+        return items if isinstance(value, list) else tuple(items)
+    return value
+
+
+def _named_zone(tz: datetime.tzinfo):
+    """The IANA zone Arrow names ``tz`` as, or ``None`` if Vortex cannot write it.
+
+    ``available_timezones()`` filters out names ``ZoneInfo`` loads but no IANA release
+    carries, such as ``right/UTC``. It reflects the host's zone database, though, and
+    Vortex compiles in its own, so a zone newer than that copy would still pass. The
+    final word is Vortex's, asked once per name.
+    """
+    import zoneinfo
+
+    import pyarrow as pa
+
+    try:
+        name = pa.lib.tzinfo_to_string(tz)
+    except Exception:
+        return None
+    if name not in _available_zone_names() or not _vortex_writes_zone(name):
+        return None
+    return zoneinfo.ZoneInfo(name)
+
+
+@functools.cache
+def _available_zone_names() -> frozenset:
+    import zoneinfo
+
+    return frozenset(zoneinfo.available_timezones())
+
+
+@functools.cache
+def _vortex_writes_zone(name: str) -> bool:
+    """Whether Vortex writes a timestamp in zone ``name``, tried in memory.
+
+    Vortex fails on an unknown zone with a Rust panic, which surfaces as
+    ``pyo3_runtime.PanicException`` and derives from ``BaseException``, so it is
+    caught by type name; anything else propagates. ``compress`` is the step that
+    ``vortex.io.write`` runs, and where an unknown zone name fails.
+    """
+    import zoneinfo
+
+    import vortex as vx  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+
+    probe = [{"t": datetime.datetime(2000, 1, 1, tzinfo=zoneinfo.ZoneInfo(name))}]
+    try:
+        vx.compress(vx.array(probe))
+    except BaseException as e:
+        if type(e).__name__ == "PanicException":
+            return False
+        raise
+    return True
 
 
 def write_yaml(path: str, rows: list[dict]) -> None:

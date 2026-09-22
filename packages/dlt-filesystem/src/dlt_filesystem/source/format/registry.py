@@ -1,3 +1,4 @@
+import importlib.util
 from dataclasses import dataclass
 
 from dlt_filesystem.source.error import UnsupportedEndpointError
@@ -11,6 +12,10 @@ class ReaderRegistration:
     format_keys: tuple[str, ...]
     transformer_order: int
     max_table_nesting: int = 0
+    #: Import name of an optional package the reader needs, or ``None`` when the base
+    #: install carries everything. The format stays routable either way, so the reader can
+    #: raise its install hint; it is only left out of ``advertised_file_formats()``.
+    requires: str | None = None
 
 
 # Readers that ship with the base install (core dependencies).
@@ -38,6 +43,10 @@ BASE_READER_REGISTRATIONS = (
         "read_feather", ("feather", "arrow", "ipc"), transformer_order=14
     ),
     ReaderRegistration("read_avro", ("avro",), transformer_order=15),
+    # Needs the `vortex` extra (vortex-data, Python 3.11+).
+    ReaderRegistration(
+        "read_vortex", ("vortex",), transformer_order=16, requires="vortex"
+    ),
 )
 
 # Readers backed by the optional `iterable` extra (msgpack via iterabledata; cbor, xml and yaml
@@ -93,17 +102,19 @@ def _advertised_formats(
     return tuple(registration.format_keys[0] for registration in registrations)
 
 
-# `BASE_FILE_FORMATS` stood here and was read only by `advertised_file_formats()`, which
-# now reads `ADVERTISED_FILE_FORMATS` instead. It is dropped rather than left as a name
-# with no reader; the per-tier maps it was one of are still built where they are used.
+# `BASE_FILE_FORMATS` stood here and was read only by `advertised_file_formats()`. It is
+# dropped rather than left as a name with no reader; the per-tier maps it was one of are
+# still built where they are used.
 ITERABLE_FILE_FORMATS = _build_format_map(ITERABLE_READER_REGISTRATIONS)
 FORMAT_TO_READER = _build_format_map(
     BASE_READER_REGISTRATIONS + ITERABLE_READER_REGISTRATIONS
 )
 SUPPORTED_FILE_FORMATS = tuple(FORMAT_TO_READER)
 
-#: What the base half of the "supported formats" message names: one entry per base
-#: reader, aliases excluded. Every key still routes -- see ``FORMAT_TO_READER``.
+#: One entry per base reader, aliases excluded, whether or not a reader's ``requires``
+#: package is installed. The "supported formats" message names the installed subset of
+#: this, which ``advertised_file_formats()`` computes per call. Every key still routes --
+#: see ``FORMAT_TO_READER``.
 ADVERTISED_FILE_FORMATS = _advertised_formats(BASE_READER_REGISTRATIONS)
 
 
@@ -118,8 +129,9 @@ def reader_for_format(file_format: str) -> str:
 def advertised_file_formats() -> tuple[str, ...]:
     """Formats to name in user-facing "supported formats" errors.
 
-    Base formats always ship. Iterable-extra formats are appended only when their decoder is
-    importable, so a base install doesn't advertise a format that would fail with an install
+    Base formats ship unless their registration names a ``requires`` package that is not
+    importable. Iterable-extra formats are appended only when their decoder is importable.
+    Either way a base install doesn't advertise a format that would fail with an install
     hint (the reader still routes such a format and raises that hint if it is used).
 
     Aliases are left out of both halves, so the message names formats rather than
@@ -129,7 +141,13 @@ def advertised_file_formats() -> tuple[str, ...]:
         installed_iterable_formats,
     )
 
-    return ADVERTISED_FILE_FORMATS + installed_iterable_formats()
+    installed = tuple(
+        registration
+        for registration in BASE_READER_REGISTRATIONS
+        if registration.requires is None
+        or importlib.util.find_spec(registration.requires) is not None
+    )
+    return _advertised_formats(installed) + installed_iterable_formats()
 
 
 def supported_file_format_message(source_name: str) -> str:

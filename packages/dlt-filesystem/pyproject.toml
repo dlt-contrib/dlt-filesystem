@@ -76,6 +76,11 @@ optional-dependencies.iterable = [
   "msgpack<2",
   "pyyaml<7",
 ]
+# Vortex columnar files. vortex-data is a ~119 MB install that publishes wheels for Python
+# 3.11+ only, so it is opt-in rather than carried by every install of this package.
+optional-dependencies.vortex = [
+  "vortex-data>=0.86,<1; python_version>='3.11'",
+]
 urls.Issues = "https://github.com/panodata/omniload/issues"
 urls.Repository = "https://github.com/panodata/omniload"
 

@@ -14,6 +14,10 @@
 
 import codecs
 import io
+import shutil
+import tempfile
+from contextlib import contextmanager
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -32,7 +36,11 @@ from dlt.common.typing import copy_sig
 from dlt.sources import DltResource, DltSource, TDataItems
 from dlt.sources.filesystem import FileItemDict
 
-from dlt_filesystem.source.error import WorksheetNameCollisionError, _safe_location
+from dlt_filesystem.source.error import (
+    MissingDecoderError,
+    WorksheetNameCollisionError,
+    _safe_location,
+)
 from dlt_filesystem.source.format.helpers import fetch_arrow, fetch_json
 from dlt_filesystem.source.format.iterable_codec import read_via_iterable
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
@@ -900,6 +908,76 @@ def read_parquet(
                 yield rows.to_pylist()
 
 
+def read_vortex(
+    items: Iterator[FileItemDict],
+    chunksize: int = 5000,
+) -> Iterator[TDataItems]:
+    """Vortex reader.
+
+    The file is scanned in batches of ``chunksize`` rows, and no chunk handed downstream
+    is larger than that.
+
+    Args:
+        chunksize (int, optional): The number of rows to yield at once. Defaults to 5000.
+
+    Returns:
+        TDataItem: The file content
+    """
+    chunksize = _validated_chunksize(chunksize)
+    vx = _import_vortex("Reading")
+
+    for file_obj in items:
+        with _vortex_local_path(file_obj) as path:
+            for batch in vx.open(path).scan(batch_size=chunksize).to_arrow():
+                for offset in range(0, batch.num_rows, chunksize):
+                    yield batch.slice(offset, chunksize).to_pylist()
+
+
+def _import_vortex(action: str) -> Any:
+    """Import ``vortex``, or raise the install hint the other optional formats give."""
+    try:
+        import vortex  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+    except ImportError as e:
+        raise MissingDecoderError(
+            f"{action} Vortex files needs the vortex-data package, which requires "
+            "Python 3.11 or newer. Install it with: pip install 'dlt-filesystem[vortex]'"
+        ) from e
+    return vortex
+
+
+@contextmanager
+def _vortex_local_path(file_obj: Any) -> Iterator[str]:
+    """Yield a local path for ``file_obj`` that ``vortex.open`` can read.
+
+    ``vortex.open`` takes a path string only, not a file handle. A plain local file is
+    read in place. Anything else, a remote object or a gzipped file on any filesystem,
+    is copied through the item's own ``open()`` into a temporary file first, which is
+    what decompresses it and what reuses the source's authentication. The source handle
+    is closed once the copy is done.
+
+    "Local" is decided by the item's ``file_url`` scheme, which is what
+    ``FileItemDict.local_file_path`` converts, rather than by the filesystem's
+    protocol: the local source's wrapper reports ``local``, not ``file``.
+    """
+    if (
+        isinstance(file_obj, FileItemDict)
+        and str(file_obj.get("file_url", "")).startswith("file://")
+        and file_obj.get("encoding") != "gzip"
+    ):
+        yield file_obj.local_file_path
+        return
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        path = Path(temp_dir) / "staged.vortex"
+        if isinstance(file_obj, FileItemDict):
+            source = file_obj.open(compression="auto")
+        else:
+            source = file_obj.open()
+        with source as source_file, path.open("wb") as staged_file:
+            shutil.copyfileobj(source_file, staged_file)
+        yield str(path)
+
+
 def read_csv_duckdb(
     items: Iterator[FileItemDict],
     chunk_size: Optional[int] = DEFAULT_CHUNK_SIZE,
@@ -999,6 +1077,10 @@ if TYPE_CHECKING:
         @copy_sig(read_parquet)
         def read_parquet(self) -> DltResource:
             """Parquet reader resource (pyarrow)."""
+
+        @copy_sig(read_vortex)
+        def read_vortex(self) -> DltResource:
+            """Vortex reader resource (vortex-data)."""
 
         @copy_sig(read_csv_duckdb)
         def read_csv_duckdb(self) -> DltResource:
