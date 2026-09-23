@@ -9,9 +9,12 @@ from dlt_filesystem.target.writer import (
     write_orc,
     write_parquet,
     write_vortex,
+    write_xlsx,
     write_yaml,
 )
 
+#: ``(path, rows)``. A registration with ``takes_table_name`` is also passed
+#: ``table_name=`` as a keyword.
 Writer = Callable[[str, list[dict]], None]
 
 
@@ -26,6 +29,9 @@ class WriterRegistration:
 
     writer: Writer
     format_keys: tuple[str, ...]
+    #: Whether the writer takes the destination table's name as ``table_name``. Only a
+    #: format that stores a name the reader turns back into a table name needs it.
+    takes_table_name: bool = False
 
 
 # Writers that ship with the base install. Declaration order is what the
@@ -51,6 +57,9 @@ WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
     WriterRegistration(write_orc, ("orc",)),
     WriterRegistration(write_parquet, ("parquet",)),
     WriterRegistration(write_vortex, ("vortex",)),
+    # The XLSX reader names a table after its worksheet, so the sheet carries the name
+    # of the table the load wrote, and a later load of the workbook finds it by name.
+    WriterRegistration(write_xlsx, ("xlsx",), takes_table_name=True),
     # `yaml` is registered unconditionally, where the *reader* lists it under the
     # optional `iterable` extra. PyYAML is not actually optional in this dependency
     # set: `dlt` and `google-ads` both require it outright, so it arrives with any
@@ -99,9 +108,20 @@ ADVERTISED_WRITE_FORMATS = tuple(
 ADVERTISED_WRITE_FORMATS_TEXT = ", ".join(ADVERTISED_WRITE_FORMATS)
 
 
+FORMAT_TO_REGISTRATION = {
+    format_key: registration
+    for registration in WRITER_REGISTRATIONS
+    for format_key in registration.format_keys
+}
+
+
 def writer_for_format(file_format: str) -> Writer:
+    return registration_for_format(file_format).writer
+
+
+def registration_for_format(file_format: str) -> WriterRegistration:
     try:
-        return FORMAT_TO_WRITER[file_format]
+        return FORMAT_TO_REGISTRATION[file_format]
     except KeyError as e:
         raise NotImplementedError(f"Unsupported file format: {file_format}") from e
 

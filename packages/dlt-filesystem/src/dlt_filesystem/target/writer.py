@@ -9,8 +9,14 @@ read back on the machine that wrote it.
 import datetime
 import decimal
 import functools
+import logging
+import math
+import re
+import tempfile
 
 from dlt_filesystem.source.error import MissingDecoderError
+
+logger = logging.getLogger(__name__)
 
 
 def _column_union(rows: list[dict]) -> list[str]:
@@ -137,14 +143,15 @@ def _refuse_rounded_numbers(frame, rows: list[dict]) -> None:
             _refuse_a_rounded_number(name, row.get(name), written)
 
 
-#: Types a CSV column cannot hold. A ``Decimal`` is here rather than left to Polars
-#: because Polars stops at 128-bit decimals, where PyArrow reached for a 256-bit one:
-#: a ``DECIMAL(50,2)`` column survived the replaced writer and would abort this one.
-_UNSPELLABLE_IN_CSV = (dict, list, tuple, bytes, bytearray, decimal.Decimal)
+#: Types a flat format (CSV, XLSX) has no cell for. A ``Decimal`` is here rather than
+#: left to Polars because Polars stops at 128-bit decimals, where PyArrow reached for a
+#: 256-bit one: a ``DECIMAL(50,2)`` column survived the replaced writer and would abort
+#: this one. For XLSX it is here because a cell is a double, which drops the scale.
+_UNSPELLABLE_FLAT = (dict, list, tuple, bytes, bytearray, decimal.Decimal)
 
 
-def _spell_for_csv(value):
-    """Spell a value CSV cannot hold the way the JSON writers spell it.
+def _spell_flat(value):
+    """Spell a value a flat format cannot hold the way the JSON writers spell it.
 
     The same rule ``_yaml_dumper`` follows for the types PyYAML refuses: ask dlt's own
     serializer. A nested document becomes its JSON text and ``bytes`` become the base64
@@ -161,7 +168,7 @@ def _spell_for_csv(value):
     return spelled if isinstance(spelled, str) else json.dumps(spelled)
 
 
-def _spell_rows_for_csv(rows: list[dict]) -> list[dict]:
+def _spell_rows_flat(rows: list[dict]) -> list[dict]:
     """Spell those values before Polars sees them, not after.
 
     Polars types a column across the whole load, so a nested value read back out of a
@@ -172,14 +179,12 @@ def _spell_rows_for_csv(rows: list[dict]) -> list[dict]:
     variants, so all three are reachable on the default load path.
     """
     if not any(
-        isinstance(value, _UNSPELLABLE_IN_CSV) for row in rows for value in row.values()
+        isinstance(value, _UNSPELLABLE_FLAT) for row in rows for value in row.values()
     ):
         return rows
     return [
         {
-            key: _spell_for_csv(value)
-            if isinstance(value, _UNSPELLABLE_IN_CSV)
-            else value
+            key: _spell_flat(value) if isinstance(value, _UNSPELLABLE_FLAT) else value
             for key, value in row.items()
         }
         for row in rows
@@ -200,7 +205,7 @@ def write_csv(path: str, rows: list[dict]) -> None:
     source reaches this on the default load path, so those values are spelled rather
     than left to abort the export.
     """
-    frame = _frame(_spell_rows_for_csv(rows))
+    frame = _frame(_spell_rows_flat(rows))
     # A record whose every field is null is a blank line in a one-column file, and a
     # blank line is not a record to most readers, so the row is lost on the way back
     # in. The csv module quoted a lone empty field for exactly this reason. Quoting
@@ -468,6 +473,254 @@ def _vortex_writes_zone(name: str) -> bool:
             return False
         raise
     return True
+
+
+#: Excel's limits for one worksheet. The header takes one of the rows.
+_XLSX_MAX_ROWS = 1_048_576
+_XLSX_MAX_COLUMNS = 16_384
+_XLSX_MAX_STRING = 32_767
+_XLSX_MAX_SHEET_NAME = 31
+_XLSX_SHEET_NAME_FORBIDDEN = re.compile(r"[\[\]:*?/\\]")
+
+#: Excel's date serials count from a 1900 that has a 29 February, so a date before
+#: March 1900 is written one day off, and a datetime on 1 January 1900 lands on serial
+#: 0, which reads back as 31 December 1899. One boundary every reader agrees past,
+#: rather than per-type special cases.
+_XLSX_FIRST_DATE = datetime.date(1900, 3, 1)
+
+#: Readers round a serial to the millisecond, so a later time can roll into year
+#: 10000, which Polars' reader cannot represent and panics on. Conservative: a serial
+#: this large resolves only to tens of microseconds, so the exact rounding point is
+#: not a fixed microsecond, and everything after 23:59:59.999 is refused.
+_XLSX_LAST_DATETIME = datetime.datetime(9999, 12, 31, 23, 59, 59, 999000)
+
+#: The same rounding carries a time of day from here on past midnight, and a time cell
+#: holds the fraction of a day only, so it reads back as the next day's 00:00. Exact at
+#: the half millisecond, where the datetime bound above is not: a serial near one day
+#: resolves to far below a microsecond, one near year 9999 only to tens of them.
+_XLSX_MIDNIGHT_ROUNDING = datetime.time(23, 59, 59, 999500)
+
+_XLSX_WORKBOOK_OPTIONS = {
+    # Rows go to a temp file as they are written, so the workbook costs no second
+    # copy of the load.
+    "constant_memory": True,
+    # The typed `write_*` calls below already keep a string a string. These keep it one
+    # if the generic `write()` is ever used, which makes a formula or a hyperlink of a
+    # string that looks like one.
+    "strings_to_numbers": False,
+    "strings_to_formulas": False,
+    "strings_to_urls": False,
+}
+
+
+def _refuse_for_xlsx(name: str, value, where: str) -> None:
+    """Refuse a cell value Excel would store as something else."""
+    if isinstance(value, bool):
+        return
+    if isinstance(value, int):
+        if abs(value) > _EXACT_IN_A_DOUBLE:
+            raise ValueError(
+                f"Column '{name}' carries the number {value} ({where}), which an "
+                "Excel cell cannot hold: a cell is a double, and a double does not "
+                "represent that number exactly. Write this load to a YAML destination, "
+                "which keeps the number as itself."
+            )
+    elif isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            raise ValueError(
+                f"Column '{name}' carries {value} ({where}), which Excel has no "
+                "number for: it would be written as an error cell, and a reader drops "
+                "a row of those. Write this load to a CSV or Parquet destination."
+            )
+    elif isinstance(value, str):
+        if len(value) > _XLSX_MAX_STRING:
+            raise ValueError(
+                f"Column '{name}' carries a string of {len(value)} characters "
+                f"({where}), and an Excel cell holds at most {_XLSX_MAX_STRING}: it "
+                "would be written truncated. Write this load to a CSV, JSON or JSONL "
+                "destination."
+            )
+    elif isinstance(value, datetime.datetime):
+        if value < datetime.datetime.combine(_XLSX_FIRST_DATE, datetime.time()):
+            raise ValueError(
+                f"Column '{name}' carries {value} ({where}), and Excel cannot "
+                f"represent a date before {_XLSX_FIRST_DATE} exactly. Write this load "
+                "to a CSV or Parquet destination."
+            )
+        if value > _XLSX_LAST_DATETIME:
+            raise ValueError(
+                f"Column '{name}' carries {value} ({where}), after the last whole "
+                "millisecond of year 9999, which can read back from an Excel cell in "
+                "year 10000. "
+                "Write this load to a CSV or Parquet destination."
+            )
+    elif isinstance(value, datetime.date):
+        if value < _XLSX_FIRST_DATE:
+            raise ValueError(
+                f"Column '{name}' carries {value} ({where}), and Excel cannot "
+                f"represent a date before {_XLSX_FIRST_DATE} exactly. Write this load "
+                "to a CSV or Parquet destination."
+            )
+    elif isinstance(value, datetime.time):
+        if value.tzinfo is not None:
+            raise ValueError(
+                f"Column '{name}' carries the time {value} ({where}), and Excel has "
+                "no timezone, nor a date to convert a time of day to UTC with."
+            )
+        if value >= _XLSX_MIDNIGHT_ROUNDING:
+            raise ValueError(
+                f"Column '{name}' carries the time {value} ({where}), which reads "
+                "back from an Excel cell as midnight. Write this load to a CSV or "
+                "Parquet destination."
+            )
+
+
+#: What an Excel cell holds as itself. Anything else is spelled as CSV spells it.
+_XLSX_NATIVE = (bool, int, float, str, datetime.date, datetime.time)
+
+
+def _xlsx_cell(name: str, value, where: str):
+    """The value as the cell will hold it: native, spelled, or converted to naive UTC.
+
+    Excel has no timezone, so an aware datetime is written as the same instant in UTC,
+    the choice ``write_vortex`` makes for a zone it cannot name. That is the ordinary
+    case under ``--loader-file-format parquet``, where dlt tags a naive source
+    timestamp UTC.
+    """
+    if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        try:
+            return value.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+        except OverflowError as e:
+            raise ValueError(
+                f"Column '{name}' carries {value} ({where}), which is outside the "
+                "range of a datetime in UTC, so it cannot be written without its zone."
+            ) from e
+    if not isinstance(value, _XLSX_NATIVE):
+        return _spell_flat(value)
+    return value
+
+
+def _xlsx_sheet_name(table_name: str | None) -> str:
+    """A worksheet name Excel accepts, as close to the table name as it allows.
+
+    The XLSX reader names a table after its worksheet, so the sheet carries the table
+    name for a later load to find. Excel caps a sheet name at 31 characters and forbids
+    ``[]:*?/\\`` and a leading or trailing apostrophe. A name past those is shortened
+    with a warning rather than refused: it is metadata, no value is lost, and with no
+    ``--dest-table`` the name is the path stem, which is often long.
+    """
+    if not table_name:
+        return "Sheet1"
+    name = _XLSX_SHEET_NAME_FORBIDDEN.sub("_", table_name)
+    name = name[:_XLSX_MAX_SHEET_NAME].strip("'")
+    if not name.strip():
+        name = "Sheet1"
+    if name != table_name:
+        logger.warning(
+            "Excel cannot name a worksheet '%s', so the table is written to a sheet "
+            "named '%s'",
+            table_name,
+            name,
+        )
+    return name
+
+
+def write_xlsx(path: str, rows: list[dict], *, table_name: str | None = None) -> None:
+    """Write rows as one Excel worksheet, named after the table, with xlsxwriter.
+
+    xlsxwriter rather than ``DataFrame.write_excel``: Polars always writes an Excel
+    table object, whose headers are case-insensitive, so columns ``A`` and ``a`` leave
+    a sheet that reads back empty. It also gives every float a three-decimal display
+    format and absorbs Excel's limits (a truncated string, a dropped row) that
+    xlsxwriter reports.
+
+    Excel's value vocabulary is smaller than a load's, so a value is either spelled,
+    refused, or written as Excel holds it. Nested values, ``bytes`` and ``Decimal`` are
+    spelled as ``write_csv`` spells them, the decimal keeping its scale. A value whose
+    meaning a cell would change is refused, naming the column: an integer past 2**53,
+    NaN or infinity, a string past 32 767 characters, a date before March 1900, a time
+    of day that rounds to midnight, and a load past a worksheet's rows or columns. A
+    refusal leaves no file behind, because xlsxwriter writes the path only when the
+    workbook is closed. Two losses are Excel's
+    own precision and are not refused: a float needing 17 significant digits is written
+    to 16, and readers round a time to the millisecond.
+    """
+    try:
+        import xlsxwriter
+    except ImportError as e:
+        raise MissingDecoderError(
+            "Writing XLSX files needs the xlsxwriter package. "
+            "Install it with: pip install xlsxwriter"
+        ) from e
+
+    fieldnames = _column_union(rows)
+    if len(rows) >= _XLSX_MAX_ROWS:
+        raise ValueError(
+            f"This load has {len(rows)} rows, and an Excel worksheet holds at most "
+            f"{_XLSX_MAX_ROWS - 1} below its header. Write it to a CSV or Parquet "
+            "destination."
+        )
+    if len(fieldnames) > _XLSX_MAX_COLUMNS:
+        raise ValueError(
+            f"This load has {len(fieldnames)} columns, and an Excel worksheet holds at "
+            f"most {_XLSX_MAX_COLUMNS}. Write it to a CSV or Parquet destination."
+        )
+    for name in fieldnames:
+        _refuse_for_xlsx(name, name, "as its name")
+
+    # A temp directory of our own for xlsxwriter's row files, which it removes only on
+    # a successful close: a refused load would otherwise leave one behind per sheet.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        workbook = xlsxwriter.Workbook(
+            path, {**_XLSX_WORKBOOK_OPTIONS, "tmpdir": scratch}
+        )
+        sheet = workbook.add_worksheet(_xlsx_sheet_name(table_name))
+        # Explicit, ISO-shaped formats: a date cell is a number, and without one Excel
+        # shows the serial. Fractional seconds are shown only where a value has them.
+        formats = {
+            "datetime": workbook.add_format({"num_format": "yyyy-mm-dd hh:mm:ss"}),
+            "datetime_ms": workbook.add_format(
+                {"num_format": "yyyy-mm-dd hh:mm:ss.000"}
+            ),
+            "date": workbook.add_format({"num_format": "yyyy-mm-dd"}),
+            "time": workbook.add_format({"num_format": "hh:mm:ss"}),
+            "time_ms": workbook.add_format({"num_format": "hh:mm:ss.000"}),
+        }
+        for column, name in enumerate(fieldnames):
+            sheet.write_string(0, column, name)
+        for index, row in enumerate(rows, start=1):
+            for column, name in enumerate(fieldnames):
+                value = row.get(name)
+                if value is None:
+                    continue
+                where = f"row {index}"
+                value = _xlsx_cell(name, value, where)
+                _refuse_for_xlsx(name, value, where)
+                _write_xlsx_cell(sheet, index, column, value, formats)
+        workbook.close()
+
+
+def _write_xlsx_cell(sheet, row: int, column: int, value, formats: dict) -> None:
+    """Write one converted cell with the call its type needs.
+
+    ``bool`` before ``int`` and ``datetime`` before ``date``, because each subclasses
+    the other and the wrong order writes ``True`` as ``1`` or drops a time of day.
+    """
+    if isinstance(value, bool):
+        sheet.write_boolean(row, column, value)
+    elif isinstance(value, (int, float)):
+        sheet.write_number(row, column, value)
+    elif isinstance(value, str):
+        sheet.write_string(row, column, value)
+    elif isinstance(value, datetime.datetime):
+        key = "datetime_ms" if value.microsecond else "datetime"
+        sheet.write_datetime(row, column, value, formats[key])
+    elif isinstance(value, datetime.date):
+        sheet.write_datetime(row, column, value, formats["date"])
+    else:
+        # ``datetime.time``, the last of the types ``_xlsx_cell`` lets through.
+        key = "time_ms" if value.microsecond else "time"
+        sheet.write_datetime(row, column, value, formats[key])
 
 
 def write_yaml(path: str, rows: list[dict]) -> None:

@@ -135,6 +135,7 @@ def test_pinned_format_falls_back_instead_of_requiring_an_extension(uri, path, f
         "file:///data/out.dat#parquet",
         # known to the reader registry but not writable: still a named non-CSV format
         "file:///data/out.bson",
+        # writable, but through `file://`: the pin still names it a non-CSV format
         "file:///data/out.xlsx",
         "file:///data/out.dat#csv_duckdb",
     ],
@@ -177,7 +178,7 @@ def test_temp_directory_is_cleared_when_the_write_fails(tmp_path, monkeypatch):
         raise RuntimeError("writer exploded")
 
     monkeypatch.setattr(
-        "dlt_filesystem.target.local.writer_for_format", exploding_writer
+        "dlt_filesystem.target.local.registration_for_format", exploding_writer
     )
     with pytest.raises(RuntimeError, match="writer exploded"):
         destination.post_load()

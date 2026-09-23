@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 
 from dlt_filesystem.target.model import DEFAULT_DATASET_NAME
-from dlt_filesystem.target.registry import writer_for_format
+from dlt_filesystem.target.registry import registration_for_format
 from dlt_filesystem.target.util import _resolve_output_target, _strip_dlt_columns
 from dlt_filesystem.util.loader import load_dlt_file
 
@@ -160,7 +160,11 @@ class LocalFilesystemDestination:
             if out_dir:
                 os.makedirs(out_dir, exist_ok=True)
 
-            writer_for_format(self.output_format)(self.output_path, rows)
+            registration = registration_for_format(self.output_format)
+            kwargs = (
+                {"table_name": self.table_name} if registration.takes_table_name else {}
+            )
+            registration.writer(self.output_path, rows, **kwargs)
         finally:
             # Always clear the temp bucket, even if reading or writing failed partway.
             shutil.rmtree(self.temp_path, ignore_errors=True)

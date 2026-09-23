@@ -219,8 +219,33 @@ def _read_back(path, out_format):
         import vortex as vx  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
 
         return vx.open(str(path)).to_dataset().to_table().to_pylist()
+    elif out_format == "xlsx":
+        return _read_back_xlsx(path)[1]
     else:
         raise NotImplementedError(f"Unknown output format: {out_format}")
+
+
+def _read_back_xlsx(path):
+    """The first worksheet's name and its rows, read with openpyxl rather than calamine.
+
+    A header row of nothing is a sheet with no cells, which is how an empty load is
+    written.
+    """
+    import openpyxl
+
+    sheet = openpyxl.load_workbook(path).worksheets[0]
+    cells = list(sheet.iter_rows(values_only=True))
+    if not cells or all(cell is None for cell in cells[0]):
+        return sheet.title, []
+    header, *body = cells
+    return sheet.title, [dict(zip(header, row)) for row in body]
+
+
+#: What a written file needs appended to be read back as the table it holds. A
+#: workbook read with no selector is a set of worksheet tables, which a single-file
+#: destination refuses, so the sheet is named. By name rather than by position, so the
+#: round trip also pins that the sheet is named after the table the load wrote.
+SOURCE_SUFFIX = {"xlsx": "#sheet_name=rows"}
 
 
 @pytest.mark.parametrize("out_format", WRITE_FORMATS)
@@ -247,8 +272,9 @@ def test_written_file_reads_back_through_its_own_reader(tmp_path, out_format):
     )
     assert result.exit_code == 0, result.output
 
+    suffix = SOURCE_SUFFIX.get(out_format, "")
     result = invoke_ingest_command(
-        f"file://{written}", "rows", f"file://{final}", "public.rows"
+        f"file://{written}{suffix}", "rows", f"file://{final}", "public.rows"
     )
     assert result.exit_code == 0, result.output
 
@@ -810,3 +836,81 @@ def test_nested_source_reaches_a_csv_export_as_json(tmp_path):
     row = _read_back(out_path, "csv")[0]
     assert json.loads(row["meta"]) == {"a": 1}
     assert json.loads(row["tags"]) == ["p", "q"]
+
+
+# --- xlsx (#377) ---
+
+
+@pytest.mark.parametrize(
+    ("source_table", "dest_table", "sheet"),
+    [("people", "public.people", "people"), (None, None, "export")],
+    ids=["dest-table", "path-stem"],
+)
+def test_xlsx_names_the_worksheet_after_the_table(
+    tmp_path, source_table, dest_table, sheet
+):
+    """The XLSX reader names a table after its worksheet, so the sheet carries the
+    table the load wrote: `--dest-table` when given, the path stem when no table is
+    named at all, which is the same name the destination stages the load under."""
+    _write_source_files(tmp_path)
+    out_path = tmp_path / "export.xlsx"
+
+    result = invoke_ingest_command(
+        f"file://{tmp_path / 'people.csv'}",
+        source_table,
+        f"file://{out_path}",
+        dest_table,
+    )
+    assert result.exit_code == 0, result.output
+
+    title, rows = _read_back_xlsx(out_path)
+    assert title == sheet
+    assert [row["name"] for row in rows] == ["Alice", "Bob", "Carol"]
+
+
+def test_xlsx_takes_native_types_through_a_forced_parquet_intermediate(tmp_path):
+    """Parquet staging is where a writer sees typed values rather than JSON-typed ones.
+
+    The date, timestamp and time are Excel date cells, the timestamp in naive UTC
+    because dlt tags a naive source column UTC and Excel has no timezone. The decimal
+    keeps its scale as text, and binary and nested values are spelled as `write_csv`
+    spells them.
+    """
+    source = _typed_feather_source(tmp_path / "in.feather")
+    out_path = tmp_path / "out.xlsx"
+    result = invoke_ingest_command(
+        f"file://{source}",
+        "rows",
+        f"file://{out_path}",
+        "public.rows",
+        loader_file_format="parquet",
+    )
+    assert result.exit_code == 0, result.output
+
+    csv_path = tmp_path / "out.csv"
+    result = invoke_ingest_command(
+        f"file://{source}",
+        "rows",
+        f"file://{csv_path}",
+        "public.rows",
+        loader_file_format="parquet",
+    )
+    assert result.exit_code == 0, result.output
+    as_csv = _read_back(csv_path, "csv")[0]
+
+    _, rows = _read_back_xlsx(out_path)
+    assert rows == [
+        {
+            "i": 1,
+            "s": "a",
+            # openpyxl has no date-only cell type, so a date reads as its midnight.
+            "date": datetime.datetime(2020, 1, 1),
+            "naive": datetime.datetime(2020, 1, 2, 3, 4, 5),
+            "time": datetime.time(9, 30),
+            "blob": as_csv["blob"],
+            "dec": as_csv["dec"],
+            "lst": as_csv["lst"],
+            "st": as_csv["st"],
+        }
+    ]
+    assert rows[0]["dec"] == "3.140000000"
