@@ -12,6 +12,7 @@ readme = "README.md"
 license = "MIT"
 maintainers = [
   { name = "Andreas Motl", email = "andreas.motl@panodata.org" },
+  { name = "TiM", email = "tim@nuimarkets.com" },
 ]
 requires-python = ">=3.10"
 classifiers = [
@@ -68,9 +69,19 @@ dependencies = [
 optional-dependencies.bson = [
   "pymongo<5",
 ]
+optional-dependencies.develop = [
+  "poethepoet<1",
+  "pyproject-fmt<3",
+  "ruff==0.16.*",
+  "ty==0.0.84",
+  "validate-pyproject<1",
+]
 # The DuckDB CSV reader (`csv_duckdb`), an alternative to the default Polars one.
 optional-dependencies.duckdb = [
   "duckdb<1.6",
+]
+optional-dependencies.full = [
+  "dlt-filesystem[bson,duckdb,iterable,spreadsheet,vortex]",
 ]
 # Long-tail file formats (MessagePack via iterabledata; CBOR via cbor2, XML via lxml, YAML via
 # PyYAML directly). iterabledata core is light (chardet, tqdm); each format's decoder is pulled
@@ -90,6 +101,14 @@ optional-dependencies.iterable = [
 # reader here selects.
 optional-dependencies.spreadsheet = [
   "polars[calamine,xlsxwriter]>=1.34,<3",
+]
+optional-dependencies.test = [
+  "openpyxl",
+  "pandas<4",
+  "pytest<10",
+  "pytest-cov<8",
+  "pytest-mock<4",
+  "pytest-xdist[psutil]<4",
 ]
 # Vortex columnar files. vortex-data is a ~119 MB install that publishes wheels for Python
 # 3.11+ only, so it is opt-in rather than carried by every install of this package.
