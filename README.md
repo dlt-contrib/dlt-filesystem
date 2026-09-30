@@ -66,4 +66,4 @@ pipeline.run(
 
 ## License
 
-MIT. See [LICENSE](https://github.com/panodata/omniload/blob/main/LICENSE).
+MIT. See [LICENSE](https://github.com/dlt-contrib/dlt-filesystem/blob/main/LICENSE).
