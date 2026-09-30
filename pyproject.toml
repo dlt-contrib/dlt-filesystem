@@ -115,8 +115,8 @@ optional-dependencies.test = [
 optional-dependencies.vortex = [
   "vortex-data>=0.86,<1; python_version>='3.11'",
 ]
-urls.Issues = "https://github.com/panodata/omniload/issues"
-urls.Repository = "https://github.com/panodata/omniload"
+urls.Issues = "https://github.com/dlt-contrib/dlt-filesystem/issues"
+urls.Repository = "https://github.com/dlt-contrib/dlt-filesystem"
 
 # The package carries no `__init__.py` at any level, so discovery has to be told that
 # a directory without one is still a package. Without this, setuptools finds nothing
@@ -126,20 +126,193 @@ packages.find.where = [ "src" ]
 packages.find.namespaces = true
 package-dir = { "" = "src" }
 
+[tool.ruff]
+line-length = 88
+# Both distributions are first-party here. Without the second entry, isort groups
+# `dlt_filesystem` with third-party imports and reorders every module that touches it.
+src = [ ".", "src" ]
+lint.select = [
+  # Builtins
+  "A",
+  # Bugbear
+  "B",
+  # comprehensions
+  "C4",
+  # Pycodestyle
+  "E",
+  "E4",
+  "E7",
+  "E9",
+  # eradicate
+  "ERA",
+  # Pyflakes
+  "F",
+  # isort
+  "I",
+  # pandas-vet
+  "PD",
+  # return
+  "RET",
+  # Bandit
+  "S",
+  # print
+  "T20",
+  "W",
+  # flake8-2020
+  "YTT",
+]
+# lint.ignore = [ "E501" ]
+lint.extend-ignore = [
+  # Module `xxx` shadows a Python standard-library module
+  "A005",
+  # raise-without-from-inside-except
+  "B904",
+  # zip() without an explicit strict= parameter
+  "B905",
+  # Found commented-out code
+  "ERA001",
+  # collapsible-else-if
+  "PLR5501",
+  # Unnecessary variable assignment before `return` statement
+  "RET504",
+  # Unnecessary `elif` after `return` statement
+  "RET505",
+  # Unnecessary `elif` after `raise` statement
+  "RET506",
+  # Unnecessary `else` after `continue` statement
+  "RET507",
+  # Unnecessary `else` after `break` statement
+  "RET508",
+  # Probable insecure usage of temporary file or directory
+  "S108",
+]
+lint.per-file-ignores."src/dlt_filesystem/source/*" = [
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."src/dlt_filesystem/target/{local.py,util.py}" = [
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."src/dlt_filesystem/testing/{stub.py}" = [
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."release/util/*" = [
+  # `print` found. These are command-line programs whose output is the result.
+  "T201",
+]
+lint.per-file-ignores."src/omniload/api.py" = [
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."src/omniload/core/router.py" = [
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."src/omniload/{source,target}/*" = [
+  # TODO: Review B008
+  #       Do not perform function call in argument defaults;
+  #       instead, perform the call within the function,
+  #       or read the default from a module-level singleton variable
+  "B008",
+  # Unnecessary list comprehension (rewrite as a set comprehension)
+  "C403",
+  # Unnecessary `dict()` call (rewrite as a literal)
+  "C408",
+  # Unnecessary `list()` call within `sorted()`
+  "C414",
+  # Unnecessary list comprehension (rewrite using `list()`)
+  "C416",
+  # Unnecessary `map()` usage (rewrite using a generator expression)
+  "C417",
+  # line-too-long
+  "E501",
+]
+lint.per-file-ignores."src/omniload/{source,target}/**/{client,helpers}.py" = [
+  # `print` found
+  "T201",
+]
+lint.per-file-ignores."tests/saas/*" = [
+  # Possible hardcoded password assigned to argument
+  "S106",
+]
+lint.per-file-ignores."tests/{warehouse,util}/*" = [
+  # `try`-`except`-`pass` detected, consider logging the exception
+  "S110",
+  # Audit URL open for permitted schemes. Allowing use of `file:` or custom schemes is often unexpected.
+  "S310",
+]
+lint.per-file-ignores."{tests,packages/*/tests}/*" = [
+  # Variable is shadowing a Python builtin
+  "A001",
+  # Function argument is shadowing a Python builtin
+  "A002",
+  # Unnecessary list comprehension (rewrite using `list()`)
+  "C416",
+  # line-too-long
+  "E501",
+  # Allow use of `assert`.
+  "S101",
+  # Possible SQL injection vector through string-based query construction
+  "S608",
+  # `print` found
+  "T201",
+]
+
 [tool.pytest]
 ini_options.minversion = "2.0"
 ini_options.testpaths = [
+  "src",
   "tests",
 ]
+ini_options.pythonpath = [
+  ".",
+]
 ini_options.addopts = """
-  -rfEXsS --strict-markers --verbosity=3
+  -rfEXsS -p pytester --strict-markers --verbosity=3
+  --cov --cov-report=term-missing --cov-report=xml
+  --numprocesses auto
   """
-# Declared here as well as in the consumer's configuration, because a run rooted at
-# this project reads this file alone and `--strict-markers` fails on an unknown one.
 ini_options.markers = [
-  "integration: requires Docker/testcontainers or external credentials",
 ]
 ini_options.xfail_strict = true
+ini_options.log_format = "%(asctime)-15s [%(name)-36s] %(levelname)-8s: %(message)s"
+ini_options.log_level = "DEBUG"
+ini_options.log_cli_level = "DEBUG"
+
+[tool.coverage]
+run.omit = [ "tests/**" ]
+
+[tool.poe]
+tasks.check = [
+  "lint",
+  "test",
+]
+# Verify `dlt_filesystem` imports on the dependency set its own project declares.
+# Installing it alongside omniload always supplies the consumer's list by accident,
+# so nothing else here can see an undeclared import.
+tasks.check-standalone-imports = { cmd = "python release/util/standalone_import_probe.py" }
+tasks.format = [
+  # Format project metadata.
+  { cmd = "pyproject-fmt --keep-full-version pyproject.toml" },
+  # Format code.
+  # Configure Ruff not to auto-fix a few items that are useful in workbench mode.
+  # e.g.: unused imports (F401), unused variables (F841), `print` statements (T201), commented-out code (ERA001)
+  { cmd = "ruff format" },
+  { cmd = "ruff check --fix --ignore=ERA --ignore=F401 --ignore=F841 --ignore=T20 --ignore=ERA001" },
+]
+tasks.lint = [
+  { cmd = "ruff format --check" },
+  { cmd = "ruff check" },
+  { cmd = "validate-pyproject pyproject.toml" },
+  { cmd = "ty check" },
+]
+tasks.release = [
+  { cmd = "python -m build" },
+  { cmd = "twine upload --verbose --skip-existing dist/*" },
+]
+tasks.test = { cmd = "pytest", env = { TESTCONTAINERS_RYUK_DISABLED = "true" } }
 
 [tool.versioningit]
 vcs.method = "git-archive"
