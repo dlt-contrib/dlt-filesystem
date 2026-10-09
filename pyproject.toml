@@ -58,7 +58,7 @@ dependencies = [
   "ossfs",
   "paramiko",
   "polars>=1.34,<3",
-  "pyarrow>=18,<26",
+  "pyarrow>=18,<27",
   "s3fs>=2024.6",
   "smbprotocol; platform_system=='Linux'",
   "smbprotocol[kerberos]; platform_system!='Linux'",
