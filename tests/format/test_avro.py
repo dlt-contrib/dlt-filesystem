@@ -406,8 +406,8 @@ def test_a_timestamp_past_year_9999_fails_by_name_rather_than_as_a_rust_panic(tm
 
     with pytest.raises(ResourceExtractionError) as excinfo:
         _read_via_source(path)
-    assert excinfo.match("aborted inside Polars")
-    assert excinfo.match("far.avro")
+    assert excinfo.match("`read_avro` caused an exception")
+    assert excinfo.match("date value out of range")
 
 
 def test_a_panic_on_conversion_is_an_ordinary_exception(tmp_path):
@@ -435,7 +435,7 @@ def test_a_panic_on_conversion_is_an_ordinary_exception(tmp_path):
 
     with pytest.raises(Exception) as excinfo:  # noqa: B017, PT011
         list(read_avro(iter([FileItemStub(path)])))  # ty: ignore[invalid-argument-type]
-    assert isinstance(excinfo.value, ValueError)
+    assert isinstance(excinfo.value, OverflowError)
 
 
 @pytest.mark.parametrize(
