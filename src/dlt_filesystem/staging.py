@@ -8,7 +8,7 @@ import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Generator
 from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from dlt_filesystem.util.auth import (
@@ -133,7 +133,7 @@ def materialize_remote_object(
     *,
     filename: str,
     staging_root: str | Path | None = None,
-) -> Iterator[Path]:
+) -> Generator[Path, None, None]:
     """Download one remote object and remove its run-scoped copy on every exit."""
     root = Path(staging_root) if staging_root is not None else None
     if root is not None:
