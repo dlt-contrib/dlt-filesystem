@@ -1,12 +1,15 @@
 import datetime as dt
+import time
 
 import pytest
+from dlt.common.pendulum import pendulum
 from dlt.common.storages.fsspec_filesystem import MTIME_DISPATCH
 from fsspec import AbstractFileSystem
 from fsspec.implementations.arrow import ArrowFSWrapper
 from pyarrow.fs import FileInfo, FileSelector, FileType
 
 from dlt_filesystem.source.lister import glob_files, resolve_modification_date
+from dlt_filesystem.util.time import ensure_datetime_utc
 
 MODIFIED = dt.datetime(2026, 8, 4, 9, 30, tzinfo=dt.timezone.utc)
 EPOCH_SECONDS = MODIFIED.timestamp()
@@ -236,3 +239,102 @@ def test_arrow_concrete_path_uses_one_native_metadata_request():
 
     assert [file["relative_path"] for file in files] == ["data/part-1.csv"]
     assert arrow_fs.calls == [["bucket/data/part-1.csv"]]
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (MODIFIED.replace(tzinfo=None), MODIFIED),
+        (MODIFIED.date(), MODIFIED.replace(hour=0, minute=0)),
+        (MODIFIED.astimezone(dt.timezone(dt.timedelta(hours=5, minutes=30))), MODIFIED),
+        (MODIFIED.astimezone(dt.timezone(dt.timedelta(hours=-7))), MODIFIED),
+        ("2026-08-04T15:00:00+05:30", MODIFIED),
+        ("2026-08-04T02:30:00-07:00", MODIFIED),
+        (EPOCH_SECONDS, MODIFIED),
+        (EPOCH_SECONDS + 0.125, MODIFIED.replace(microsecond=125000)),
+        ("2026-08-04T09:30:00.123456Z", MODIFIED.replace(microsecond=123456)),
+    ],
+)
+def test_utc_coercion(value, expected):
+    result = ensure_datetime_utc(value)
+    assert isinstance(result, pendulum.DateTime)
+    assert result == expected
+    assert result.utcoffset() == dt.timedelta(0)
+
+
+@pytest.mark.parametrize("value", [None, [], {}, object(), "not-a-date"])
+def test_utc_coercion_rejects_unsupported_values(value):
+    with pytest.raises((TypeError, ValueError)):
+        ensure_datetime_utc(value)
+    with pytest.raises(ValueError, match="no usable modification date"):
+        resolve_modification_date("acme", listing(mtime=value))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        MODIFIED.replace(tzinfo=None),
+        MODIFIED.date(),
+        EPOCH_SECONDS,
+        "2026-08-04T09:30:00",
+    ],
+)
+def test_utc_coercion_ignores_dlt_timezone_context(value):
+    timezone_module = pytest.importorskip(
+        "dlt.common.configuration.specs.timezone_context"
+    )
+    from dlt.common.configuration.container import Container
+
+    with Container().injectable_context(
+        timezone_module.TimezoneContext("America/New_York")
+    ):
+        result = ensure_datetime_utc(value)
+    expected = (
+        MODIFIED.replace(hour=0, minute=0) if type(value) is dt.date else MODIFIED
+    )
+    assert result == expected
+    assert result.utcoffset() == dt.timedelta(0)
+
+
+@pytest.mark.parametrize(
+    "scheme,key,value",
+    [
+        ("smb", "mtime", EPOCH_SECONDS + 0.125),
+        ("webhdfs", "modificationTime", EPOCH_SECONDS * 1000 + 125),
+        ("gdrive", "modifiedTime", "2026-08-04T15:00:00.125+05:30"),
+        ("oci", "timeModified", "2026-08-04T02:30:00.125-07:00"),
+        ("dbfs", "modified", "2026-08-04T09:30:00.125Z"),
+    ],
+)
+def test_backend_timestamps_are_utc(scheme, key, value):
+    result = resolve_modification_date(scheme, listing(**{key: value}))
+    assert result == MODIFIED.replace(microsecond=125000)
+    assert result.utcoffset() == dt.timedelta(0)
+
+
+@pytest.mark.skipif(
+    not hasattr(time, "tzset"), reason="requires process timezone support"
+)
+def test_webhdfs_timestamp_is_independent_of_host_timezone(monkeypatch):
+    try:
+        with monkeypatch.context() as timezone_patch:
+            timezone_patch.setenv("TZ", "EST5EDT")
+            time.tzset()
+            assert dt.datetime.fromtimestamp(EPOCH_SECONDS).hour != MODIFIED.hour
+            result = resolve_modification_date(
+                "webhdfs", listing(modificationTime=EPOCH_SECONDS * 1000 + 125)
+            )
+            assert result == MODIFIED.replace(microsecond=125000)
+            assert result.utcoffset() == dt.timedelta(0)
+    finally:
+        time.tzset()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Tue, 04 Aug 2026 15:00:00 +0530", "Tue, 04 Aug 2026 02:30:00 -0700"],
+)
+def test_http_listing_normalizes_timezone(value):
+    result = resolve_modification_date("http", listing(**{"Last-Modified": value}))
+    assert result == MODIFIED
+    assert result.utcoffset() == dt.timedelta(0)

@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 import pytest
+from dlt.common.pendulum import pendulum
 
 from dlt_filesystem.source.error import MissingDecoderError
 from dlt_filesystem.source.format.iterable_codec import (
@@ -83,7 +84,7 @@ def test_adversarial_values_are_normalized(tmp_path):
     path = write_msgpack(tmp_path / "adv.msgpack", [doc], datetime=True)
     row = _read_via_source(path)[0]
     assert base64.b64decode(row["blob"]) == b"\x00\x01\x02"
-    assert isinstance(row["when"], datetime.datetime)
+    assert isinstance(row["when"], pendulum.DateTime)
     assert row["when"].utcoffset() == datetime.timedelta(0)
     assert (row["when"].year, row["when"].month, row["when"].day) == (2020, 1, 2)
     assert base64.b64decode(row["nested"]["inner"]) == b"AB"
@@ -209,3 +210,25 @@ def test_import_path_keeps_decoder_out_of_sys_modules():
         [sys.executable, "-c", code], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("hours", [5, -7])
+def test_msgpack_timestamp_preserves_instant_in_utc(tmp_path, hours):
+    value = datetime.datetime(
+        2020,
+        1,
+        2,
+        3,
+        4,
+        5,
+        123456,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=hours)),
+    )
+    path = write_msgpack(
+        tmp_path / "timestamp.msgpack", [{"when": value}], datetime=True
+    )
+    result = _read_via_source(path)[0]["when"]
+    assert isinstance(result, pendulum.DateTime)
+    assert result == value.astimezone(datetime.timezone.utc)
+    assert result.utcoffset() == datetime.timedelta(0)
+    assert result.microsecond == 123456

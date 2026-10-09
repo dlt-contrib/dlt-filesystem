@@ -30,8 +30,9 @@ from bson.min_key import MinKey
 from bson.objectid import ObjectId
 from bson.regex import Regex
 from bson.timestamp import Timestamp
-from dlt.common.time import ensure_pendulum_dt
 from dlt.common.utils import map_nested_values_in_place
+
+from dlt_filesystem.util.time import ensure_datetime_utc
 
 
 def convert_bson_objs(value: Any) -> Any:
@@ -61,14 +62,14 @@ def convert_bson_objs(value: Any) -> Any:
     if isinstance(value, (ObjectId, Decimal128)):
         return str(value)
     if isinstance(value, _datetime.datetime):
-        return ensure_pendulum_dt(value)
+        return ensure_datetime_utc(value)
     if isinstance(value, Regex):
         # value.pattern is the raw pattern string; do NOT try_compile() it (BSON regexes
         # can carry PCRE-only syntax that Python's re rejects, which would crash the read
         # of an otherwise valid dump).
         return value.pattern
     if isinstance(value, Timestamp):
-        return ensure_pendulum_dt(value.as_datetime())
+        return ensure_datetime_utc(value.as_datetime())
     if isinstance(value, DBRef):
         # $id is normalized recursively (it is typically an ObjectId). The convert()
         # return is used as-is by the caller (map_nested does not re-descend into it), so
