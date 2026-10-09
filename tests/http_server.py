@@ -44,7 +44,7 @@ from email.utils import format_datetime
 from enum import Enum
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Generator, List, Optional, Sequence, Tuple
 from urllib.parse import quote, unquote
 
 #: The rows every text-shaped document in the root carries.
@@ -524,7 +524,7 @@ def serve(
     mode: ServerMode = ServerMode.RANGE,
     auth: Optional[Tuple[str, str]] = None,
     certificate: Optional[Tuple[Path, Path]] = None,
-) -> Iterator[HttpFixture]:
+) -> Generator[HttpFixture, None, None]:
     """Run one fixture server for the duration of the context.
 
     The socket is bound on an ephemeral port and the server is shut down and

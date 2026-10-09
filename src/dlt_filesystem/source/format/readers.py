@@ -24,6 +24,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Generator,
     Iterator,
     List,
     Mapping,
@@ -982,7 +983,7 @@ def _import_vortex(action: str) -> Any:
 
 
 @contextmanager
-def _vortex_local_path(file_obj: Any) -> Iterator[str]:
+def _vortex_local_path(file_obj: Any) -> Generator[str, None, None]:
     """Yield a local path for ``file_obj`` that ``vortex.open`` can read.
 
     ``vortex.open`` takes a path string only, not a file handle. A plain local file is

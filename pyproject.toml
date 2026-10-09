@@ -73,7 +73,7 @@ optional-dependencies.develop = [
   "poethepoet<1",
   "pyproject-fmt<3",
   "ruff==0.16.*",
-  "ty==0.0.84",
+  "ty==0.0.85",
   "validate-pyproject<1",
 ]
 # The DuckDB CSV reader (`csv_duckdb`), an alternative to the default Polars one.
