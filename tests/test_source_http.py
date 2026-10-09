@@ -20,10 +20,10 @@ network.
 
 import ssl
 from contextlib import contextmanager
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import mkdtemp
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import dlt
 import duckdb
@@ -956,3 +956,33 @@ def test_probe_answers_no_ranges_when_the_server_cannot_be_reached(range_server)
     with pytest.raises(OSError) as exception:
         filesystem.open(unreachable)
     assert "X-Amz-Signature" not in str(exception.value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["Tue, 04 Aug 2026 15:00:00 +0530", "Tue, 04 Aug 2026 02:30:00 -0700"],
+)
+def test_modified_normalizes_header_timezone(monkeypatch, value):
+    filesystem = HttpFileSystem(skip_instance_cache=True)
+    session = AsyncMock()
+    session.head.return_value = AsyncMock(status=200, headers={"Last-Modified": value})
+    monkeypatch.setattr(filesystem, "set_session", AsyncMock(return_value=session))
+
+    result = filesystem.modified("http://example.test/people.csv")
+
+    assert result == datetime(2026, 8, 4, 9, 30, tzinfo=timezone.utc)
+    assert result.utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize(
+    "value", [None, "not-an-http-date", "Tue, 04 Aug 2026 09:30:00 -0000"]
+)
+def test_modified_rejects_missing_or_invalid_timezone(monkeypatch, value):
+    filesystem = HttpFileSystem(skip_instance_cache=True)
+    session = AsyncMock()
+    headers = {} if value is None else {"Last-Modified": value}
+    session.head.return_value = AsyncMock(status=200, headers=headers)
+    monkeypatch.setattr(filesystem, "set_session", AsyncMock(return_value=session))
+
+    with pytest.raises(HttpModificationTimeError):
+        filesystem.modified("http://example.test/people.csv")

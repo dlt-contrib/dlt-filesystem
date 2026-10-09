@@ -46,7 +46,7 @@ dynamic = [ "version" ]
 dependencies = [
   "adlfs",
   "azure-storage-blob",
-  "dlt>=1.22,<1.31",
+  "dlt>=1.23,<1.31",
   "dropboxdrivefs",
   "fsspec>=2024.6,<2026.10",
   "fsspec-databricks>=0.1.10",
