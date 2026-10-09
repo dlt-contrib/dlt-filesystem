@@ -40,7 +40,7 @@ from dlt.common.storages.fsspec_filesystem import (
     FileItem,
     guess_mime_type,
 )
-from dlt.common.time import ensure_pendulum_datetime_utc
+from dlt.common.time import ensure_pendulum_dt
 from fsspec import AbstractFileSystem
 from fsspec.utils import glob_translate
 
@@ -93,7 +93,8 @@ def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
 
 def _from_epoch_millis(value: Any) -> Any:
     """Read a timestamp in milliseconds, as WebHDFS reports one."""
-    return ensure_pendulum_datetime_utc(float(value) / 1000)
+    stamp = datetime.fromtimestamp(float(value) / 1000)
+    return ensure_pendulum_dt(stamp)
 
 
 def _from_mlsd_timestamp(value: Any) -> Any:
@@ -104,7 +105,7 @@ def _from_mlsd_timestamp(value: Any) -> Any:
     rejected here and surfaces as the "no usable modification date" error.
     """
     stamp = datetime.strptime(str(value)[:14], "%Y%m%d%H%M%S")
-    return ensure_pendulum_datetime_utc(stamp.replace(tzinfo=timezone.utc))
+    return ensure_pendulum_dt(stamp.replace(tzinfo=timezone.utc))
 
 
 def _from_http_timestamp(value: Any) -> Any:
@@ -112,24 +113,24 @@ def _from_http_timestamp(value: Any) -> Any:
     stamp = parsedate_to_datetime(str(value))
     if stamp.tzinfo is None:
         raise ValueError("HTTP date has no timezone")
-    return ensure_pendulum_datetime_utc(stamp)
+    return ensure_pendulum_dt(stamp)
 
 
 # The key each backend's listing carries a file's last-modified time under,
 # paired with how that backend encodes it. Every entry is taken from the
 # backend's own `modified()` implementation, which reads the same key.
 MODIFICATION_DATE_KEYS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
-    ("LastModified", ensure_pendulum_datetime_utc),  # s3fs, ossfs
-    ("last_modified", ensure_pendulum_datetime_utc),  # adlfs
-    ("updated", ensure_pendulum_datetime_utc),  # gcsfs
-    ("modifiedTime", ensure_pendulum_datetime_utc),  # Google Drive
+    ("LastModified", ensure_pendulum_dt),  # s3fs, ossfs
+    ("last_modified", ensure_pendulum_dt),  # adlfs
+    ("updated", ensure_pendulum_dt),  # gcsfs
+    ("modifiedTime", ensure_pendulum_dt),  # Google Drive
     ("modificationTime", _from_epoch_millis),  # WebHDFS
-    ("timeModified", ensure_pendulum_datetime_utc),  # ocifs
-    ("modified", ensure_pendulum_datetime_utc),  # fsspec-databricks
+    ("timeModified", ensure_pendulum_dt),  # ocifs
+    ("modified", ensure_pendulum_dt),  # fsspec-databricks
     ("modify", _from_mlsd_timestamp),  # FTP
     # `mtime` last: SMB carries both it and `time`, where `time` is the access
     # time, so a backend that offers a more specific key is preferred first.
-    ("mtime", ensure_pendulum_datetime_utc),  # local, SMB, pyarrow.fs clients
+    ("mtime", ensure_pendulum_dt),  # local, SMB, pyarrow.fs clients
 )
 
 

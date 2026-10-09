@@ -48,7 +48,7 @@ import io
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
 
-from dlt.common.time import ensure_pendulum_datetime_utc
+from dlt.common.time import ensure_pendulum_dt
 from dlt.common.typing import TDataItems
 from dlt.common.utils import map_nested_values_in_place
 from dlt.sources.filesystem import FileItemDict
@@ -123,7 +123,7 @@ def _msgpack_normalizer() -> Normalizer:
         if isinstance(value, (bytes, bytearray)):
             return base64.b64encode(bytes(value)).decode("ascii")
         if isinstance(value, timestamp_type):
-            return ensure_pendulum_datetime_utc(value.to_datetime())
+            return ensure_pendulum_dt(value.to_datetime())
         return value
 
     return convert
