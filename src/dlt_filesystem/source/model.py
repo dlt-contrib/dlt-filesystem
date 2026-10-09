@@ -9,7 +9,6 @@ from urllib.parse import parse_qs
 from dlt.common.configuration import configspec, resolve_type
 from dlt.common.configuration.specs import CredentialsConfiguration
 from dlt.common.storages import FilesystemConfiguration
-from dlt.common.storages.configuration import FileSystemCredentials
 from fsspec import AbstractFileSystem
 
 from dlt_filesystem.error import InvalidBlobTableError
@@ -19,7 +18,6 @@ from dlt_filesystem.util.web import shrink_qs_dict
 
 @configspec
 class FilesystemConfigurationResource(FilesystemConfiguration):
-    credentials: Optional[Union[FileSystemCredentials, AbstractFileSystem]] = None
     file_glob: Optional[str] = "*"
     files_per_page: int = 100
     extract_content: bool = False
