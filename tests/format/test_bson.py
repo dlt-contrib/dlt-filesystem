@@ -11,6 +11,7 @@ from bson.dbref import DBRef
 from bson.decimal128 import Decimal128
 from bson.max_key import MaxKey
 from bson.min_key import MinKey
+from dlt.common.pendulum import pendulum
 from dlt.common.utils import map_nested_values_in_place
 
 from dlt_filesystem.source.format.bson_codec import convert_bson_objs
@@ -53,7 +54,7 @@ def test_raw_bytes_becomes_base64_str():
 
 def test_datetime_becomes_pendulum_utc():
     result = convert_bson_objs(datetime.datetime(2020, 1, 2, 3, 4, 5))
-    assert isinstance(result, datetime.datetime)
+    assert isinstance(result, pendulum.DateTime)
     assert result.utcoffset() == datetime.timedelta(0)
     assert (result.year, result.month, result.day) == (2020, 1, 2)
 
@@ -61,9 +62,11 @@ def test_datetime_becomes_pendulum_utc():
 def test_timestamp_becomes_pendulum_utc_datetime():
     # Timestamp(1600000000, 1) -> 2020-09-13T12:26:40Z
     result = convert_bson_objs(Timestamp(1600000000, 1))
-    assert isinstance(result, datetime.datetime)
+    assert isinstance(result, pendulum.DateTime)
     assert result.utcoffset() == datetime.timedelta(0)
-    assert result.year == 2020
+    assert result == datetime.datetime(
+        2020, 9, 13, 12, 26, 40, tzinfo=datetime.timezone.utc
+    )
 
 
 def test_regex_becomes_pattern_str():
@@ -184,3 +187,21 @@ def test_reader_normalizes_binary_and_nested(tmp_path):
     assert base64.b64decode(row["blob"]) == b"\x00\x01\x02"
     assert row["nested"]["inner"] == OID2
     assert row["nested"]["tags"] == ["x", "y"]
+
+
+@pytest.mark.parametrize("hours", [5, -7])
+def test_aware_bson_datetime_normalizes_to_utc(hours):
+    value = datetime.datetime(
+        2020,
+        1,
+        2,
+        3,
+        4,
+        5,
+        123456,
+        tzinfo=datetime.timezone(datetime.timedelta(hours=hours)),
+    )
+    result = convert_bson_objs(value)
+    assert result == value.astimezone(datetime.timezone.utc)
+    assert result.utcoffset() == datetime.timedelta(0)
+    assert result.microsecond == 123456

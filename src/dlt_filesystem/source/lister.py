@@ -30,7 +30,7 @@ import posixpath
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Callable, Iterator, Mapping, Tuple
+from typing import Any, Callable, Iterator, Mapping, Tuple, cast
 from urllib.parse import urlparse
 
 from dlt.common.storages import FilesystemConfiguration
@@ -40,9 +40,10 @@ from dlt.common.storages.fsspec_filesystem import (
     FileItem,
     guess_mime_type,
 )
-from dlt.common.time import ensure_pendulum_dt
 from fsspec import AbstractFileSystem
 from fsspec.utils import glob_translate
+
+from dlt_filesystem.util.time import ensure_datetime_utc
 
 
 def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
@@ -93,8 +94,7 @@ def _arrow_glob(fs_client: AbstractFileSystem, path: str) -> dict | None:
 
 def _from_epoch_millis(value: Any) -> Any:
     """Read a timestamp in milliseconds, as WebHDFS reports one."""
-    stamp = datetime.fromtimestamp(float(value) / 1000)
-    return ensure_pendulum_dt(stamp)
+    return ensure_datetime_utc(float(value) / 1000)
 
 
 def _from_mlsd_timestamp(value: Any) -> Any:
@@ -105,7 +105,7 @@ def _from_mlsd_timestamp(value: Any) -> Any:
     rejected here and surfaces as the "no usable modification date" error.
     """
     stamp = datetime.strptime(str(value)[:14], "%Y%m%d%H%M%S")
-    return ensure_pendulum_dt(stamp.replace(tzinfo=timezone.utc))
+    return ensure_datetime_utc(stamp.replace(tzinfo=timezone.utc))
 
 
 def _from_http_timestamp(value: Any) -> Any:
@@ -113,24 +113,24 @@ def _from_http_timestamp(value: Any) -> Any:
     stamp = parsedate_to_datetime(str(value))
     if stamp.tzinfo is None:
         raise ValueError("HTTP date has no timezone")
-    return ensure_pendulum_dt(stamp)
+    return ensure_datetime_utc(stamp)
 
 
 # The key each backend's listing carries a file's last-modified time under,
 # paired with how that backend encodes it. Every entry is taken from the
 # backend's own `modified()` implementation, which reads the same key.
 MODIFICATION_DATE_KEYS: Tuple[Tuple[str, Callable[[Any], Any]], ...] = (
-    ("LastModified", ensure_pendulum_dt),  # s3fs, ossfs
-    ("last_modified", ensure_pendulum_dt),  # adlfs
-    ("updated", ensure_pendulum_dt),  # gcsfs
-    ("modifiedTime", ensure_pendulum_dt),  # Google Drive
+    ("LastModified", ensure_datetime_utc),  # s3fs, ossfs
+    ("last_modified", ensure_datetime_utc),  # adlfs
+    ("updated", ensure_datetime_utc),  # gcsfs
+    ("modifiedTime", ensure_datetime_utc),  # Google Drive
     ("modificationTime", _from_epoch_millis),  # WebHDFS
-    ("timeModified", ensure_pendulum_dt),  # ocifs
-    ("modified", ensure_pendulum_dt),  # fsspec-databricks
+    ("timeModified", ensure_datetime_utc),  # ocifs
+    ("modified", ensure_datetime_utc),  # fsspec-databricks
     ("modify", _from_mlsd_timestamp),  # FTP
     # `mtime` last: SMB carries both it and `time`, where `time` is the access
     # time, so a backend that offers a more specific key is preferred first.
-    ("mtime", ensure_pendulum_dt),  # local, SMB, pyarrow.fs clients
+    ("mtime", ensure_datetime_utc),  # local, SMB, pyarrow.fs clients
 )
 
 
@@ -173,7 +173,7 @@ def resolve_modification_date(
     extractor = MTIME_DISPATCH.get(scheme)
     if extractor is not None:
         try:
-            return extractor(file_info)
+            return extractor(dict(file_info))
         except KeyError:
             # The scheme is known but this client reports a different key, e.g.
             # any pyarrow.fs filesystem addressed as `s3://`.
@@ -286,14 +286,17 @@ def glob_files(
         # instead and a consumer sees a missing key rather than a wrong number. No
         # reader consumes it.
         size = md.get("size")
-        file_item = FileItem(  # ty: ignore[missing-typed-dict-key]
-            file_name=file_name,
-            relative_path=rel_path,
-            file_url=file_url,
-            mime_type=mime_type,
-            modification_date=resolve_modification_date(
-                scheme, md, fs_client if filesystem_incremental else None
-            ),
+        file_item = cast(
+            FileItem,
+            {
+                "file_name": file_name,
+                "relative_path": rel_path,
+                "file_url": file_url,
+                "mime_type": mime_type,
+                "modification_date": resolve_modification_date(
+                    scheme, md, fs_client if filesystem_incremental else None
+                ),
+            },
         )
         if size is not None:
             file_item["size_in_bytes"] = int(size)

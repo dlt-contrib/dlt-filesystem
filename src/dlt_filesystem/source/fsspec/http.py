@@ -214,9 +214,9 @@ class HttpFileSystem(HTTPFileSystem):
         if modified.tzinfo is None:
             raise HttpModificationTimeError(path, value)
 
-        from dlt.common.time import ensure_pendulum_dt
+        from dlt_filesystem.util.time import ensure_datetime_utc
 
-        return ensure_pendulum_dt(modified)
+        return ensure_datetime_utc(modified)
 
     def _range_size(self, path: str) -> Optional[int]:
         """Return the resource's length if it can be read in ranges, else `None`.
