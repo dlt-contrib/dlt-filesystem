@@ -104,6 +104,7 @@ def filesystem(
     kwargs: Optional[Dict[str, Any]] = None,
     client_kwargs: Optional[Dict[str, Any]] = None,
     incremental: Optional[dlt.sources.incremental[Any]] = None,
+    fetch_file_info: bool = False,
 ) -> Iterator[List[FileItem]]:
     """This resource lists files in `bucket_url` using `file_glob` pattern. The files are yielded as FileItem which also
     provide methods to open and read file data. It should be combined with transformers that further process (ie. load files)
@@ -124,6 +125,10 @@ def filesystem(
         incremental (Optional[dlt.sources.incremental[Any]]): Defines an incremental cursor on the listed files, with `modification_date`
             being the most common choice, which returns only files created since the previous run.
             A cursor carrying `row_order` also orders the listing by its cursor field.
+        fetch_file_info (bool, optional): Fetch the size and modification date of
+            each listed file whose listing entry lacks one, at the cost of one
+            `info()` call per such file. Listings over HTTP need it. Defaults to
+            False.
 
     Returns:
         Iterator[List[FileItem]]: The list of files.
@@ -145,6 +150,7 @@ def filesystem(
         bucket_url,
         file_glob or "**",
         filesystem_incremental=filesystem_incremental,
+        fetch_file_info=fetch_file_info,
     )
     if incremental and incremental.row_order:
         # `row_order` is ascending or descending *in the direction `last_value_func`

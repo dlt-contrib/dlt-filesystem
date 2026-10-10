@@ -144,7 +144,8 @@ def resolve_modification_date(
     Prefers dlt's own per-scheme extractor so known non-HTTP schemes keep their
     exact behaviour, then reads the key the backend emits and decodes it the way
     that backend encodes it. HTTP first trusts a header already present in the
-    listing, then asks `fs_client.modified()` when a caller supplied the client.
+    listing, then asks `fs_client.modified()` when a caller supplied the client,
+    and otherwise returns None, since an HTTP listing carries no date of its own.
 
     Raises:
         ValueError: when the listing carries no usable modification date, naming
@@ -169,6 +170,10 @@ def resolve_modification_date(
                     "modification-time lookup"
                 )
             return fs_client.modified(str(path))
+        # dlt's own HTTP extractor stamps the current time before 1.31 and
+        # reports None from it, so it is not consulted: the caller decides what
+        # an undated HTTP file gets, the same way on every dlt in range.
+        return None
 
     extractor = MTIME_DISPATCH.get(scheme)
     if extractor is not None:
@@ -213,11 +218,24 @@ def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
     return make_fsspec_url(scheme, fs_path, bucket_url)
 
 
+def _listing_modification_date(scheme: str, file_info: Mapping[str, Any]) -> Any:
+    """The modification date a listing entry carries on its own, else None.
+
+    Never asks the filesystem, so deciding whether a fetch is needed costs nothing.
+    """
+    try:
+        return resolve_modification_date(scheme, file_info)
+    # dlt's extractors raise TypeError for a date key that is present but None.
+    except (ValueError, TypeError):
+        return None
+
+
 def glob_files(
     fs_client: AbstractFileSystem,
     bucket_url: str,
     file_glob: str = "**",
     filesystem_incremental: bool = False,
+    fetch_file_info: bool = False,
 ) -> Iterator[FileItem]:
     """Get the files from the filesystem client.
 
@@ -227,6 +245,9 @@ def glob_files(
         file_glob (str): A glob for the filename filter.
         filesystem_incremental (bool): Enrich listing-poor transports with a
             trustworthy modification time for incremental file selection.
+        fetch_file_info (bool): Call `info()` on each listed file whose entry
+            carries no size or no modification date, at the cost of one `info()`
+            call per such file. Mirrors dlt's parameter of the same name.
 
     Returns:
         Iterable[FileItem]: The list of files.
@@ -285,7 +306,34 @@ def glob_files(
         # indistinguishable from an empty file, so an unknown size is left out
         # instead and a consumer sees a missing key rather than a wrong number. No
         # reader consumes it.
+        fetched = False
+        if fetch_file_info and (
+            md.get("size") is None or _listing_modification_date(scheme, md) is None
+        ):
+            # Merged rather than replaced, unlike dlt: a key the listing carried and
+            # `info()` does not report would otherwise be lost.
+            md = {**md, **fs_client.info(file)}
+            fetched = True
         size = md.get("size")
+        modification_date = resolve_modification_date(
+            scheme,
+            md,
+            # After a fetch, `modified()` would only repeat the request `info()`
+            # just made.
+            fs_client if filesystem_incremental and not fetched else None,
+        )
+        if modification_date is None:
+            if filesystem_incremental:
+                raise ValueError(
+                    f"Filesystem listing for scheme '{scheme}' carries no usable "
+                    f"modification date for {file}. Keys present: {sorted(md)}."
+                )
+            # Only HTTP reaches here: every other scheme raises in the resolver
+            # when it finds no date, as dlt's own extractors do. For HTTP, dlt
+            # stamps the current time and a pipeline written against it relies on
+            # every item carrying a datetime. Only incremental selection, where a
+            # fabricated time silently skips or repeats files, refuses instead.
+            modification_date = datetime.now(timezone.utc)
         file_item = cast(
             FileItem,
             {
@@ -293,9 +341,7 @@ def glob_files(
                 "relative_path": rel_path,
                 "file_url": file_url,
                 "mime_type": mime_type,
-                "modification_date": resolve_modification_date(
-                    scheme, md, fs_client if filesystem_incremental else None
-                ),
+                "modification_date": modification_date,
             },
         )
         if size is not None:
