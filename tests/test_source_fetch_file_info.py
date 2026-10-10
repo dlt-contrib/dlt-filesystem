@@ -32,7 +32,7 @@ class ListingFileSystem(MemoryFileSystem):
         self.fetched = fetched
         self.info_calls: list[str] = []
 
-    def glob(self, path, **kwargs):
+    def glob(self, path, maxdepth=None, **kwargs):
         return {name: {"name": name, "type": "file", **self.listed} for name in NAMES}
 
     def info(self, path, **kwargs):
@@ -77,7 +77,10 @@ def test_complete_listing_costs_no_fetch():
 
 @pytest.mark.parametrize(
     "kwargs",
-    [pytest.param({}, id="default"), pytest.param({"fetch_file_info": False}, id="off")],
+    [
+        pytest.param({}, id="default"),
+        pytest.param({"fetch_file_info": False}, id="off"),
+    ],
 )
 def test_without_the_flag_nothing_is_fetched(kwargs):
     fs = ListingFileSystem({"created": LISTED}, {"size": 7})
