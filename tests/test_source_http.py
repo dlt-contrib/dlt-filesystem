@@ -543,7 +543,7 @@ def test_fetch_file_info_completes_an_index_with_one_head_per_file(index_server)
 
 
 def test_fetch_file_info_with_incremental_does_not_repeat_the_head(index_server):
-    """`modified()` would ask for the header the fetch has just read."""
+    """The `Last-Modified` the fetch read is used as is, with no second request."""
     reference = build_reference(index_server.url("*.csv"))
 
     list(
