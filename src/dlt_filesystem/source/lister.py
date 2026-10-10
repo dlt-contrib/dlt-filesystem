@@ -144,7 +144,8 @@ def resolve_modification_date(
     Prefers dlt's own per-scheme extractor so known non-HTTP schemes keep their
     exact behaviour, then reads the key the backend emits and decodes it the way
     that backend encodes it. HTTP first trusts a header already present in the
-    listing, then asks `fs_client.modified()` when a caller supplied the client.
+    listing, then asks `fs_client.modified()` when a caller supplied the client,
+    and otherwise returns None, since an HTTP listing carries no date of its own.
 
     Raises:
         ValueError: when the listing carries no usable modification date, naming
@@ -169,6 +170,10 @@ def resolve_modification_date(
                     "modification-time lookup"
                 )
             return fs_client.modified(str(path))
+        # dlt's own HTTP extractor stamps the current time before 1.31 and
+        # reports None from it, so it is not consulted: the caller decides what
+        # an undated HTTP file gets, the same way on every dlt in range.
+        return None
 
     extractor = MTIME_DISPATCH.get(scheme)
     if extractor is not None:

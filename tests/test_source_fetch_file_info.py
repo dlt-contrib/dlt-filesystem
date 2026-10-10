@@ -136,3 +136,18 @@ def test_strict_mode_still_refuses_an_undatable_file():
                 fetch_file_info=True,
             )
         )
+
+
+@pytest.mark.parametrize("scheme", ["http", "https"])
+def test_http_date_never_comes_from_dlts_extractor(monkeypatch, scheme):
+    """Before 1.31 dlt's HTTP extractor stamps the current time on an undated entry.
+
+    Consulting it would make an undated HTTP listing look dated, so the fetch would
+    be skipped and strict mode would accept an invented time.
+    """
+    from dlt_filesystem.source import lister
+
+    monkeypatch.setitem(lister.MTIME_DISPATCH, scheme, lambda f: FETCHED)
+    entry = {"name": f"{scheme}://host/a.csv", "size": 7, "type": "file"}
+
+    assert lister.resolve_modification_date(scheme, entry) is None
