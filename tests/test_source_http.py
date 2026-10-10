@@ -559,6 +559,25 @@ def test_fetch_file_info_with_incremental_does_not_repeat_the_head(index_server)
     assert len(file_heads(index_server)) == 2
 
 
+def test_fetched_but_undated_file_is_stamped_without_incremental(
+    no_last_modified_server,
+):
+    before = datetime.now(timezone.utc)
+    reference = build_reference(no_last_modified_server.url("people.csv"))
+
+    items = list(
+        glob_files(
+            reference.fs,
+            reference.bucket_url,
+            reference.file_glob,
+            fetch_file_info=True,
+        )
+    )
+
+    assert [type(item["modification_date"]) for item in items] == [datetime]
+    assert items[0]["modification_date"] >= before
+
+
 def test_fetched_but_undated_file_is_refused_under_incremental(
     no_last_modified_server,
 ):

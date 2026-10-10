@@ -53,6 +53,7 @@ def listed_items(fs: ListingFileSystem, **kwargs) -> list[dict]:
         pytest.param({}, id="both-missing"),
         pytest.param({"created": LISTED}, id="size-missing"),
         pytest.param({"size": 7}, id="date-missing"),
+        pytest.param({"size": 7, "created": None}, id="date-none"),
     ],
 )
 def test_incomplete_listing_is_completed_with_one_fetch_per_file(listed):

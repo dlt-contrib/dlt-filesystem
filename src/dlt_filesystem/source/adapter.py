@@ -127,7 +127,8 @@ def filesystem(
             A cursor carrying `row_order` also orders the listing by its cursor field.
         fetch_file_info (bool, optional): Fetch the size and modification date of
             each listed file whose listing entry lacks one, at the cost of one
-            request per such file. Listings over HTTP need it. Defaults to False.
+            `info()` call per such file. Listings over HTTP need it. Defaults to
+            False.
 
     Returns:
         Iterator[List[FileItem]]: The list of files.
