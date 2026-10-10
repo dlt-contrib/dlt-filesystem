@@ -500,6 +500,82 @@ def test_concrete_incremental_selection_issues_no_second_head(index_server):
     assert [request.method for request in index_server.requests].count("HEAD") == 1
 
 
+def file_heads(server) -> list:
+    return [
+        request
+        for request in server.requests
+        if request.method == "HEAD" and request.path.endswith(".csv")
+    ]
+
+
+def test_index_glob_without_dates_is_stamped_with_a_datetime(index_server):
+    """An index carries no `Last-Modified`; dlt 1.31's extractor reports None for it.
+
+    dlt's own resource stamps such a file with the current time, so ours does too
+    rather than yielding an item whose `modification_date` is not a datetime.
+    """
+    before = datetime.now(timezone.utc)
+    reference = build_reference(index_server.url("*.csv"))
+
+    items = list(glob_files(reference.fs, reference.bucket_url, reference.file_glob))
+
+    assert [type(item["modification_date"]) for item in items] == [datetime] * 2
+    assert all(item["modification_date"] >= before for item in items)
+    assert file_heads(index_server) == []
+
+
+def test_fetch_file_info_completes_an_index_with_one_head_per_file(index_server):
+    reference = build_reference(index_server.url("*.csv"))
+
+    items = list(
+        glob_files(
+            reference.fs,
+            reference.bucket_url,
+            reference.file_glob,
+            fetch_file_info=True,
+        )
+    )
+
+    expected = HTTP_LAST_MODIFIED.replace(microsecond=0)
+    assert [item["modification_date"] for item in items] == [expected] * 2
+    assert all(item["size_in_bytes"] > 0 for item in items)
+    assert len(file_heads(index_server)) == 2
+
+
+def test_fetch_file_info_with_incremental_does_not_repeat_the_head(index_server):
+    """`modified()` would ask for the header the fetch has just read."""
+    reference = build_reference(index_server.url("*.csv"))
+
+    list(
+        glob_files(
+            reference.fs,
+            reference.bucket_url,
+            reference.file_glob,
+            filesystem_incremental=True,
+            fetch_file_info=True,
+        )
+    )
+
+    assert len(file_heads(index_server)) == 2
+
+
+def test_fetched_but_undated_file_is_refused_under_incremental(
+    no_last_modified_server,
+):
+    reference = build_reference(no_last_modified_server.url("people.csv"))
+
+    with pytest.raises(ValueError, match="no usable modification date"):
+        list(
+            glob_files(
+                reference.fs,
+                reference.bucket_url,
+                reference.file_glob,
+                filesystem_incremental=True,
+                fetch_file_info=True,
+            )
+        )
+
+
 def test_modified_reattaches_query_but_keeps_it_out_of_missing_header_error(
     no_last_modified_server,
 ):

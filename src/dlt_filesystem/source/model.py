@@ -21,6 +21,7 @@ class FilesystemConfigurationResource(FilesystemConfiguration):
     file_glob: Optional[str] = "*"
     files_per_page: int = 100
     extract_content: bool = False
+    fetch_file_info: bool = False
 
     @resolve_type("credentials")
     def resolve_credentials_type(self) -> Type[CredentialsConfiguration]:
