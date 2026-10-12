@@ -53,28 +53,32 @@ def _polars_csv_symbols() -> Dict[str, Any]:
     """Symbols needed to resolve `polars.read_csv`'s type hints for casting reader hints."""
     from typing import Callable, Mapping
 
+    import polars._typing as polars_typing
     from polars import CredentialProvider, CredentialProviderFunction, DataFrame
     from polars._typing import (  # noqa: F401
         CsvEncoding,
         PolarsDataType,
         SchemaDict,
-        StorageOptionsDict,
     )
     from polars.datatypes import DataType, DataTypeClass  # noqa: F401
 
-    return {
+    symbols: Dict[str, Any] = {
         "CredentialProvider": CredentialProvider,
         "CredentialProviderFunction": CredentialProviderFunction,
         "CsvEncoding": CsvEncoding,
         "PolarsDataType": PolarsDataType,
         "SchemaDict": SchemaDict,
-        "StorageOptionsDict": StorageOptionsDict,
         "DataType": DataType,
         "DataTypeClass": DataTypeClass,
         "Callable": Callable,
         "Mapping": Mapping,
         "DataFrame": DataFrame,
     }
+    # polars 1.38 added `StorageOptionsDict` and annotates `read_csv` with it.
+    # Older releases neither define nor reference it, so it is only needed when present.
+    if hasattr(polars_typing, "StorageOptionsDict"):
+        symbols["StorageOptionsDict"] = polars_typing.StorageOptionsDict
+    return symbols
 
 
 def _polars_spreadsheet_symbols() -> Dict[str, Any]:
