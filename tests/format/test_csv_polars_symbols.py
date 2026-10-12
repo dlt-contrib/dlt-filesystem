@@ -21,7 +21,7 @@ def _read_csv_before_polars_1_38(
     encoding: "CsvEncoding | str" = "utf8",
     schema_overrides: "SchemaDict | None" = None,
 ) -> "DataFrame":
-    """Stand-in for `polars.read_csv` as polars 1.34-1.37 annotate it, without `StorageOptionsDict`."""
+    """Stand-in for `polars.read_csv` whose annotations, like 1.34-1.37's, never name `StorageOptionsDict`."""
     raise NotImplementedError
 
 
