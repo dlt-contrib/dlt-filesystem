@@ -489,6 +489,110 @@ def test_the_rounding_check_writes_a_large_integer_as_itself(tmp_path):
     assert pq.read_table(path).to_pylist() == [{"id": 9007199254740993}, {"id": 1}]
 
 
+@pytest.mark.parametrize("number", [2**64, -(2**63) - 1], ids=["above", "below"])
+def test_a_number_past_64_bits_is_pointed_at_yaml_alone(tmp_path, number):
+    """dlt's JSON raises past 64 bits, so a refusal naming it would send the operator
+    to a destination that fails the same load. The first value past each end."""
+    with pytest.raises(ValueError, match="YAML") as excinfo:
+        writer_for_format("parquet")(
+            str(tmp_path / "out.parquet"), [{"v": [number]}, {"v": [0.5]}]
+        )
+
+    assert "JSON" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "number",
+    [2**53 + 1, 2**64 - 1, -(2**63)],
+    ids=["past a double", "the top", "the bottom"],
+)
+def test_a_number_inside_64_bits_is_still_pointed_at_json(tmp_path, number):
+    """The band JSON does keep, which is where a rounded number usually sits, up to
+    and including both ends of it."""
+    with pytest.raises(ValueError, match="JSON, JSONL or YAML"):
+        writer_for_format("parquet")(
+            str(tmp_path / "out.parquet"), [{"v": [number]}, {"v": [0.5]}]
+        )
+
+
+# Loads Polars would write with a number missing. A column holding an integer from
+# 2**127 up beside any other integer is typed `Int128`, which stops one short of it,
+# and Polars nulls the value rather than raising, even with `strict=True`.
+NULLED_BY_POLARS = {
+    "beside a negative": [{"v": -1}, {"v": 2**127}],
+    "beside a positive": [{"v": 1}, {"v": 2**127}],
+    "ahead of the integer beside it": [{"v": 2**127}, {"v": 1}],
+    "at the top of the unsigned 128-bit range": [{"v": 1}, {"v": 2**128 - 1}],
+    "beside an integer past 64 bits": [{"v": 2**64}, {"v": 2**127}],
+}
+
+
+@pytest.mark.parametrize("file_format", ["csv", "parquet"])
+@pytest.mark.parametrize("rows", NULLED_BY_POLARS.values(), ids=NULLED_BY_POLARS)
+def test_writers_refuse_a_number_polars_would_write_as_null(
+    tmp_path, file_format, rows
+):
+    """The export used to finish with an empty field where the number was. Refused by
+    column and by value, and before the path is opened, so nothing is left behind."""
+    path = tmp_path / f"out.{file_format}"
+
+    with pytest.raises(ValueError, match="'v'") as excinfo:
+        writer_for_format(file_format)(str(path), rows)
+
+    lost = next(row["v"] for row in rows if row["v"] >= 2**127)
+    assert str(lost) in str(excinfo.value), "names the value"
+    assert "YAML" in str(excinfo.value)
+    assert not path.exists()
+
+
+# The nested forms. Only Parquet reaches the frame with these: CSV spells a nested
+# value through dlt's JSON first, which raises on an integer past 64 bits itself.
+NULLED_INSIDE_A_NESTED_VALUE = {
+    "one struct field": [{"v": {"n": 1}}, {"v": {"n": 2**127}}],
+    "a struct inside a list": [{"v": [{"n": 1}]}, {"v": [{"n": 2**127}]}],
+    # Infers `List(Int128)`, which the `UInt64` narrowing would cast the null through.
+    "a bare list": [{"v": [1]}, {"v": [2**127]}],
+}
+
+
+@pytest.mark.parametrize(
+    "rows", NULLED_INSIDE_A_NESTED_VALUE.values(), ids=NULLED_INSIDE_A_NESTED_VALUE
+)
+def test_parquet_refuses_a_nested_number_polars_would_write_as_null(tmp_path, rows):
+    """A struct field or a list element is typed exactly as a column is, so it is
+    nulled the same way."""
+    with pytest.raises(ValueError, match=str(2**127)):
+        writer_for_format("parquet")(str(tmp_path / "out.parquet"), rows)
+
+
+# The neighbours of that band, which a 128-bit column does hold, and a null, which the
+# check must not read as a lost number. CSV writes every one of them as itself.
+HELD_BY_A_128_BIT_COLUMN = {
+    "2**63 beside a negative": [{"v": -1}, {"v": 2**63}],
+    "2**64 beside a negative": [{"v": -1}, {"v": 2**64}],
+    "the largest signed 128-bit integer": [{"v": -1}, {"v": 2**127 - 1}],
+    "the smallest signed 128-bit integer": [{"v": 1}, {"v": -(2**127)}],
+    "below the signed 64-bit range": [{"v": 1}, {"v": -(2**63) - 1}],
+    "2**127 alone": [{"v": 2**127}],
+    "2**127 beside a null": [{"v": 2**127}, {"v": None}],
+}
+
+
+@pytest.mark.parametrize(
+    "rows", HELD_BY_A_128_BIT_COLUMN.values(), ids=HELD_BY_A_128_BIT_COLUMN
+)
+def test_csv_writes_an_integer_a_128_bit_column_holds(tmp_path, rows):
+    """Every value here survives the frame, so the write goes through digit for
+    digit."""
+    path = tmp_path / "out.csv"
+    writer_for_format("csv")(str(path), rows)
+
+    written = list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
+    assert [int(row["v"]) if row["v"] else None for row in written] == [
+        row["v"] for row in rows
+    ]
+
+
 def test_csv_writes_the_same_load_exactly_because_it_spells_first(tmp_path):
     """CSV spells a nested value before Polars types the column, so the load the
     Parquet writer refuses is written exactly rather than refused."""
