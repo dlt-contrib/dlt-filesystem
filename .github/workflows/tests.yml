@@ -62,3 +62,35 @@ jobs:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
           fail_ci_if_error: true
+
+  # The `test` job installs every extra, which hides a module importing something
+  # only an extra supplies. This one imports the package on its base dependencies.
+  standalone-imports:
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - '3.10'
+          - '3.14'
+
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Acquire sources
+        uses: actions/checkout@v7
+
+      # No `python-version` and no cache: the probe refuses `UV_PYTHON` and
+      # `UV_CACHE_DIR`, and builds its own environment per run anyway.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+
+      # setup-uv always sets `UV_PYTHON_INSTALL_DIR`, which only says where uv
+      # keeps interpreters. Unset it rather than teach the probe to trust it.
+      - name: Import the package on its base dependencies
+        run: |
+          env -u UV_PYTHON_INSTALL_DIR \
+            uv run --script release/util/standalone_import_probe.py \
+            --python ${{ matrix.python-version }}
