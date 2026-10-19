@@ -289,10 +289,9 @@ tasks.check = [
   "lint",
   "test",
 ]
-# Verify `dlt_filesystem` imports on the dependency set its own project declares.
-# Installing it alongside omniload always supplies the consumer's list by accident,
-# so nothing else here can see an undeclared import.
-tasks.check-standalone-imports = { cmd = "python release/util/standalone_import_probe.py" }
+# Verify `dlt_filesystem` imports on its base dependencies, without any extra.
+# `test` runs on an install with every extra, so it cannot see an undeclared import.
+tasks.check-standalone-imports = { cmd = "uv run --script release/util/standalone_import_probe.py" }
 tasks.format = [
   # Format project metadata.
   { cmd = "pyproject-fmt --keep-full-version pyproject.toml" },
