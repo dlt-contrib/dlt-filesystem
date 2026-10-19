@@ -86,6 +86,17 @@ def _reads_back_as(source, written) -> bool:
         return True
 
 
+def _keeps_the_number(source) -> str:
+    """The destinations that write ``source`` as itself, for a refusal to name.
+
+    dlt's JSON writes an integer only from ``-(2**63)`` to ``2**64-1`` and raises past
+    that (``Integer exceeds 64-bit range``), so for one outside it YAML is the one left.
+    """
+    if isinstance(source, int) and not -(2**63) <= source < 2**64:
+        return "a YAML destination, which keeps"
+    return "a JSON, JSONL or YAML destination, which keep"
+
+
 def _refuse_a_rounded_number(name: str, source, written) -> None:
     """Compare one value against what the frame made of it, position by position.
 
@@ -97,16 +108,28 @@ def _refuse_a_rounded_number(name: str, source, written) -> None:
     key and by index also keeps an unrelated field out of it, where reading the column
     as a whole would refuse a struct whose integer and float are separate fields and
     both exact.
+
+    A number the frame holds as null is refused as well. Polars types a column holding
+    an integer from ``2**127`` up beside any other integer as ``Int128``, which stops
+    one short of it, and nulls the value rather than raising, so the export would carry
+    an empty field where the number was.
     """
     if source is None or isinstance(source, bool):
         return
     if isinstance(source, (int, decimal.Decimal)):
-        if written is not None and not _reads_back_as(source, written):
+        if written is None:
+            raise ValueError(
+                f"Column '{name}' carries the number {source}, which this format "
+                "would write as a null: the type Polars gives the column cannot hold "
+                "it beside the column's other values. Write this load to "
+                f"{_keeps_the_number(source)} the number as itself."
+            )
+        if not _reads_back_as(source, written):
             raise ValueError(
                 f"Column '{name}' carries the number {source}, which this format "
                 f"would write as {written}: the column holds a float, and a double "
-                "does not represent that number exactly. Write this load to a JSON, "
-                "JSONL or YAML destination, which keep the number as itself."
+                "does not represent that number exactly. Write this load to "
+                f"{_keeps_the_number(source)} the number as itself."
             )
         return
     if isinstance(source, dict) and isinstance(written, dict):
@@ -132,7 +155,8 @@ def _refuse_rounded_numbers(frame, rows: list[dict]) -> None:
     as a single JSON column, so a list or a struct is how this arrives.
 
     The scan runs only when the load carries a number that large, which is what keeps
-    it off every other write.
+    it off every other write. An integer Polars nulls beside other integers is
+    ``2**127`` or more, so the same gate covers it.
     """
     if not any(
         _holds_an_inexact_number(value) for row in rows for value in row.values()
@@ -297,7 +321,10 @@ def _narrowed_for_parquet(dtype):
     A bare list of integers is the one shape that does not. ``from_dicts`` infers
     ``List(UInt64)`` for one whose elements all fit, so such a list reaches 128-bit
     only by holding a value the cast then refuses, and walking it turns an
-    unreadable file into a named error rather than into a narrower column.
+    unreadable file into a named error rather than into a narrower column. The one
+    other way is a list of ``2**127`` beside a list of a small integer, which infers
+    ``List(Int128)`` with the large value already null; the cast would pass that
+    null through, so ``_frame`` refuses the load before it gets here.
     """
     import polars as pl
 
