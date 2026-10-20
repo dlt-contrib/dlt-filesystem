@@ -151,10 +151,10 @@ def test_fetch_json_fallback_matches_legacy_relation_conversion():
     assert actual == expected
 
 
-def test_fetch_json_fallback_reexecutes_file_like_relation_on_default_connection():
-    timezone_row = duckdb.execute("select current_setting('TimeZone')").fetchone()
-    assert timezone_row is not None
-    original_timezone = timezone_row[0]
+def test_fetch_json_fallback_reexecutes_file_like_relation_with_session_settings():
+    original_timezone = duckdb.execute("select current_setting('TimeZone')").fetchall()[
+        0
+    ][0]
     duckdb.execute("set TimeZone = ?", ["UTC"])
     try:
         relation = duckdb.from_csv_auto(
@@ -173,11 +173,37 @@ def test_fetch_json_fallback_reexecutes_file_like_relation_on_default_connection
     finally:
         duckdb.execute("set TimeZone = ?", [original_timezone])
 
-    restored_timezone_row = duckdb.execute(
-        "select current_setting('TimeZone')"
-    ).fetchone()
-    assert restored_timezone_row is not None
-    assert restored_timezone_row[0] == original_timezone
+    restored_timezone = duckdb.execute("select current_setting('TimeZone')").fetchall()[
+        0
+    ][0]
+    assert restored_timezone == original_timezone
+
+
+def test_fetch_json_fallback_keeps_interleaved_results_independent():
+    left = fetch_json(
+        RelationWithoutFetchMany(duckdb.sql("select range as id from range(5)")), 2
+    )
+    right = fetch_json(
+        RelationWithoutFetchMany(duckdb.sql("select range + 100 as id from range(5)")),
+        2,
+    )
+
+    assert next(left) == [{"id": 0}, {"id": 1}]
+    assert next(right) == [{"id": 100}, {"id": 101}]
+    assert next(left) == [{"id": 2}, {"id": 3}]
+    assert next(right) == [{"id": 102}, {"id": 103}]
+    assert list(left) == [[{"id": 4}]]
+    assert list(right) == [[{"id": 104}]]
+
+
+def test_fetch_json_fallback_survives_unrelated_default_connection_query():
+    batches = fetch_json(
+        RelationWithoutFetchMany(duckdb.sql("select range as id from range(5)")), 2
+    )
+
+    assert next(batches) == [{"id": 0}, {"id": 1}]
+    assert duckdb.execute("select 999").fetchall() == [(999,)]
+    assert list(batches) == [[{"id": 2}, {"id": 3}], [{"id": 4}]]
 
 
 @pytest.mark.parametrize(

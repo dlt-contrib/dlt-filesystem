@@ -70,19 +70,36 @@ def fetch_json(
     chunk_size = chunk_size or DEFAULT_CHUNK_SIZE
     columns = file_data.columns
     fetchmany = getattr(file_data, "fetchmany", None)
-    if fetchmany is None:
-        # DuckDB 2.0 development builds removed fetchmany() from relations, but the
-        # module connection still exposes the DB-API cursor method. Re-execute the
-        # relation's generated query on that same connection so file-like object-store
-        # references and session settings remain available.
-        import duckdb
+    connection = None
+    try:
+        if fetchmany is None:
+            # DuckDB 2.0 development builds removed fetchmany() from relations, but the
+            # DB-API connection still exposes it. Use a duplicate cursor because executing
+            # two results on the module connection would make them overwrite each other.
+            import duckdb
 
-        file_data = duckdb.execute(file_data.sql_query())
-        fetchmany = file_data.fetchmany
+            settings_query = "SELECT name, value FROM duckdb_settings()"
+            source_settings = dict(duckdb.sql(settings_query).fetchall())
+            connection = duckdb.cursor()
+            duplicate_settings = dict(connection.execute(settings_query).fetchall())
+            for name, value in source_settings.items():
+                if duplicate_settings.get(name) == value:
+                    continue
+                quoted_name = '"' + name.replace('"', '""') + '"'
+                if value is None:
+                    connection.execute(f"RESET {quoted_name}")
+                else:
+                    connection.execute(f"SET {quoted_name} = ?", [value])
 
-    while True:
-        batch = fetchmany(chunk_size)
-        if not batch:
-            break
+            connection.execute(file_data.sql_query())
+            fetchmany = connection.fetchmany
 
-        yield add_columns(columns, batch)
+        while True:
+            batch = fetchmany(chunk_size)
+            if not batch:
+                break
+
+            yield add_columns(columns, batch)
+    finally:
+        if connection is not None:
+            connection.close()
