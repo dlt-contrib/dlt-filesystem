@@ -39,6 +39,9 @@ class RelationWithoutFetchMany:
     def sql_query(self):
         return self.relation.sql_query()
 
+    def limit(self, *args):
+        return self.relation.limit(*args)
+
 
 def _legacy_fetch_json(relation, chunk_size):
     """Copy the pre-DuckDB-2 implementation as an independent parity oracle."""
@@ -204,6 +207,29 @@ def test_fetch_json_fallback_survives_unrelated_default_connection_query():
     assert next(batches) == [{"id": 0}, {"id": 1}]
     assert duckdb.execute("select 999").fetchall() == [(999,)]
     assert list(batches) == [[{"id": 2}, {"id": 3}], [{"id": 4}]]
+
+
+def test_fetch_json_fallback_preserves_locked_session_settings():
+    original_connection = duckdb.default_connection()
+    locked_connection = duckdb.connect(":memory:")
+    duckdb.set_default_connection(locked_connection)
+    try:
+        duckdb.execute("set TimeZone = ?", ["UTC"])
+        relation = duckdb.from_csv_auto(
+            BytesIO(b"timestamp\n2026-10-21 12:34:56\n"),
+            columns={"timestamp": "TIMESTAMPTZ"},
+            header=True,
+        )
+        duckdb.execute("set lock_configuration = true")
+
+        batches = list(fetch_json(RelationWithoutFetchMany(relation), 1))
+
+        assert batches == [
+            [{"timestamp": datetime(2026, 10, 21, 12, 34, 56, tzinfo=timezone.utc)}]
+        ]
+    finally:
+        duckdb.set_default_connection(original_connection)
+        locked_connection.close()
 
 
 @pytest.mark.parametrize(

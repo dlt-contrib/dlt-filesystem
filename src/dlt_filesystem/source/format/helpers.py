@@ -80,6 +80,18 @@ def fetch_json(
 
             settings_query = "SELECT name, value FROM duckdb_settings()"
             source_settings = dict(duckdb.sql(settings_query).fetchall())
+            if source_settings.get("lock_configuration") == "true":
+                # A locked connection forbids replaying its local settings on a duplicate.
+                # Page the original relation instead, which keeps those settings without
+                # holding shared DB-API result state between yields.
+                offset = 0
+                while True:
+                    batch = file_data.limit(chunk_size, offset).fetchall()
+                    if not batch:
+                        return
+                    yield add_columns(columns, batch)
+                    offset += len(batch)
+
             connection = duckdb.cursor()
             duplicate_settings = dict(connection.execute(settings_query).fetchall())
             for name, value in source_settings.items():
