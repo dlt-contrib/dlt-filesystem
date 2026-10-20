@@ -14,19 +14,21 @@
 
 """Helpers for the filesystem resource."""
 
-from typing import Any, Dict, Generator, Iterable, List, Optional
+from typing import Any, Dict, Generator, Iterable, List, Optional, Sequence
 
 from dlt.common.typing import TDataItem
 
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
 
 
-def add_columns(columns: List[str], rows: List[List[Any]]) -> List[Dict[str, Any]]:
+def add_columns(
+    columns: List[str], rows: Iterable[Sequence[Any]]
+) -> List[Dict[str, Any]]:
     """Adds column names to the given rows.
 
     Args:
         columns (List[str]): The column names.
-        rows (List[List[Any]]): The rows.
+        rows (Iterable[Sequence[Any]]): The rows.
 
     Returns:
         List[Dict[str, Any]]: The rows with column names.
@@ -66,9 +68,21 @@ def fetch_json(
         Iterable[TDataItem]: Data items, read from the given CSV file.
     """
     chunk_size = chunk_size or DEFAULT_CHUNK_SIZE
+    columns = file_data.columns
+    fetchmany = getattr(file_data, "fetchmany", None)
+    if fetchmany is None:
+        # DuckDB 2.0 development builds removed fetchmany() from relations, but the
+        # module connection still exposes the DB-API cursor method. Re-execute the
+        # relation's generated query on that same connection so file-like object-store
+        # references and session settings remain available.
+        import duckdb
+
+        file_data = duckdb.execute(file_data.sql_query())
+        fetchmany = file_data.fetchmany
+
     while True:
-        batch = file_data.fetchmany(chunk_size)
+        batch = fetchmany(chunk_size)
         if not batch:
             break
 
-        yield add_columns(file_data.columns, batch)
+        yield add_columns(columns, batch)
