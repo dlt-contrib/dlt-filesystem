@@ -39,8 +39,8 @@ class RelationWithoutFetchMany:
     def sql_query(self):
         return self.relation.sql_query()
 
-    def limit(self, *args):
-        return self.relation.limit(*args)
+    def fetchall(self):
+        return self.relation.fetchall()
 
 
 def _legacy_fetch_json(relation, chunk_size):
@@ -227,6 +227,33 @@ def test_fetch_json_fallback_preserves_locked_session_settings():
         assert batches == [
             [{"timestamp": datetime(2026, 10, 21, 12, 34, 56, tzinfo=timezone.utc)}]
         ]
+    finally:
+        duckdb.set_default_connection(original_connection)
+        locked_connection.close()
+
+
+def test_fetch_json_fallback_locked_parallel_scan_keeps_every_row_once():
+    original_connection = duckdb.default_connection()
+    locked_connection = duckdb.connect(
+        ":memory:", config={"threads": 4, "preserve_insertion_order": False}
+    )
+    duckdb.set_default_connection(locked_connection)
+    try:
+        row_count = 100_000
+        payload = "id,value\n" + "".join(
+            f"{row_id},{'x' * 200}\n" for row_id in range(row_count)
+        )
+        relation = duckdb.from_csv_auto(
+            BytesIO(payload.encode()), header=True, buffer_size=1_048_576
+        )
+        duckdb.execute("set lock_configuration = true")
+
+        batches = list(fetch_json(RelationWithoutFetchMany(relation), 5_000))
+
+        ids = [row["id"] for batch in batches for row in batch]
+        assert [len(batch) for batch in batches] == [5_000] * 20
+        assert len(set(ids)) == row_count
+        assert set(ids) == set(range(row_count))
     finally:
         duckdb.set_default_connection(original_connection)
         locked_connection.close()

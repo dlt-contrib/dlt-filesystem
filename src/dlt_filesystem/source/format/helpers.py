@@ -82,15 +82,13 @@ def fetch_json(
             source_settings = dict(duckdb.sql(settings_query).fetchall())
             if source_settings.get("lock_configuration") == "true":
                 # A locked connection forbids replaying its local settings on a duplicate.
-                # Page the original relation instead, which keeps those settings without
-                # holding shared DB-API result state between yields.
-                offset = 0
-                while True:
-                    batch = file_data.limit(chunk_size, offset).fetchall()
-                    if not batch:
-                        return
-                    yield add_columns(columns, batch)
-                    offset += len(batch)
+                # Exhaust the original relation before yielding so later connection use
+                # cannot overwrite its result. This rare path buffers the full result;
+                # repeated LIMIT/OFFSET scans can lose rows when ordering is not preserved.
+                rows = file_data.fetchall()
+                for offset in range(0, len(rows), chunk_size):
+                    yield add_columns(columns, rows[offset : offset + chunk_size])
+                return
 
             connection = duckdb.cursor()
             duplicate_settings = dict(connection.execute(settings_query).fetchall())
