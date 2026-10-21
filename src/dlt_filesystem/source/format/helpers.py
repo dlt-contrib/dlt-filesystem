@@ -79,7 +79,10 @@ def fetch_json(
             import duckdb
 
             settings_query = "SELECT name, value FROM duckdb_settings()"
-            source_settings = dict(duckdb.sql(settings_query).fetchall())
+            result = duckdb.sql(settings_query)
+            if result is None:
+                return
+            source_settings = dict(result.fetchall())
             if source_settings.get("lock_configuration") == "true":
                 # A locked connection forbids replaying its local settings on a duplicate.
                 # Exhaust the original relation before yielding so later connection use

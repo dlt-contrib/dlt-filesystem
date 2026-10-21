@@ -78,7 +78,7 @@ optional-dependencies.develop = [
 ]
 # The DuckDB CSV reader (`csv_duckdb`), an alternative to the default Polars one.
 optional-dependencies.duckdb = [
-  "duckdb<1.6",
+  "duckdb<2.1",
 ]
 optional-dependencies.full = [
   "dlt-filesystem[bson,duckdb,iterable,spreadsheet,vortex]",
