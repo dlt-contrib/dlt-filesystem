@@ -14,19 +14,21 @@
 
 """Helpers for the filesystem resource."""
 
-from typing import Any, Dict, Generator, Iterable, List, Optional
+from typing import Any, Dict, Generator, Iterable, List, Optional, Sequence
 
 from dlt.common.typing import TDataItem
 
 from dlt_filesystem.source.format.settings import DEFAULT_CHUNK_SIZE
 
 
-def add_columns(columns: List[str], rows: List[List[Any]]) -> List[Dict[str, Any]]:
+def add_columns(
+    columns: List[str], rows: Iterable[Sequence[Any]]
+) -> List[Dict[str, Any]]:
     """Adds column names to the given rows.
 
     Args:
         columns (List[str]): The column names.
-        rows (List[List[Any]]): The rows.
+        rows (Iterable[Sequence[Any]]): The rows.
 
     Returns:
         List[Dict[str, Any]]: The rows with column names.
@@ -66,9 +68,48 @@ def fetch_json(
         Iterable[TDataItem]: Data items, read from the given CSV file.
     """
     chunk_size = chunk_size or DEFAULT_CHUNK_SIZE
-    while True:
-        batch = file_data.fetchmany(chunk_size)
-        if not batch:
-            break
+    columns = file_data.columns
+    fetchmany = getattr(file_data, "fetchmany", None)
+    connection = None
+    try:
+        if fetchmany is None:
+            # DuckDB 2.0 development builds removed fetchmany() from relations, but the
+            # DB-API connection still exposes it. Use a duplicate cursor because executing
+            # two results on the module connection would make them overwrite each other.
+            import duckdb
 
-        yield add_columns(file_data.columns, batch)
+            settings_query = "SELECT name, value FROM duckdb_settings()"
+            source_settings = dict(duckdb.sql(settings_query).fetchall())
+            if source_settings.get("lock_configuration") == "true":
+                # A locked connection forbids replaying its local settings on a duplicate.
+                # Exhaust the original relation before yielding so later connection use
+                # cannot overwrite its result. This rare path buffers the full result;
+                # repeated LIMIT/OFFSET scans can lose rows when ordering is not preserved.
+                rows = file_data.fetchall()
+                for offset in range(0, len(rows), chunk_size):
+                    yield add_columns(columns, rows[offset : offset + chunk_size])
+                return
+
+            connection = duckdb.cursor()
+            duplicate_settings = dict(connection.execute(settings_query).fetchall())
+            for name, value in source_settings.items():
+                if duplicate_settings.get(name) == value:
+                    continue
+                quoted_name = '"' + name.replace('"', '""') + '"'
+                if value is None:
+                    connection.execute(f"RESET {quoted_name}")
+                else:
+                    connection.execute(f"SET {quoted_name} = ?", [value])
+
+            connection.execute(file_data.sql_query())
+            fetchmany = connection.fetchmany
+
+        while True:
+            batch = fetchmany(chunk_size)
+            if not batch:
+                break
+
+            yield add_columns(columns, batch)
+    finally:
+        if connection is not None:
+            connection.close()
