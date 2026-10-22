@@ -86,10 +86,12 @@ def _numbers(value):
 
 
 def _may_lose_a_number(rows: list[dict]) -> bool:
-    """Whether the load carries a number Polars could round or hold as null.
+    """Whether the load carries a number the positional check has to compare.
 
-    One past a double's exact range, or one with more whole digits than a decimal
-    column typed at the load's largest scale has room for. Across the whole load rather
+    One past a double's exact range, which Polars can round, or one with more whole
+    digits than a decimal column typed at the load's largest scale has room for, which
+    it holds as null. A decimal with too many significant digits for a double, rounded
+    because a float shares its column, is not one of them. Across the whole load rather
     than per column, so it can only send a load to the positional check that did not
     need it, never keep one away.
 
@@ -196,11 +198,12 @@ def _refuse_rounded_numbers(frame, rows: list[dict]) -> None:
     The scan runs only when the load carries a number that large, which is what keeps
     it off every other write. An integer Polars nulls beside other integers is
     ``2**127`` or more, so the same gate covers it. A decimal Polars nulls can be far
-    smaller, and reaches Parquet on the ordinary load path: dlt stages Arrow data whose
-    decimal type changes mid-load (imported Parquet files, or batches split by
-    ``arrow_concat_promote_options="default"``) as one exact file per type, and
-    ``post_load`` reads them back as one load. So the gate also opens for a whole-digit
-    count the load's largest decimal scale leaves no room for.
+    smaller, and reaches Parquet from a load: dlt stages Arrow data whose decimal type
+    changes mid-load as one exact file per type (Parquet files imported one per yield,
+    or batches it will not concatenate under ``arrow_concat_promote_options="default"``,
+    the lossless option its own refusal offers), and ``post_load`` reads them back as
+    one load. So the gate also opens for a whole-digit count the load's largest decimal
+    scale leaves no room for.
     """
     if not _may_lose_a_number(rows):
         return

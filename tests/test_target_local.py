@@ -190,7 +190,7 @@ def test_temp_directory_is_cleared_when_the_write_fails(tmp_path, monkeypatch):
 
 def test_parquet_refuses_a_decimal_column_staged_as_two_types(tmp_path):
     """dlt stages Arrow data whose decimal type changes mid-load as one exact file per
-    type: two imported Parquet files, or batches it may not concatenate under
+    type: Parquet files imported one per yield, or batches it will not concatenate under
     ``arrow_concat_promote_options="default"``. Read back as one load, the wide value
     no longer fits the column Polars types at the finer scale, and the export used to
     carry a null in its place."""
