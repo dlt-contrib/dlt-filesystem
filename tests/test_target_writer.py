@@ -285,6 +285,39 @@ def test_write_parquet_keeps_snappy_compression(tmp_path):
     assert codecs == {"SNAPPY"}
 
 
+# A time of day builds an Arrow table (`time64[us]`, the type a Parquet staging file
+# hands back) that ORC has no type for, so PyArrow refuses it only once the ORC write
+# starts, not while the table is built.
+ORC_REFUSES = [{"t": datetime.time(1, 2, 3)}]
+
+
+def test_write_orc_refusing_a_type_leaves_no_file(tmp_path):
+    """An empty file at the path reads as an export that ran, and ORC readers then
+    refuse it as too small to be ORC."""
+    import pyarrow as pa
+
+    path = tmp_path / "out.orc"
+    with pytest.raises(pa.ArrowNotImplementedError, match="time64"):
+        writer_for_format("orc")(str(path), ORC_REFUSES)
+
+    assert not path.exists()
+
+
+def test_write_orc_refusing_a_type_keeps_the_file_already_there(tmp_path):
+    """A refused export over an earlier one leaves the earlier one as it was, rather
+    than truncated to nothing."""
+    import pyarrow as pa
+
+    path = tmp_path / "out.orc"
+    writer_for_format("orc")(str(path), ROWS)
+    before = path.read_bytes()
+
+    with pytest.raises(pa.ArrowNotImplementedError, match="time64"):
+        writer_for_format("orc")(str(path), ORC_REFUSES)
+
+    assert path.read_bytes() == before
+
+
 def test_write_csv_of_no_rows_writes_the_header_line_it_always_has(tmp_path):
     """An empty load writes one empty line, which is what `csv.DictWriter` produced for
     a header of no columns. Asserted on the bytes because both an empty file and this

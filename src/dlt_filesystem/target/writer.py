@@ -298,7 +298,16 @@ def write_jsonl(path: str, rows: list[dict]) -> None:
 
 
 def write_orc(path: str, rows: list[dict]) -> None:
-    """Write rows as an ORC file with PyArrow."""
+    """Write rows as an ORC file with PyArrow.
+
+    The file is built in memory and written to the path only once it is complete.
+    PyArrow's ORC writer opens its destination before it checks the schema, so a type
+    ORC has none for (a time of day, a column of only nulls) was refused only after the
+    path was opened, leaving an empty file there or truncating the one already there.
+    In memory rather than a temp file renamed over the path, because the rows are
+    already all in memory here, and writing through the path keeps what the other
+    writers keep: an existing file's permissions, and a symlink as a symlink.
+    """
     import pyarrow as pa
     from pyarrow import orc
 
@@ -306,7 +315,10 @@ def write_orc(path: str, rows: list[dict]) -> None:
     if rows and not fieldnames:
         raise ValueError("ORC output requires at least one column for nonempty rows")
     columns = {name: [row.get(name) for row in rows] for name in fieldnames}
-    orc.write_table(pa.table(columns), path)
+    buffer = pa.BufferOutputStream()
+    orc.write_table(pa.table(columns), buffer)
+    with open(path, "wb") as handle:
+        handle.write(buffer.getvalue())
 
 
 def _narrowed_for_parquet(dtype):
