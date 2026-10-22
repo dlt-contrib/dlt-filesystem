@@ -639,3 +639,99 @@ def test_csv_writes_the_same_load_exactly_because_it_spells_first(tmp_path):
 
     rows = list(csv.DictReader(path.read_text(encoding="utf-8").splitlines()))
     assert [json.loads(row["tags"]) for row in rows] == [[9007199254740993], [0.5]]
+
+
+# A decimal column Polars would write with a number missing. It types the column at the
+# largest scale among the values with 38 digits in all, and nulls a value with more
+# whole digits than that leaves room for, rather than raising. `TINY` has 34 decimal
+# places, so the column holds up to four whole digits.
+TINY = decimal.Decimal("0." + "1234567890" * 3 + "1234")
+FINEST = decimal.Decimal("0." + "1234567890" * 3 + "12345")
+NULLED_DECIMALS = {
+    "a whole decimal beside 35 places": [
+        {"v": decimal.Decimal(10**10)},
+        {"v": FINEST},
+    ],
+    "the same, finest first": [{"v": FINEST}, {"v": decimal.Decimal(10**10)}],
+    "the first value past the room left": [
+        {"v": decimal.Decimal(10_000)},
+        {"v": TINY},
+    ],
+    "the same, negative": [{"v": decimal.Decimal(-10_000)}, {"v": TINY}],
+    # dlt splits an int and a decimal into variant columns, but a caller of the writer
+    # can pass both in one.
+    "an integer beside a decimal": [{"v": 10**10}, {"v": FINEST}],
+    "one struct field": [
+        {"v": {"n": decimal.Decimal(10_000)}},
+        {"v": {"n": TINY}},
+    ],
+    "a struct inside a list": [
+        {"v": [{"n": decimal.Decimal(10_000)}]},
+        {"v": [{"n": TINY}]},
+    ],
+    "a bare list": [{"v": [decimal.Decimal(10_000), TINY]}],
+    # The null is made within the first row, then a list of strings widens the column
+    # away from decimal altogether, so nothing in its final type says a number was lost.
+    "a list widened to text": [
+        {"v": [decimal.Decimal(10_000), TINY]},
+        {"v": ["s"]},
+    ],
+}
+
+
+@pytest.mark.parametrize("rows", NULLED_DECIMALS.values(), ids=NULLED_DECIMALS)
+def test_parquet_refuses_a_decimal_polars_would_write_as_null(tmp_path, rows):
+    """The export used to finish with an empty field where the number was. dlt stages a
+    decimal column whose type changes mid-load as one file per type, and the
+    destination reads them back as one load, so this is reachable from a pipeline.
+    Refused by column and by value, before the path is opened."""
+    path = tmp_path / "out.parquet"
+
+    with pytest.raises(ValueError, match="'v'") as excinfo:
+        writer_for_format("parquet")(str(path), rows)
+
+    assert "would write as a null" in str(excinfo.value)
+    assert not path.exists()
+
+
+def test_the_decimal_refusal_names_the_value(tmp_path):
+    with pytest.raises(ValueError, match="number -10000,"):
+        writer_for_format("parquet")(
+            str(tmp_path / "out.parquet"),
+            [{"v": decimal.Decimal(-10_000)}, {"v": TINY}],
+        )
+
+
+# The neighbours, which the column does hold, and loads where only an unrelated column
+# opens the check. Each is written as itself.
+HELD_DECIMALS = {
+    "the last value with room": [{"v": decimal.Decimal(9_999)}, {"v": TINY}],
+    "the same, negative": [{"v": decimal.Decimal(-9_999)}, {"v": TINY}],
+    "one scale throughout": [
+        {"v": decimal.Decimal("10000000000.5")},
+        {"v": decimal.Decimal("0.25")},
+    ],
+    "a wide decimal alone": [{"v": decimal.Decimal(10**30)}],
+    "a decimal beside a null": [{"v": FINEST}, {"v": None}],
+    "a small value at 37 places": [
+        {"v": decimal.Decimal(5)},
+        {"v": decimal.Decimal("0." + "1" * 37)},
+    ],
+    # The whole-load check opens on the unrelated number and finds nothing lost.
+    "a fine decimal beside an unrelated larger number": [
+        {"v": TINY, "n": 10**10, "flag": True},
+        {"v": TINY, "n": 1, "flag": False},
+    ],
+}
+
+
+@pytest.mark.parametrize("rows", HELD_DECIMALS.values(), ids=HELD_DECIMALS)
+def test_parquet_writes_a_decimal_the_column_holds(tmp_path, rows):
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "out.parquet"
+    writer_for_format("parquet")(str(path), rows)
+
+    assert pq.read_table(path).to_pylist() == [
+        {key: row.get(key) for key in rows[0]} for row in rows
+    ]
