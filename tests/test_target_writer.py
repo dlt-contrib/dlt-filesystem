@@ -285,25 +285,30 @@ def test_write_parquet_keeps_snappy_compression(tmp_path):
     assert codecs == {"SNAPPY"}
 
 
-# A time of day builds an Arrow table (`time64[us]`, the type a Parquet staging file
-# hands back) that ORC has no type for, so PyArrow refuses it only once the ORC write
-# starts, not while the table is built.
-ORC_REFUSES = [{"t": datetime.time(1, 2, 3)}]
+# Each builds an Arrow table that ORC has no type for, so PyArrow refuses it only once
+# the ORC write starts, not while the table is built. `time64[us]` is the type a
+# Parquet staging file hands back for a time of day.
+ORC_REFUSES = {
+    "time64": [{"t": datetime.time(1, 2, 3)}],
+    "null": [{"t": None}],
+}
 
 
-def test_write_orc_refusing_a_type_leaves_no_file(tmp_path):
+@pytest.mark.parametrize("arrow_type", ORC_REFUSES)
+def test_write_orc_refusing_a_type_leaves_no_file(tmp_path, arrow_type):
     """An empty file at the path reads as an export that ran, and ORC readers then
     refuse it as too small to be ORC."""
     import pyarrow as pa
 
     path = tmp_path / "out.orc"
-    with pytest.raises(pa.ArrowNotImplementedError, match="time64"):
-        writer_for_format("orc")(str(path), ORC_REFUSES)
+    with pytest.raises(pa.ArrowNotImplementedError, match=f"type: {arrow_type}"):
+        writer_for_format("orc")(str(path), ORC_REFUSES[arrow_type])
 
     assert not path.exists()
 
 
-def test_write_orc_refusing_a_type_keeps_the_file_already_there(tmp_path):
+@pytest.mark.parametrize("arrow_type", ORC_REFUSES)
+def test_write_orc_refusing_a_type_keeps_the_file_already_there(tmp_path, arrow_type):
     """A refused export over an earlier one leaves the earlier one as it was, rather
     than truncated to nothing."""
     import pyarrow as pa
@@ -312,8 +317,8 @@ def test_write_orc_refusing_a_type_keeps_the_file_already_there(tmp_path):
     writer_for_format("orc")(str(path), ROWS)
     before = path.read_bytes()
 
-    with pytest.raises(pa.ArrowNotImplementedError, match="time64"):
-        writer_for_format("orc")(str(path), ORC_REFUSES)
+    with pytest.raises(pa.ArrowNotImplementedError, match=f"type: {arrow_type}"):
+        writer_for_format("orc")(str(path), ORC_REFUSES[arrow_type])
 
     assert path.read_bytes() == before
 
