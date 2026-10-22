@@ -64,17 +64,54 @@ def _frame(rows: list[dict]):
 _EXACT_IN_A_DOUBLE = 2**53
 
 
-def _holds_an_inexact_number(value) -> bool:
-    """Whether a value carries a number a double cannot be trusted to hold."""
+#: The precision Polars gives a column it infers from ``Decimal`` values, whatever their
+#: digits: it takes the largest scale it sees and keeps 38 digits in all, so a value
+#: with more whole digits than that scale leaves room for is held as null. Measured on
+#: polars 1.34.0 and 2.0.0.
+_POLARS_DECIMAL_PRECISION = 38
+
+
+def _numbers(value):
+    """Every integer and decimal a value carries, the nested ones included."""
     if isinstance(value, bool):
-        return False
+        return
     if isinstance(value, (int, decimal.Decimal)):
-        return abs(value) > _EXACT_IN_A_DOUBLE
-    if isinstance(value, dict):
-        return any(_holds_an_inexact_number(item) for item in value.values())
-    if isinstance(value, (list, tuple)):
-        return any(_holds_an_inexact_number(item) for item in value)
-    return False
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _numbers(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _numbers(item)
+
+
+def _may_lose_a_number(rows: list[dict]) -> bool:
+    """Whether the load carries a number Polars could round or hold as null.
+
+    One past a double's exact range, or one with more whole digits than a decimal
+    column typed at the load's largest scale has room for. Across the whole load rather
+    than per column, so it can only send a load to the positional check that did not
+    need it, never keep one away.
+
+    From the values rather than from the frame's types, because a type can be widened
+    away: a list holding a decimal Polars nulled, beside a later row's list holding a
+    string, ends up a list of strings, with no decimal left in the schema to read.
+    """
+    largest = 0
+    scale = None
+    for row in rows:
+        for value in row.values():
+            for number in _numbers(value):
+                magnitude = abs(number)
+                if magnitude > _EXACT_IN_A_DOUBLE:
+                    return True
+                largest = max(largest, magnitude)
+                if isinstance(number, decimal.Decimal):
+                    exponent = number.as_tuple().exponent
+                    scale = max(scale or 0, -exponent)
+    if scale is None:
+        return False
+    return largest >= 10 ** (_POLARS_DECIMAL_PRECISION - scale)
 
 
 def _reads_back_as(source, written) -> bool:
@@ -112,7 +149,9 @@ def _refuse_a_rounded_number(name: str, source, written) -> None:
     A number the frame holds as null is refused as well. Polars types a column holding
     an integer from ``2**127`` up beside any other integer as ``Int128``, which stops
     one short of it, and nulls the value rather than raising, so the export would carry
-    an empty field where the number was.
+    an empty field where the number was. A decimal column goes the same way: typed at
+    the largest scale among its values with 38 digits in all, it nulls ``10**10``
+    beside a value with 35 decimal places.
     """
     if source is None or isinstance(source, bool):
         return
@@ -156,11 +195,14 @@ def _refuse_rounded_numbers(frame, rows: list[dict]) -> None:
 
     The scan runs only when the load carries a number that large, which is what keeps
     it off every other write. An integer Polars nulls beside other integers is
-    ``2**127`` or more, so the same gate covers it.
+    ``2**127`` or more, so the same gate covers it. A decimal Polars nulls can be far
+    smaller, and reaches Parquet on the ordinary load path: dlt stages Arrow data whose
+    decimal type changes mid-load (imported Parquet files, or batches split by
+    ``arrow_concat_promote_options="default"``) as one exact file per type, and
+    ``post_load`` reads them back as one load. So the gate also opens for a whole-digit
+    count the load's largest decimal scale leaves no room for.
     """
-    if not any(
-        _holds_an_inexact_number(value) for row in rows for value in row.values()
-    ):
+    if not _may_lose_a_number(rows):
         return
     for name in frame.columns:
         for row, written in zip(rows, frame[name].to_list()):

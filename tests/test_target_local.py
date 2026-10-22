@@ -1,5 +1,7 @@
+import decimal
 import os
 import re
+from pathlib import Path
 
 import pytest
 
@@ -184,3 +186,35 @@ def test_temp_directory_is_cleared_when_the_write_fails(tmp_path, monkeypatch):
         destination.post_load()
 
     assert not os.path.exists(temp_path)
+
+
+def test_parquet_refuses_a_decimal_column_staged_as_two_types(tmp_path):
+    """dlt stages Arrow data whose decimal type changes mid-load as one exact file per
+    type: two imported Parquet files, or batches it may not concatenate under
+    ``arrow_concat_promote_options="default"``. Read back as one load, the wide value
+    no longer fits the column Polars types at the finer scale, and the export used to
+    carry a null in its place."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    destination = LocalFilesystemDestination()
+    output_path = tmp_path / "out.parquet"
+    destination.dlt_dest(f"file://{output_path}")
+    destination.dataset_name, destination.table_name = "public", "rows"
+    table_dir = Path(destination.temp_path) / "public" / "rows"
+    table_dir.mkdir(parents=True)
+    whole = decimal.Decimal(10**10)
+    fine = decimal.Decimal("0." + "1234567890" * 3 + "12345")
+    pq.write_table(
+        pa.table({"v": pa.array([whole], pa.decimal128(11, 0))}),
+        table_dir / "a.parquet",
+    )
+    pq.write_table(
+        pa.table({"v": pa.array([fine], pa.decimal128(38, 35))}),
+        table_dir / "b.parquet",
+    )
+
+    with pytest.raises(ValueError, match=f"'v' carries the number {whole},"):
+        destination.post_load()
+
+    assert not output_path.exists()
