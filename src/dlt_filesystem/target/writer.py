@@ -201,11 +201,11 @@ def _refuse_rounded_numbers(frame, rows: list[dict]) -> None:
     it off every other write. An integer Polars nulls beside other integers is
     ``2**127`` or more, so the same gate covers it. A decimal Polars nulls can be far
     smaller, and reaches Parquet from a load: dlt stages Arrow data whose decimal type
-    changes mid-load as one exact file per type (Parquet files imported one per yield,
-    or batches it will not concatenate under ``arrow_concat_promote_options="default"``,
-    the lossless option its own refusal offers), and ``post_load`` reads them back as
-    one load. So the gate also opens for a whole-digit count the load's largest decimal
-    scale leaves no room for.
+    changes mid-load as one exact file per type (batches it will not concatenate under
+    ``arrow_concat_promote_options="default"``, the lossless option its own refusal
+    offers, or Parquet files imported into a column declared ``decimal``), and
+    ``post_load`` reads them back as one load. So the gate also opens for a whole-digit
+    count the load's largest decimal scale leaves no room for.
     """
     if not _may_lose_a_number(rows):
         return
