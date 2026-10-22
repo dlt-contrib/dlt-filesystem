@@ -735,3 +735,19 @@ def test_parquet_writes_a_decimal_the_column_holds(tmp_path, rows):
     assert pq.read_table(path).to_pylist() == [
         {key: row.get(key) for key in rows[0]} for row in rows
     ]
+
+
+@pytest.mark.parametrize("case", ["the last value with room", "the same, negative"])
+def test_the_decimal_gate_stays_shut_where_the_column_holds_every_value(
+    tmp_path, monkeypatch, case
+):
+    """The check opens only where a value can be lost, so a decimal load whose values
+    all fit is written without it. A gate one digit too eager writes the same file,
+    which nothing else here would notice."""
+    import dlt_filesystem.target.writer as writer
+
+    def ran(*_args):
+        raise AssertionError("the positional check ran")
+
+    monkeypatch.setattr(writer, "_refuse_a_rounded_number", ran)
+    writer_for_format("parquet")(str(tmp_path / "out.parquet"), HELD_DECIMALS[case])
