@@ -90,10 +90,12 @@ def _may_lose_a_number(rows: list[dict]) -> bool:
 
     One past a double's exact range, which Polars can round, or one with more whole
     digits than a decimal column typed at the load's largest scale has room for, which
-    it holds as null. A decimal with too many significant digits for a double, rounded
-    because a float shares its column, is not one of them. Across the whole load rather
-    than per column, so it can only send a load to the positional check that did not
-    need it, never keep one away.
+    it holds as null. Across the whole load rather than per column, so it can only send
+    a load to the positional check that did not need it, never keep one away.
+
+    Digits a decimal loses to a float sharing its column are not a reason on their
+    own: the check runs for that load only when one of the two above holds somewhere
+    in it.
 
     From the values rather than from the frame's types, because a type can be widened
     away: a list holding a decimal Polars nulled, beside a later row's list holding a
