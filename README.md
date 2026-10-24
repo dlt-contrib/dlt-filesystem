@@ -13,8 +13,10 @@ dlt's own `dlt.sources.filesystem` reads CSV, JSONL and Parquet, plus CSV throug
 DuckDB. This package has the 17 readers listed under [File formats](#file-formats).
 Its `readers` and `filesystem` accept every keyword argument dlt's versions accept,
 so a pipeline on dlt's filesystem source moves across by changing the import, as
-long as it passes `kwargs`, `client_kwargs` and `incremental` by keyword. CSV options
-are the exception: they go to Polars here, where dlt passes them to Pandas.
+long as it passes `kwargs`, `client_kwargs` and `incremental` by keyword. The options
+of the four readers both packages share are where they differ. `read_csv` passes its
+options to Polars, where dlt passes them to Pandas. `read_parquet` has no
+`use_pyarrow`. `read_parquet` and `read_csv_duckdb` use different default chunk sizes.
 
 `filesystem()` also accepts `require_file_match=True`, which raises when the selection
 matches no file instead of loading an empty table. The source classes below turn it on
