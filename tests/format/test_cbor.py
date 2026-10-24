@@ -56,6 +56,21 @@ def test_reads_top_level_array_all_rows(tmp_path):
     assert sorted(r["name"] for r in rows) == ["a", "b", "c"]
 
 
+def test_shared_container_references_are_not_cycles(tmp_path):
+    """Finite shared CBOR values load normally, including a shared tag payload."""
+    shared = {"blob": b"AB"}
+    doc = {"a": shared, "b": shared, "tagged": cbor2.CBORTag(1234, shared)}
+    path = tmp_path / "shared.cbor"
+    path.write_bytes(cbor2.dumps(doc, value_sharing=True))
+    assert _read_via_source(path) == [
+        {
+            "a": {"blob": "QUI="},
+            "b": {"blob": "QUI="},
+            "tagged": {"tag": 1234, "value": {"blob": "QUI="}},
+        }
+    ]
+
+
 def test_concatenated_objects_read_only_the_first(tmp_path):
     """Documented limitation: a file that concatenates several top-level CBOR objects is read
     only up to the first; cbor2 cannot stream them and it can't be detected. The fix is to
