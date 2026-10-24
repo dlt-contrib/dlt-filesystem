@@ -47,6 +47,7 @@ import importlib.util
 import io
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import chain
 from typing import Any, Callable, Iterator, Optional
 
 from dlt.common.typing import TDataItems
@@ -160,8 +161,9 @@ def _reject_cycles(value: Any, tag_type: Optional[type] = None) -> None:
     """Reject ancestor references without recursion or changing the decoded graph.
 
     Completed identities allow finite shared aliases. Mapping includes CBOR's frozen
-    mappings; custom CBOR tags expose another graph edge through their payload. The
-    decoder supplies the tag type to keep this module free of optional imports.
+    mappings. Keys can also refer to ancestor tags. Custom CBOR tags expose another
+    graph edge through their payload. The decoder supplies the tag type to keep this
+    module free of optional imports.
     """
     active: set[int] = set()
     completed: set[int] = set()
@@ -174,7 +176,7 @@ def _reject_cycles(value: Any, tag_type: Optional[type] = None) -> None:
             completed.add(identity)
             continue
         if isinstance(current, Mapping):
-            children = current.values()
+            children = chain(current.keys(), current.values())
         elif isinstance(current, (list, tuple, set, frozenset)):
             children = current
         elif tag_type is not None and isinstance(current, tag_type):

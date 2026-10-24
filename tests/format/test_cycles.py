@@ -24,6 +24,9 @@ import pytest
             "cbor", bytes.fromhex("d81cd904d2a16178d81d00"), id="cbor-tag-frozen-map"
         ),
         pytest.param(
+            "cbor", bytes.fromhex("d81cd904d2a1d81d0000"), id="cbor-tag-mapping-key"
+        ),
+        pytest.param(
             "cbor", bytes.fromhex("d81c82a162696401d81d00"), id="cbor-before-first-row"
         ),
     ],
