@@ -45,6 +45,7 @@ import base64
 import importlib
 import importlib.util
 import io
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Optional
 
@@ -53,6 +54,7 @@ from dlt.common.utils import map_nested_values_in_place
 from dlt.sources.filesystem import FileItemDict
 
 from dlt_filesystem.source.error import (
+    CyclicInputError,
     MissingDecoderError,
     MissingReaderOptionError,
 )
@@ -154,6 +156,40 @@ def _cbor_normalizer() -> Normalizer:
     return convert
 
 
+def _reject_cycles(value: Any, tag_type: Optional[type] = None) -> None:
+    """Reject ancestor references without recursion or changing the decoded graph.
+
+    Completed identities allow finite shared aliases. Mapping includes CBOR's frozen
+    mappings; custom CBOR tags expose another graph edge through their payload. The
+    decoder supplies the tag type to keep this module free of optional imports.
+    """
+    active: set[int] = set()
+    completed: set[int] = set()
+    stack = [(value, False)]
+    while stack:
+        current, leaving = stack.pop()
+        identity = id(current)
+        if leaving:
+            active.remove(identity)
+            completed.add(identity)
+            continue
+        if isinstance(current, Mapping):
+            children = current.values()
+        elif isinstance(current, (list, tuple, set, frozenset)):
+            children = current
+        elif tag_type is not None and isinstance(current, tag_type):
+            children = (current.value,)
+        else:
+            continue
+        if identity in active:
+            raise CyclicInputError("Cyclic input is not supported")
+        if identity in completed:
+            continue
+        active.add(identity)
+        stack.append((current, True))
+        stack.extend((child, False) for child in children)
+
+
 def _cbor_eager_decode(data: bytes, options: dict) -> Iterator[Any]:
     """Decode a whole CBOR file into records, surfacing decode errors.
 
@@ -162,14 +198,17 @@ def _cbor_eager_decode(data: bytes, options: dict) -> Iterator[Any]:
     other readers), but a non-empty **corrupt / truncated** payload raises ``CBORDecodeError``
     rather than silently loading nothing (which is what iterabledata's error-swallowing
     ``CBORIterable`` would do). Files that concatenate several top-level objects are read only
-    up to the first (a cbor2 limitation that cannot be detected). CBOR takes no reader options,
-    so ``options`` is accepted (for the uniform eager-decoder signature) and ignored.
+    up to the first (a cbor2 limitation that cannot be detected). Cyclic shared references
+    raise ``CyclicInputError`` before any row from that value is emitted or normalized.
+    CBOR takes no reader options, so ``options`` is accepted (for the uniform eager-decoder
+    signature) and ignored.
     """
     import cbor2
 
     if not data:
         return
     obj = cbor2.loads(data)
+    _reject_cycles(obj, cbor2.CBORTag)
     if isinstance(obj, list):
         yield from obj
     else:
@@ -207,9 +246,10 @@ def _yaml_eager_decode(data: bytes, options: dict) -> Iterator[Any]:
     row per element (so a top-level sequence of records loads naturally); any other document
     yields one row. A ``---``-only / empty document parses to ``None`` and is skipped (it
     carries no record). An empty file yields no rows (matching the other readers); a malformed
-    document raises ``yaml.YAMLError`` rather than silently loading nothing. YAML takes no
-    reader options, so ``options`` is accepted (for the uniform eager-decoder signature) and
-    ignored.
+    document raises ``yaml.YAMLError`` rather than silently loading nothing. Cyclic aliases
+    raise ``CyclicInputError`` before any row from that document is emitted or normalized.
+    YAML takes no reader options, so ``options`` is accepted (for the uniform eager-decoder
+    signature) and ignored.
     """
     import yaml
 
@@ -218,6 +258,7 @@ def _yaml_eager_decode(data: bytes, options: dict) -> Iterator[Any]:
     for document in yaml.safe_load_all(data):
         if document is None:
             continue
+        _reject_cycles(document)
         if isinstance(document, list):
             yield from document
         else:
@@ -477,6 +518,7 @@ def read_via_iterable(
     a format that takes no options ignores it.
 
     Raises:
+        CyclicInputError: if a YAML document or CBOR value contains a reference cycle.
         MissingDecoderError: if the format's decoder (or iterabledata, for a streaming format)
             is not installed.
     """

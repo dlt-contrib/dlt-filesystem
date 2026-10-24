@@ -149,14 +149,14 @@ def test_anchors_and_aliases_resolve(tmp_path):
     assert _read_via_source(path) == [{"a": 7, "b": 7}]
 
 
-def test_recursive_alias_raises_cleanly(tmp_path):
-    """A self-recursive alias makes a cyclic structure that safe_load accepts but that cannot be
-    flattened into a finite record; normalization hits Python's recursion limit and raises a
-    bounded RecursionError rather than hanging or emitting corrupt data. Pathological input,
-    pinned here as an unsupported-but-safe boundary (not a code-execution or data-leak hole)."""
-    path = write_yaml(tmp_path / "cyclic.yaml", "a: &a [*a]\n")
-    with pytest.raises(RecursionError):
-        list(read_yaml(iter([FileItemStub(path)]), chunksize=10))  # ty: ignore[invalid-argument-type]
+def test_shared_container_aliases_are_not_cycles(tmp_path):
+    """Finite shared containers remain valid and their binary leaves are normalized."""
+    path = write_yaml(
+        tmp_path / "shared.yaml",
+        "a: &a {blob: !!binary QUI=}\nb: *a\nc: [*a, *a]\n",
+    )
+    shared = {"blob": "QUI="}
+    assert _read_via_source(path) == [{"a": shared, "b": shared, "c": [shared, shared]}]
 
 
 # --- chunking contract (drives read_yaml directly with a small chunksize) ----
