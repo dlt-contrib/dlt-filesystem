@@ -25,6 +25,10 @@ class UnsupportedEndpointError(Exception):
     pass
 
 
+class CyclicInputError(ValueError):
+    """A decoded YAML or CBOR value contains a reference to one of its ancestors."""
+
+
 class WorksheetNameCollisionError(ValueError):
     """Two distinct worksheet names resolve to the same destination table."""
 
