@@ -7,7 +7,7 @@ requires = [
 
 [project]
 name = "dlt-filesystem"
-description = "Filesystem and blob storage sources and destinations for dlt."
+description = "Filesystem and blob storage sources and destinations for dlt, across 13 file formats."
 readme = "README.md"
 license = "MIT"
 maintainers = [

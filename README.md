@@ -10,9 +10,11 @@ welcome.
 ## What it adds to dlt
 
 dlt's own `dlt.sources.filesystem` reads CSV, JSONL and Parquet, plus CSV through
-DuckDB. This package reads the 17 formats listed under [File formats](#file-formats),
-and its `readers` and `filesystem` take every argument dlt's versions take. A pipeline
-on dlt's filesystem source moves across by changing the import.
+DuckDB. This package has the 17 readers listed under [File formats](#file-formats).
+Its `readers` and `filesystem` accept every keyword argument dlt's versions accept,
+so a pipeline on dlt's filesystem source moves across by changing the import, as
+long as it passes `kwargs`, `client_kwargs` and `incremental` by keyword. CSV options
+are the exception: they go to Polars here, where dlt passes them to Pandas.
 
 `filesystem()` also accepts `require_file_match=True`, which raises when the selection
 matches no file instead of loading an empty table. The source classes below turn it on
@@ -20,9 +22,10 @@ when the URI names one file, and leave globs free to match nothing.
 
 For incremental loads by modification date, the lister reads the date from what each
 backend's listing returns. dlt's lookup table has no entry for `r2`, `oss`, `hdfs`,
-`webhdfs`, `smb`, `ftp`, `dbfs` or `oci`, and fails on any Arrow-backed client,
-whose listing uses a different key. Over HTTP the date comes from the
-`Last-Modified` header.
+`webhdfs`, `smb`, `ftp`, `dbfs` or `oci`, and it expects a backend-specific key that
+the Arrow-backed S3 and Azure clients do not carry. Over HTTP an incremental load
+needs a valid `Last-Modified` header. WebDAV is addressed over HTTP too, and asks the
+WebDAV server for each file's date.
 
 ## Install
 
@@ -37,20 +40,23 @@ whose extra is missing raises an error that names the extra to install.
 |---------------|-------------------------------------------------------------------|
 | `bson`        | BSON (pymongo)                                                    |
 | `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
-| `iterable`    | CBOR, MessagePack, XML and YAML readers                           |
+| `iterable`    | CBOR, MessagePack and XML readers, and PyYAML for YAML            |
 | `spreadsheet` | XLSX (read and write) and ODS (read)                              |
 | `vortex`      | Vortex (read and write), Python 3.11 and later                    |
-| `full`        | All of the above                                                  |
+| `full`        | All of the above (Vortex only on Python 3.11 and later)           |
 
 ```shell
 pip install 'dlt-filesystem[full]'
 ```
 
-YAML usually reads without `iterable`, because dlt itself depends on PyYAML.
+YAML reads and writes on the base install, because dlt itself depends on PyYAML.
 
 ## Usage
 
-The `readers` source works like dlt's, with one resource per reader:
+Both examples load into DuckDB, so they also need `pip install duckdb`.
+
+The `readers` source works like dlt's, with one resource per reader. Point
+`bucket_url` at your own bucket, with credentials configured the way dlt expects:
 
 ```python
 import dlt
@@ -62,7 +68,8 @@ pipeline.run(
 )
 ```
 
-The source classes take a URI and pick the reader from the file name:
+The source classes take a URI and pick the reader from the file name. This one
+reads `data/events.csv` under the working directory:
 
 ```python
 import dlt
@@ -77,29 +84,30 @@ pipeline.run(
 
 ## File formats
 
-The format comes from the file extension, or from a `#format` hint at the end of the
-path (`file://feed.dat#csv`). A `.gz` suffix is skipped when choosing the format, so
-`events.csv.gz` reads as CSV.
+The source classes take the format from the file extension, or from a `#format` hint
+(`file://feed.dat#csv`). The S3, R2, GCS, Azure and SFTP sources read the hint from
+the `table` argument rather than the URI. A `.gz` suffix is skipped when choosing the
+format, so `events.csv.gz` reads as CSV.
 
-| Format               | Keys                      | Read | Write | Extra         |
-|----------------------|---------------------------|------|-------|---------------|
-| CSV (Polars)         | `csv`                     | yes  | yes   |               |
-| CSV without a header | `csv_headless`            | yes  | no    |               |
-| CSV (DuckDB)         | `csv_duckdb`              | yes  | no    | `duckdb`      |
-| JSON                 | `json`                    | yes  | yes   |               |
-| JSON Lines           | `jsonl`                   | yes  | yes   |               |
-| Parquet              | `parquet`                 | yes  | yes   |               |
-| ORC                  | `orc`                     | yes  | yes   |               |
-| Avro                 | `avro`                    | yes  | no    |               |
-| Feather (Arrow IPC)  | `feather`, `arrow`, `ipc` | yes  | yes   |               |
-| Vortex               | `vortex`                  | yes  | yes   | `vortex`      |
-| Excel                | `xlsx`                    | yes  | yes   | `spreadsheet` |
-| OpenDocument         | `ods`                     | yes  | no    | `spreadsheet` |
-| BSON                 | `bson`                    | yes  | no    | `bson`        |
-| CBOR                 | `cbor`                    | yes  | no    | `iterable`    |
-| MessagePack          | `msgpack`                 | yes  | no    | `iterable`    |
-| XML                  | `xml`                     | yes  | no    | `iterable`    |
-| YAML                 | `yaml`, `yml`             | yes  | yes   | `iterable`    |
+| Format                 | Keys                      | Read | Write | Extra         |
+|------------------------|---------------------------|------|-------|---------------|
+| CSV (Polars)           | `csv`                     | yes  | yes   |               |
+| CSV without a header   | `csv_headless`            | yes  | no    |               |
+| CSV (DuckDB)           | `csv_duckdb`              | yes  | no    | `duckdb`      |
+| JSON                   | `json`                    | yes  | yes   |               |
+| JSON Lines             | `jsonl`                   | yes  | yes   |               |
+| Parquet                | `parquet`                 | yes  | yes   |               |
+| ORC                    | `orc`                     | yes  | yes   |               |
+| Avro                   | `avro`                    | yes  | no    |               |
+| Feather V2 (Arrow IPC) | `feather`, `arrow`, `ipc` | yes  | yes   |               |
+| Vortex                 | `vortex`                  | yes  | yes   | `vortex`      |
+| Excel                  | `xlsx`                    | yes  | yes   | `spreadsheet` |
+| OpenDocument           | `ods`                     | yes  | no    | `spreadsheet` |
+| BSON                   | `bson`                    | yes  | no    | `bson`        |
+| CBOR                   | `cbor`                    | yes  | no    | `iterable`    |
+| MessagePack            | `msgpack`                 | yes  | no    | `iterable`    |
+| XML                    | `xml`                     | yes  | no    | `iterable`    |
+| YAML                   | `yaml`, `yml`             | yes  | yes   |               |
 
 The Write column is what the `file://` destination writes. The bucket destinations
 write dlt's own file formats.
@@ -147,10 +155,12 @@ which pyarrow loads at runtime.
 The `file://` destination takes its format from the extension or a `#format` hint, as
 the sources do. It loads through dlt into a temporary directory, then writes the rows
 to the named file without dlt's `_dlt_*` columns. The bucket destinations hand the
-load to dlt's filesystem destination and write one table per run.
+load to dlt's filesystem destination, write one table per run, and leave out dlt's
+dataset directory level. A `layout` query parameter sets dlt's file layout.
 
-The destination classes implement the interface omniload calls (`dlt_dest`,
-`dlt_run_params` and `post_load`). They are not dlt destination factories.
+The destination classes are adapters rather than dlt destination factories. They
+expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
+and `dlt_dest` returns the dlt destination to load into.
 
 ## Documentation
 
