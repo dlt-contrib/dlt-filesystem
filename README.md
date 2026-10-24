@@ -49,7 +49,7 @@ whose extra is missing raises an error that names the extra to install.
 |---------------|-------------------------------------------------------------------|
 | `bson`        | BSON (pymongo)                                                    |
 | `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
-| `iterable`    | CBOR, MessagePack and XML readers, and PyYAML for YAML            |
+| `iterable`    | CBOR, MessagePack and XML readers                                 |
 | `spreadsheet` | XLSX (read and write) and ODS (read)                              |
 | `vortex`      | Vortex (read and write), Python 3.11 and later                    |
 | `full`        | All of the above (Vortex only on Python 3.11 and later)           |
