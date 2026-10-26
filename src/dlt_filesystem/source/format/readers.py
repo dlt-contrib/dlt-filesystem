@@ -139,13 +139,13 @@ def spreadsheet_selection_is_plural(hints: Mapping[str, Any]) -> bool:
     return True
 
 
-def _csv_kwargs(kwargs: Dict[str, Any], chunksize: int) -> Dict[str, Any]:
+def _csv_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """Keep typed options intact and cast only hints supplied as strings."""
     import polars as pl
 
     kwargs = dict(kwargs)
-    kwargs.setdefault("batch_size", chunksize)
-    # Polars 2 removed batch_size from read_csv; output slicing supplies our bound.
+    # Output slicing bounds what is yielded, so chunksize is not passed down as
+    # batch_size, a parse-buffer size. Polars 2 removed batch_size from read_csv.
     if is_polars_2():
         kwargs.pop("batch_size", None)
     strings = {key: value for key, value in kwargs.items() if isinstance(value, str)}
@@ -166,7 +166,7 @@ def read_csv(
     import polars as pl
 
     chunksize = _validated_chunksize(chunksize)
-    kwargs = _csv_kwargs(kwargs, chunksize)
+    kwargs = _csv_kwargs(kwargs)
     for file_obj in items:
         with file_obj.open() as file:
             frame = pl.read_csv(file, **kwargs)
@@ -192,7 +192,7 @@ def read_csv_headless(
     import polars as pl
 
     chunksize = _validated_chunksize(chunksize)
-    kwargs = _csv_kwargs(polars_kwargs, chunksize)
+    kwargs = _csv_kwargs(polars_kwargs)
     kwargs["has_header"] = False
     if column_names:
         kwargs["new_columns"] = _decode_column_selection(column_names)
