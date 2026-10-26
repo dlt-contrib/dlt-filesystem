@@ -1,9 +1,10 @@
 """Apache Avro object container reads.
 
 Avro is a **read** format here, and the last section of this file is why: Polars can
-write Avro, but its writer mis-frames a list column that holds an empty list before a
-non-empty one, and the resulting file is malformed on disk. Those cases are `xfail`ed
-rather than described in a comment, so the day Polars fixes them the suite says so.
+write Avro, but before 2.1 its writer mis-frames a list column that holds an empty list
+before a non-empty one, and the resulting file is malformed on disk. Those cases are
+`xfail`ed on the releases that carry the defect, which this package still supports
+(Polars 2.1 dropped Python 3.10), and pass from 2.1 on.
 
 The fixtures are hand-built (`testing.writer.write_avro`) rather than produced by
 `polars.DataFrame.write_avro`. A fixture written by the library under test can only
@@ -22,6 +23,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 from dlt.extract.exceptions import ResourceExtractionError
+from verlib2 import Version
 
 from dlt_filesystem.source.format.readers import read_avro
 from dlt_filesystem.source.fsspec.local import LocalFilesystemSource
@@ -33,6 +35,10 @@ from dlt_filesystem.testing.writer import (
     write_avro,
     write_avro_container,
 )
+
+# Polars 2.1 renders this error with its detail (`out-of-spec: Avro header ends early`);
+# earlier releases render only the variant name.
+_OUT_OF_SPEC = re.compile(r"OutOfSpec|out-of-spec")
 
 
 def _read_via_source(path, suffix=""):
@@ -473,7 +479,7 @@ def test_a_damaged_file_raises_rather_than_loading_partial_data(
     path.write_bytes(content)
     with pytest.raises(ResourceExtractionError) as excinfo:
         _read_via_source(path)
-    assert excinfo.match("OutOfSpec")
+    assert excinfo.match(_OUT_OF_SPEC)
 
 
 def _two_block_container(path, first, second):
@@ -534,7 +540,7 @@ def test_a_truncated_tail_separates_the_format_limit_from_the_reader_limit(tmp_p
     cut.write_bytes(raw[: boundary + 2])
     with pytest.raises(ResourceExtractionError) as excinfo:
         _read_via_source(cut)
-    assert excinfo.match("OutOfSpec")
+    assert excinfo.match(_OUT_OF_SPEC)
 
 
 def test_a_container_with_no_records_yields_no_rows(tmp_path):
@@ -651,14 +657,19 @@ def test_polars_writes_a_well_formed_list_column(tmp_path):
     assert _decode_avro_records(path.read_bytes()) == [[1, ["a"]], [2, []]]
 
 
+_POLARS_MISFRAMES_LISTS = Version(pl.__version__) < Version("2.1")
+
+
 @pytest.mark.xfail(
+    _POLARS_MISFRAMES_LISTS,
     strict=True,
     reason=(
         "polars.DataFrame.write_avro mis-frames a list column holding an empty list "
         "before a non-empty one: the list items are written without their block "
         "headers, so the record body overruns the block. Measured identically on "
-        "polars 1.34.0, 1.39.3, 1.43.1 and 2.0.0rc1. Remove this mark, and register "
-        "an Avro writer, once it is fixed upstream."
+        "polars 1.34.0, 1.39.3, 1.43.1, 2.0.0rc1 and 2.0.0; fixed in 2.1.0 "
+        "(pola-rs/polars#30061). Remove this mark, and register an Avro writer, once "
+        "the Polars floor reaches 2.1."
     ),
 )
 def test_polars_writes_a_well_formed_list_column_with_an_empty_list_first(tmp_path):
@@ -677,6 +688,7 @@ def test_polars_writes_a_well_formed_list_column_with_an_empty_list_first(tmp_pa
 
 
 @pytest.mark.xfail(
+    _POLARS_MISFRAMES_LISTS,
     strict=True,
     reason="same polars defect; this shape reads back without error and with wrong values",
 )
