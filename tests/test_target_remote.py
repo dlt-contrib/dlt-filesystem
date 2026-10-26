@@ -212,18 +212,21 @@ def test_dlt_dest_without_a_host_needs_a_bucket_in_the_table(table):
 @pytest.mark.xfail(
     raises=AssertionError,
     reason=(
-        "dlt_dest strips the table's slashes before splitting it, dlt_run_params "
-        "does not, so a trailing slash names an empty table. Remove this marker "
-        "when the two agree."
+        "dlt_dest strips the table's slashes only when the URI has no host, and "
+        "dlt_run_params never does, so a trailing slash names an empty table, and "
+        "with a host also moves the bucket URL down a level. Remove this marker "
+        "when both forms agree."
     ),
 )
-def test_dlt_run_params_ignores_a_trailing_slash():
-    uri = f"s3://?{S3_AUTH}"
-    dest = S3Destination().dlt_dest(uri, dest_table="bucket/table/")
+@pytest.mark.parametrize(
+    ("uri", "table"),
+    [(f"s3://?{S3_AUTH}", "bucket/table/"), (f"s3://bucket?{S3_AUTH}", "table/")],
+    ids=["no-host", "host"],
+)
+def test_a_trailing_slash_on_the_table_is_ignored(uri, table):
+    dest = S3Destination().dlt_dest(uri, dest_table=table)
     assert dest.config_params["bucket_url"] == "s3://bucket"
-    assert S3Destination().dlt_run_params(uri, "bucket/table/") == {
-        "table_name": "table"
-    }
+    assert S3Destination().dlt_run_params(uri, table) == {"table_name": "table"}
 
 
 def test_dlt_dest_passes_layout_through():
@@ -358,8 +361,14 @@ azure_write_cases = [
         {"account_name": "acct", "sas_token": "sv=2021&sig=a/b+c=="},
     ),
     (
-        "account_name=acct&tenant_id=t&client_id=c&client_secret=s",
-        {"tenant_id": "t", "client_id": "c", "client_secret": "s"},
+        "account_name=acct&tenant_id=t&client_id=c&client_secret=s"
+        "&account_host=acct.blob.core.chinacloudapi.cn",
+        {
+            "tenant_id": "t",
+            "client_id": "c",
+            "client_secret": "s",
+            "account_host": "acct.blob.core.chinacloudapi.cn",
+        },
     ),
     (
         f"{AZURE_AUTH}&account_host=acct.blob.core.chinacloudapi.cn",
