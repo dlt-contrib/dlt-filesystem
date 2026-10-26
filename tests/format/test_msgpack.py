@@ -293,6 +293,12 @@ WRITTEN_AND_READ_BACK = {
     "a naive datetime": (NAIVE, "2020-01-02T03:04:05"),
     "a naive datetime in a list": ([NAIVE], ["2020-01-02T03:04:05"]),
     "a naive datetime in a tuple": ((NAIVE,), ["2020-01-02T03:04:05"]),
+    # The writer turns an aware datetime into a timestamp itself, so a tuple has to be
+    # walked for it as a list is.
+    "an aware datetime in a tuple": (
+        (AWARE,),
+        [AWARE.astimezone(datetime.timezone.utc)],
+    ),
     "a naive datetime in a dict": ({"at": NAIVE}, {"at": "2020-01-02T03:04:05"}),
     "bytes": (b"hi", "aGk="),
     "a nested document": ({"a": [1, {"b": None}]}, {"a": [1, {"b": None}]}),
@@ -432,6 +438,7 @@ REFUSED_NUMBERS = {
     "one past the top": [{"v": 2**64}],
     "one past the bottom": [{"v": -(2**63) - 1}],
     "in a list": [{"v": [1, 2**64]}],
+    "in a tuple": [{"v": (1, 2**64)}],
     "in a map": [{"v": {"n": 2**70}}],
 }
 
