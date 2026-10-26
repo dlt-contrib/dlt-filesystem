@@ -220,6 +220,7 @@ def test_root_only_uri_path_defers_to_the_table():
     assert ref.bucket_url == "hdfs://example.com:8020"
     assert ref.file_glob == "path/to/data.parquet"
     assert ref.reader_name == "read_parquet"
+    assert ref.require_file_match is True
 
 
 def test_uri_path_beside_a_table_reads_the_uri_path_by_its_own_extension():
