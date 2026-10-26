@@ -50,16 +50,20 @@ GCS_AUTH = "credentials_base64=" + quote(
 )
 
 
-def load(destination, tmp_path: Path, table: str, runs: int = 1) -> None:
-    """Run ``ROWS`` into ``table`` through a real dlt pipeline, ``runs`` times."""
-    pipeline = dlt.pipeline(
+def pipeline(destination, pipelines_dir: Path):
+    return dlt.pipeline(
         pipeline_name="remote_destination",
         destination=destination,
         dataset_name="dataset",
-        pipelines_dir=str(tmp_path / "pipelines"),
+        pipelines_dir=str(pipelines_dir),
     )
-    for _ in range(runs):
-        pipeline.run(ROWS, table_name=table, loader_file_format="parquet")
+
+
+def load(destination, tmp_path: Path, table: str) -> None:
+    """Run ``ROWS`` into ``table`` through a real dlt pipeline."""
+    pipeline(destination, tmp_path / "pipelines").run(
+        ROWS, table_name=table, loader_file_format="parquet"
+    )
 
 
 def read_parquet(files: dict[str, bytes]) -> list[dict]:
@@ -137,15 +141,31 @@ def test_dataset_path_override_still_overrides_dlt():
 def test_blob_fs_writes_tables_at_the_bucket_root(tmp_path):
     """A table lands directly under the bucket, with no dataset directory between.
 
-    Two runs, so dlt also reads its own state and schema back through the
-    overridden path rather than only writing through it.
+    The second load runs from a fresh local pipeline, so dlt first restores the
+    first load's state from the bucket, and reads go through the overridden path
+    as well as writes.
     """
     bucket = tmp_path / "bucket"
-    dest = BlobFS(
-        bucket_url=bucket.as_uri(),
-        enable_dataset_name_normalization=False,
-    )
-    load(dest, tmp_path, "people", runs=2)
+
+    def destination():
+        return BlobFS(
+            bucket_url=bucket.as_uri(),
+            enable_dataset_name_normalization=False,
+        )
+
+    @dlt.resource(name="people")
+    def people(marker):
+        dlt.current.resource_state()["marker"] = marker
+        yield ROWS
+
+    first = pipeline(destination(), tmp_path / "first")
+    first.run(people("first"), loader_file_format="parquet")
+
+    second = pipeline(destination(), tmp_path / "second")
+    second.sync_destination()
+    resources = second.state["sources"]["remote_destination"]["resources"]
+    assert resources["people"]["marker"] == "first"
+    second.run(people("second"), loader_file_format="parquet")
 
     assert not (bucket / "dataset").exists()
     files = {path.name: path.read_bytes() for path in bucket.glob("people/*.parquet")}
@@ -296,10 +316,9 @@ def test_gcs_write_through(capturing_backend, tmp_path):
     assert user_columns(read_parquet(written)) == ROWS
     assert captured
     assert all(kwargs["project"] == "proj" for kwargs in captured)
-    assert all(
-        kwargs["token"]["client_email"] == SERVICE_ACCOUNT["client_email"]
-        for kwargs in captured
-    )
+    for kwargs in captured:
+        token = kwargs["token"]
+        assert {name: token.get(name) for name in SERVICE_ACCOUNT} == SERVICE_ACCOUNT
 
 
 # --- Azure -------------------------------------------------------------------------
