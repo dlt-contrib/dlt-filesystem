@@ -197,20 +197,21 @@ def read_csv_headless(
     # Polars selects named columns before applying new_columns. Select afterwards
     # so callers can address the names they supplied for this headerless file.
     selection = kwargs.pop("columns", None)
+    # Polars 1 includes the generated index in new_columns renaming, while
+    # Polars 2 names only data columns. Add the index after naming on both.
+    row_index = kwargs.pop("row_index_name", None)
+    row_index_offset = kwargs.pop("row_index_offset", 0)
     for file_obj in items:
         with file_obj.open() as file:
             frame = pl.read_csv(file, **kwargs)
             if not kwargs.get("new_columns"):
-                data_columns = [
-                    name
-                    for name in frame.columns
-                    if name != kwargs.get("row_index_name")
-                ]
+                data_columns = [name for name in frame.columns if name != row_index]
                 frame = frame.rename(
                     {name: f"unknown_col_{i}" for i, name in enumerate(data_columns)}
                 )
+            if row_index is not None:
+                frame = frame.with_row_index(row_index, row_index_offset)
             if selection is not None:
-                row_index = kwargs.get("row_index_name")
                 input_columns = [name for name in frame.columns if name != row_index]
                 requested = [selection] if isinstance(selection, str) else selection
                 selected = [
