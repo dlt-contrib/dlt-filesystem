@@ -97,6 +97,9 @@ def test_select_carrier(uri: str, table: str | None, carrier: Carrier):
         ("s3://bucket/data.txt#jsonl", "x#csv", "read_jsonl"),
         # a table directive applies where the URI carries none
         ("s3://bucket/data.txt", "data.txt#csv_headless", "read_csv_headless"),
+        # a hint value is not a file extension
+        ("s3://", "bucket/book.xlsx#sheet_name=Q1.csv", "read_excel"),
+        ("s3://bucket", "book.xlsx#sheet_name=Q1.csv", "read_excel"),
     ],
 )
 def test_select_reader(uri: str, table: str, reader: str):

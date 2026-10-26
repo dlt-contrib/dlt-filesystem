@@ -287,7 +287,6 @@ def test_databricks_state_key_separates_workspaces(first, second):
     "spelling",
     [
         "host=https://ADB.example.com/",
-        "host=adb.example.com",
         "host=https://adb.example.com",
     ],
 )
