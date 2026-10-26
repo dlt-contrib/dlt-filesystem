@@ -35,7 +35,11 @@ class OCISource(FilesystemSource):
 
         # Bundle essential information to infer filesystem wrapper.
         locator = FilesystemLocator(
-            name="OCI", fs_class=self.fs_class, uri=uri, path=table
+            name="OCI",
+            fs_class=self.fs_class,
+            uri=uri,
+            path=table,
+            userinfo_in_bucket=True,
         )
 
         # Decode individual options (type casting, default values, sanity checks). Schema:

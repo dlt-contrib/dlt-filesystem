@@ -1,10 +1,13 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.error import UnsupportedEndpointError
-from dlt_filesystem.source.format.registry import supported_file_format_message
+from dlt_filesystem.source.format.registry import (
+    reader_for_format,
+    supported_file_format_message,
+)
 from dlt_filesystem.source.impl.util import (
     _is_absolute_local,
     _split_dir_glob,
@@ -12,9 +15,37 @@ from dlt_filesystem.source.impl.util import (
 )
 from dlt_filesystem.source.router import (
     determine_endpoint,
+    merge_directives,
     parse_fragment,
     source_selects_single_file,
 )
+
+
+def _selection_spec(uri: str, table: str) -> Tuple[str, Optional[str], Dict[str, str]]:
+    """Split a local selection into ``(spec, format_hint, hints)``.
+
+    Everything after ``file://`` is the path spec, a host included, so the blob
+    rule that a host-only URI defers to the table does not apply here; the table is
+    the spec only when the URI names nothing (``file://`` + ``x.csv``). ``spec``
+    still carries its own ``#fragment``, if any. Directives the URI does not carry
+    come from the table's fragment, as they do for every other source.
+    """
+    spec = uri.split("://", 1)[1] if "://" in uri else uri
+    spec = spec.strip()
+    if not spec:
+        spec = table.strip()
+        _, format_hint, hints = parse_fragment(spec)
+        return spec, format_hint, hints
+    _, format_hint, hints = parse_fragment(spec)
+    format_hint, hints = merge_directives(format_hint, hints, table)
+    return spec, format_hint, hints
+
+
+def _local_reader(path: str, format_hint: Optional[str]) -> str:
+    """Name the reader from a ``#format`` directive, else the path's extension."""
+    if format_hint is not None:
+        return reader_for_format(format_hint)
+    return determine_endpoint(path, path)
 
 
 class LocalFilesystemSource(FilesystemSource):
@@ -51,11 +82,10 @@ class LocalFilesystemSource(FilesystemSource):
             spreadsheet_selection_is_plural,
         )
 
-        spec = uri.split("://", 1)[1] if "://" in uri else uri
-        spec = spec.strip() or table.strip()
-        path, _, hints = parse_fragment(spec)
+        spec, format_hint, hints = _selection_spec(uri, table)
+        path, _, _ = parse_fragment(spec)
         try:
-            endpoint = determine_endpoint(spec, path)
+            endpoint = _local_reader(path, format_hint)
         except (UnsupportedEndpointError, ValueError):
             self.validate_reader(None)
             return False
@@ -77,10 +107,7 @@ class LocalFilesystemSource(FilesystemSource):
     ):
         # Everything after file:// is the path spec; fall back to the source table for
         # the blob/sftp-style split form (--source-uri file:// --source-table x.csv).
-        spec = uri.split("://", 1)[1] if "://" in uri else uri
-        spec = spec.strip()
-        if not spec:
-            spec = table.strip()
+        spec, format_hint, hints = _selection_spec(uri, table)
         if not spec:
             raise MissingConnectorOption("path", "file URI")
 
@@ -88,14 +115,13 @@ class LocalFilesystemSource(FilesystemSource):
         # hints) before splitting into dir/glob, so file://feed.dat#csv and
         # file://book.xlsx#sheet_name=foo glob the bare path. Literal '#' in a path is
         # preserved by parse_fragment when the fragment isn't a valid directive.
-        path, _, hints = parse_fragment(spec)
+        path, _, _ = parse_fragment(spec)
 
-        # Resolve the reader from the original hinted string (determine_endpoint re-runs
-        # split_format_hint internally and falls back to the file extension). It wraps an
-        # unrecognized extension into a plain ValueError, so catch both that and the
-        # underlying UnsupportedEndpointError and surface the supported-format list.
+        # determine_endpoint wraps an unrecognized extension into a plain ValueError,
+        # so catch both that and the underlying UnsupportedEndpointError and surface
+        # the supported-format list.
         try:
-            endpoint = determine_endpoint(spec, path)
+            endpoint = _local_reader(path, format_hint)
         except (UnsupportedEndpointError, ValueError):
             self.validate_reader(None)
             raise ValueError(supported_file_format_message("Local file")) from None

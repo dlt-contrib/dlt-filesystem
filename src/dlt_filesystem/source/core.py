@@ -8,7 +8,6 @@ from dlt_filesystem.source.adapter import filesystem, readers
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.hints import prepare_reader_hints
 from dlt_filesystem.source.format.registry import (
-    reader_for_format,
     supported_file_format_message,
 )
 from dlt_filesystem.source.model import (
@@ -16,7 +15,7 @@ from dlt_filesystem.source.model import (
     FilesystemReference,
     ResourceOptions,
 )
-from dlt_filesystem.source.router import determine_endpoint
+from dlt_filesystem.source.router import select_reader
 
 
 def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResource]:
@@ -89,17 +88,10 @@ def infer_resource(
     # Decode into base url and url path / file glob, and apply sanity checks.
     locator.validate()
 
-    # TODO: Naming things: Rename `determine_endpoint` to `infer_reader`.
     try:
-        # A `#format` the selection names wins over the file extension, whichever
-        # carrier it rode in on. `determine_endpoint` reads it from the table form
-        # itself; this also honours it on the URI, which for an HTTP URL is the
-        # only place it can be written.
-        endpoint = (
-            reader_for_format(locator.format_hint)
-            if locator.format_hint
-            else determine_endpoint(locator.path, locator.file_glob)
-        )
+        # A `#format` the selection names wins over the file extension, and the
+        # extension is read off the same carrier the files are listed from.
+        endpoint = select_reader(locator.uri, locator.path)
     except UnsupportedEndpointError:
         raise ValueError(supported_file_format_message(locator.name)) from None
 
@@ -112,6 +104,7 @@ def infer_resource(
             bucket_url=locator.bucket_url,
             file_glob=locator.file_glob,
             reader_name=endpoint,
+            storage_namespace=locator.storage_namespace,
             # Require a match only when the locator's unparsed carrier names one
             # concrete file. This keeps wildcard discovery empty-safe.
             require_file_match=locator.require_file_match,

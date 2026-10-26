@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional, Type, Union
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
 from dlt.common.configuration import configspec, resolve_type
 from dlt.common.configuration.specs import CredentialsConfiguration
@@ -141,6 +141,13 @@ class FilesystemLocator:
     accept_no_bucket_name: Optional[bool] = False
     accept_no_host_name: Optional[bool] = False
     query_mode: QueryMode = QueryMode.CONNECTOR_OPTIONS
+    #: The netloc's userinfo addresses the bucket rather than carrying a
+    #: credential (OCI's `bucket@namespace`), so `bucket_url` keeps it.
+    userinfo_in_bucket: bool = False
+    #: Secret-free identity of the service, the first part of the incremental
+    #: resource-state key. A source whose `bucket_url` cannot tell two services
+    #: apart sets it.
+    storage_namespace: str = "filesystem"
     #: The URI query, verbatim, when `query_mode` is `ADDRESS`; empty otherwise.
     #: Never merged into `fs_kwargs`, and never part of `file_glob`, so identity,
     #: reader selection and error messages all stay free of it.
@@ -188,12 +195,26 @@ class FilesystemLocator:
 
     @property
     def bucket_url(self) -> str:
-        """URL without credentials and path."""
+        """URL without credentials and path.
 
-        if self.accept_no_host_name:
-            return self.uri
+        - A filesystem without hosts or buckets (`accept_no_host_name`) is addressed
+          from its root, `<scheme>:/`, and `file_glob` holds the whole path. The
+          single slash is what dlt accepts as a URL with a path; `<scheme>://` has
+          neither a path nor a netloc. Nothing from the URI's query reaches it, so a
+          rotated token leaves the incremental state key alone.
+        - A URI with a host names the server or bucket.
+        - A URI without one takes the bucket from the selection, so the split form
+          (`dropbox://?token=...` + `path/to/data.csv`) addresses what the URI form
+          (`dropbox://path/to/data.csv?token=...`) does.
+        """
 
         address = self.options.address
+        if self.accept_no_host_name:
+            return f"{address['protocol']}:/"
+
+        if self.userinfo_in_bucket and self._bucket_netloc:
+            return f"{address['protocol']}://{self._bucket_netloc}"
+
         if "host" in address and ("port" in address or self.default_port is not None):
             return f"{address['protocol']}://{address['host']}:{address.get('port', self.default_port)}"
         elif "host" in address:
@@ -203,8 +224,10 @@ class FilesystemLocator:
         #   dlt.common.configuration.exceptions.ConfigurationValueError: File `path`
         #   and `netloc` are missing. Field `bucket_url` of `FilesystemClientConfiguration`
         #   must contain valid url with a path or host:password component.
-        # When that happens, try to borrow a hostname from other suitable parameters
-        # like `endpoint`.
+        # When that happens, take the bucket the selection names, and only then try to
+        # borrow a hostname from other suitable parameters like `endpoint`.
+        elif self.bucket_name:
+            return f"{address['protocol']}://{self.bucket_name}"
         else:
             surrogate_host_port = self.options.params.get("endpoint")
             if not surrogate_host_port:
@@ -221,12 +244,27 @@ class FilesystemLocator:
         return bucket_name
 
     @property
+    def _bucket_netloc(self) -> str:
+        """The bucket the selection names, userinfo included."""
+        netloc = urlsplit(self.uri).netloc
+        if netloc:
+            return netloc
+        table = self.path.strip()
+        if "://" in table:
+            return urlsplit(table).netloc
+        return self.bucket_name
+
+    @property
     def file_glob(self) -> str:
         """URL path component that describes the file glob."""
         # FIXME: Inline imports!
         from dlt_filesystem.source.router import parse_uri
 
-        _, file_glob = parse_uri(self.uri, self.path)
+        bucket_name, file_glob = parse_uri(self.uri, self.path)
+        if self.accept_no_host_name:
+            # Rooted at `<scheme>:/`, so whatever `parse_uri` split off as a bucket
+            # (`/Volumes/...` on the split form) is the path's first segment.
+            return "/".join(part for part in (bucket_name, file_glob) if part)
         return file_glob
 
     @property
@@ -235,19 +273,6 @@ class FilesystemLocator:
         from dlt_filesystem.source.router import source_selects_single_file
 
         return source_selects_single_file(self.uri, self.path)
-
-    @property
-    def format_hint(self) -> Optional[str]:
-        """The ``#format`` token the source selection names, if it names one.
-
-        Read off the same carrier as :attr:`hints`, so a URI-borne ``#csv`` and a
-        URI-borne ``#sheet_name=foo`` are honoured on the same terms.
-        """
-        from urllib.parse import urlparse
-
-        from dlt_filesystem.source.router import blob_directives
-
-        return blob_directives(urlparse(self.uri), self.path)[0]
 
     @property
     def hints(self) -> Dict[str, Any]:

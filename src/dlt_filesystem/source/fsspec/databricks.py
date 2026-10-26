@@ -23,6 +23,20 @@ class DatabricksSource(FilesystemSource):
 
         return DatabricksFileSystem
 
+    def workspace_namespace(self, fs_kwargs: Dict[str, Any]) -> str:
+        """Name the workspace without secrets: its host, else its profile.
+
+        Each kind is tagged, so a profile spelled like a host cannot share state
+        with that host. A host the SDK resolves from the environment or a profile
+        file is not visible here, and reads as the profile or `default`.
+        """
+        host = self.endpoint_namespace(fs_kwargs.get("host"), "")
+        if host:
+            return f"databricks:host:{host}"
+        if fs_kwargs.get("profile"):
+            return f"databricks:profile:{fs_kwargs['profile']}"
+        return "databricks:default"
+
     def dlt_source(
         self,
         uri: str,
@@ -75,6 +89,10 @@ class DatabricksSource(FilesystemSource):
                 "verbose_debug_log",
             ],
         )
+
+        # The root-addressed `bucket_url` carries no workspace, so the incremental
+        # state key gets one here, from the options the client is built with.
+        locator.storage_namespace = self.workspace_namespace(fs_kwargs)
 
         # Create filesystem and dlt resource wrapper.
         fs = self.fs_class(**fs_kwargs)
