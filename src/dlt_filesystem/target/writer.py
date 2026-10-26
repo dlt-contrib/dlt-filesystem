@@ -294,10 +294,11 @@ def write_cbor(path: str, rows: list[dict]) -> None:
     would add an offset the source never had. ``bytes`` read back as the base64 string
     the JSON writers write, and NaN and infinity stay floats.
 
-    A map key that is a string, bytes, an integer, a float, a boolean or null is written
-    as itself, and the reader returns it so. Any other key is refused, naming the
-    column: spelling it could land on a string key already in the map and drop that
-    entry's value, and keeping the set small keeps the keys a reader gets plain.
+    A map key that is a string, an integer, a float, a boolean or null is written as
+    itself, and the reader returns it so. Any other key is refused, naming the column:
+    spelling it could land on a string key already in the map and drop that entry's
+    value, and a ``bytes`` key reads back undecoded, which a dlt pipeline cannot load
+    (its JSON has no spelling for one), the reason ``write_msgpack`` refuses it too.
 
     All of that is done in one pass over the rows before encoding, so the encoder's
     fallback only ever spells a value, and the whole load is encoded in memory before
@@ -324,7 +325,7 @@ def write_cbor(path: str, rows: list[dict]) -> None:
 
 #: The key types ``write_cbor`` writes. ``bool`` is named although ``int`` already
 #: covers it, so narrowing ``int`` cannot drop it.
-_CBOR_KEYS = (str, bytes, bool, int, float, type(None))
+_CBOR_KEYS = (str, bool, int, float, type(None))
 
 
 def _prepared_for_cbor(column: str | None, value):
@@ -373,8 +374,8 @@ def _prepared_for_cbor(column: str | None, value):
                     f"{type(key).__name__} key {key!r}"
                 )
                 raise ValueError(
-                    f"{where}, and a CBOR export keeps only string, bytes, integer, "
-                    "float, boolean and null keys. Spell the key as a string."
+                    f"{where}, and a CBOR export keeps only string, integer, float, "
+                    "boolean and null keys. Spell the key as a string."
                 )
             prepared[key] = _prepared_for_cbor(key if column is None else column, item)
         return prepared

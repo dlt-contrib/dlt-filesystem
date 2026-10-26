@@ -282,7 +282,6 @@ WRITTEN_AND_READ_BACK = {
     "a nested document": ({"a": [1, {"b": None}]}, {"a": [1, {"b": None}]}),
     # The reader hands a key CBOR has a type for back as written.
     "an integer key": ({1: "x"}, {1: "x"}),
-    "a bytes key": ({b"k": "x"}, {b"k": "x"}),
     # An offset that is not a whole number of minutes is written as the same instant in
     # UTC: cbor2 5.x decodes none of them, 6.x rejects one under a minute and moves the
     # instant of a negative one under a second. A historical zone's local mean time,
@@ -433,6 +432,9 @@ REFUSED_KEYS = {
     ],
     "a naive datetime column name": [{NAIVE: "x"}],
     "a tuple key in a list": [{"v": [{(1, 2): "x"}]}],
+    # Read back undecoded, which dlt's JSON cannot serialize, so a pipeline reading the
+    # file fails at extract.
+    "a bytes key": [{"v": {b"k": "x"}}],
     # A mapping that is not a dict is walked the same way.
     "a time key in a UserDict": [
         {"v": collections.UserDict({datetime.time(3, 4): "a", "03:04:00": "b"})}
@@ -444,7 +446,7 @@ REFUSED_KEYS = {
 def test_write_refuses_a_key_of_another_type(tmp_path, rows):
     path = tmp_path / "out.cbor"
 
-    with pytest.raises(ValueError, match="keeps only string, bytes"):
+    with pytest.raises(ValueError, match="keeps only string, integer"):
         writer_for_format("cbor")(str(path), rows)
 
     assert not path.exists()
