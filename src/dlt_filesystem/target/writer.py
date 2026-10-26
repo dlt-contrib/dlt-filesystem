@@ -521,7 +521,7 @@ def write_msgpack(path: str, rows: list[dict]) -> None:
             "Install it with: pip install 'dlt-filesystem[iterable]'"
         ) from e
 
-    prepared = [_prepared_for_msgpack(None, row, msgpack.Timestamp) for row in rows]
+    prepared = [_prepared_for_msgpack(None, row, msgpack) for row in rows]
     packer = msgpack.Packer(default=_json_spelling)
     encoded = b"".join(packer.pack(row) for row in prepared)
     with open(path, "wb") as handle:
@@ -531,15 +531,17 @@ def write_msgpack(path: str, rows: list[dict]) -> None:
 _EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
 
 
-def _prepared_for_msgpack(column: str | None, value, timestamp: type):
+def _prepared_for_msgpack(column: str | None, value, msgpack):
     """Return ``value`` as ``write_msgpack`` packs it, refusing what cannot read back.
 
     Walks dicts, lists and tuples, building new ones rather than changing the caller's
     rows. An aware ``datetime`` becomes a ``msgpack.Timestamp`` here, from exact integer
     arithmetic, rather than being left to the packer: msgpack's pure-Python packer
-    converts one through a float and hands a subclass (pendulum's, which the reader
-    itself returns) straight to that conversion, so an instant before 1970 came back a
-    second out, or not at all, depending on the msgpack release.
+    hands a subclass (pendulum's, which the reader itself returns) straight to
+    ``Timestamp.from_datetime``, past the fallback hook, and depending on the release
+    that conversion goes through a float or refuses the subclass, so an instant before
+    1970 came back a second out, or not at all. A ``msgpack.ExtType`` is a tuple but is
+    passed through whole, so it is still written as an extension.
     """
     if isinstance(value, dict):
         prepared = {}
@@ -556,13 +558,15 @@ def _prepared_for_msgpack(column: str | None, value, timestamp: type):
                     "the key as a string."
                 )
             prepared[key] = _prepared_for_msgpack(
-                key if column is None else column, item, timestamp
+                key if column is None else column, item, msgpack
             )
         return prepared
     if isinstance(value, list):
-        return [_prepared_for_msgpack(column, item, timestamp) for item in value]
+        return [_prepared_for_msgpack(column, item, msgpack) for item in value]
+    if isinstance(value, msgpack.ExtType):
+        return value
     if isinstance(value, tuple):
-        return tuple(_prepared_for_msgpack(column, item, timestamp) for item in value)
+        return tuple(_prepared_for_msgpack(column, item, msgpack) for item in value)
     if isinstance(value, int) and not isinstance(value, bool):
         if not _fits_64_bits(value):
             raise ValueError(
@@ -596,7 +600,7 @@ def _prepared_for_msgpack(column: str | None, value, timestamp: type):
         # `timedelta` keeps its seconds and microseconds non-negative, so a moment
         # before 1970 is negative whole seconds plus a positive fraction, which is
         # the shape the timestamp extension takes.
-        return timestamp(
+        return msgpack.Timestamp(
             since.days * 86_400 + since.seconds, since.microseconds * 1_000
         )
     return value

@@ -319,6 +319,16 @@ def test_write_round_trips_through_the_reader(tmp_path, value, expected):
         assert row["v"].utcoffset() == datetime.timedelta(0)
 
 
+def test_write_keeps_an_ext_type_an_extension(tmp_path):
+    """An `ExtType` is a namedtuple, and a tuple walked into a new one would be written
+    as an array. Read back the way the reader reads any custom extension."""
+    [row] = _write_and_read(
+        tmp_path / "out.msgpack", [{"x": msgpack.ExtType(7, b"raw")}]
+    )
+
+    assert row == {"x": {"code": 7, "data": base64.b64encode(b"raw").decode("ascii")}}
+
+
 def test_write_keeps_nan_a_float(tmp_path):
     """NaN compares unequal to itself, so it is asserted apart from the table above."""
     [row] = _write_and_read(tmp_path / "out.msgpack", [{"v": math.nan}])
