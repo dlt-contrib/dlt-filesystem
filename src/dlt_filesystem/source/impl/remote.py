@@ -11,8 +11,8 @@ from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.model import strip_run_options
 from dlt_filesystem.source.router import (
     blob_hints,
-    determine_endpoint,
     parse_uri,
+    select_reader,
     source_selects_single_file,
 )
 from dlt_filesystem.util.auth import (
@@ -109,7 +109,7 @@ class GCSSource(FilesystemSource):
         fs = self.fs_class(**gcs_filesystem_kwargs(strip_run_options(params), kwargs))
 
         try:
-            endpoint: str = determine_endpoint(table, path_to_file)
+            endpoint: str = select_reader(parsed_uri, table)
         except UnsupportedEndpointError:
             raise ValueError(supported_file_format_message("GCS")) from None
         except Exception as e:
@@ -186,7 +186,7 @@ class S3CompatibleSource(FilesystemSource):
         fs = self._filesystem(fs_kwargs)
 
         try:
-            endpoint: str = determine_endpoint(table, path_to_file)
+            endpoint: str = select_reader(parsed_uri, table)
         except UnsupportedEndpointError:
             raise ValueError(supported_file_format_message(self.fs_name)) from None
         except Exception as e:
@@ -262,7 +262,7 @@ class AzureSource(FilesystemSource):
         fs = self._filesystem(kwargs)
 
         try:
-            endpoint: str = determine_endpoint(table, path_to_file)
+            endpoint: str = select_reader(parsed_uri, table)
         except UnsupportedEndpointError:
             raise ValueError(supported_file_format_message("Azure")) from None
         except Exception as e:
@@ -337,7 +337,7 @@ class SFTPSource(FilesystemSource):
         bucket_url = f"sftp://{host}:{port}"
 
         try:
-            endpoint = determine_endpoint(table, path_to_file)
+            endpoint = select_reader(parsed_uri, table)
         except UnsupportedEndpointError:
             raise ValueError(supported_file_format_message("SFTP")) from None
         except Exception as e:

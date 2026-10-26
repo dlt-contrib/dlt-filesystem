@@ -47,16 +47,11 @@ class FilesystemSource:
         from dlt_filesystem.source.format.readers import (
             spreadsheet_selection_is_plural,
         )
-        from dlt_filesystem.source.router import (
-            blob_hints,
-            determine_endpoint,
-            parse_uri,
-        )
+        from dlt_filesystem.source.router import blob_hints, select_reader
 
         parsed_uri = urlparse(uri)
-        _, path = parse_uri(parsed_uri, table)
         try:
-            endpoint = determine_endpoint(table, path)
+            endpoint = select_reader(parsed_uri, table)
         except (UnsupportedEndpointError, ValueError):
             return False
         return endpoint in {

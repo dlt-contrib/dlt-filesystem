@@ -1,3 +1,5 @@
+import re
+from enum import Enum
 from typing import Any, Dict, Optional, Tuple, TypeAlias, Union
 from urllib.parse import ParseResult, parse_qsl, urlparse
 
@@ -19,6 +21,34 @@ BucketName: TypeAlias = str
 FileGlob: TypeAlias = str
 
 
+class Carrier(str, Enum):
+    """Which of a source's two inputs carries the path of its selection."""
+
+    URI = "uri"
+    TABLE = "table"
+
+
+def select_carrier(uri: Union[ParseResult, str], table: Optional[str]) -> Carrier:
+    """Decide whether the URI path or ``table`` carries the selection's path.
+
+    The URI path wins whenever it names anything beyond ``/``, and ``table`` is
+    read only when it does not: the split form, ``s3://?...`` + ``bucket/data.csv``
+    or ``hdfs://host:8020/`` + ``path/data.csv``. A non-empty ``table`` beside a
+    URI path is ignored for the path.
+
+    Every derivation of the path reads this answer instead of deciding again: the
+    bucket and glob (:func:`parse_uri`), the single-file classification
+    (:func:`source_selects_single_file`) and the reader a file extension selects
+    (:func:`select_reader`). ``#`` directives are not paths and are read off both
+    carriers (:func:`blob_directives`).
+    """
+    if isinstance(uri, str):
+        uri = urlparse(uri)
+    if uri.path.strip().strip("/") or not (table or "").strip():
+        return Carrier.URI
+    return Carrier.TABLE
+
+
 def parse_uri(uri: Union[ParseResult, str], table: str) -> Tuple[BucketName, FileGlob]:
     """
     parse the URI of a blob storage and
@@ -37,6 +67,7 @@ def parse_uri(uri: Union[ParseResult, str], table: str) -> Tuple[BucketName, Fil
       table: "file-glob"
 
     The first form is the preferred method. Other forms are supported but discouraged.
+    Which of the two carries the path is :func:`select_carrier`'s decision.
     """
 
     if isinstance(uri, str):
@@ -47,7 +78,7 @@ def parse_uri(uri: Union[ParseResult, str], table: str) -> Tuple[BucketName, Fil
 
     # Form: scheme://bucket-name/file-glob
     # Note: This form was previously slated for deprecation.
-    if table == "" or uri.path.strip() != "":
+    if select_carrier(uri, table) is Carrier.URI:
         return host, uri.path.lstrip("/")
 
     table_uri = urlparse(table)
@@ -55,8 +86,11 @@ def parse_uri(uri: Union[ParseResult, str], table: str) -> Tuple[BucketName, Fil
     if host != "":
         return host, table_uri.path.lstrip("/")
 
-    if table_uri.hostname:
-        return table_uri.hostname, table_uri.path.lstrip("/")
+    # The netloc rather than `hostname`, which lowercases: a bucket or folder name
+    # keeps its case on this form as it does on the URI form above.
+    table_host = re.sub(r":\d*$", "", table_uri.netloc.rpartition("@")[2])
+    if table_host:
+        return table_host, table_uri.path.lstrip("/")
 
     parts = table_uri.path.lstrip("/").split("/", maxsplit=1)
     if len(parts) != 2:
@@ -152,7 +186,7 @@ def _raw_uri_path(uri: str) -> str:
 def source_selects_single_file(uri: str, table: Optional[str]) -> bool:
     """Return whether the raw source carrier selects one concrete file.
 
-    The carrier choice mirrors :func:`parse_uri`, but the URI path comes from the
+    The carrier is :func:`select_carrier`'s, but the URI path comes from the
     original string so question-mark globs and glob syntax after a literal ``#``
     remain visible. A URI tail made entirely of ``key=value`` segments is treated
     as connection parameters; if a glob also contains ``?``, only the final query
@@ -162,8 +196,7 @@ def source_selects_single_file(uri: str, table: Optional[str]) -> bool:
     bucket or path.
     """
     table = (table or "").strip()
-    parsed_uri = urlparse(uri)
-    from_uri = bool(parsed_uri.path.strip()) or not table
+    from_uri = select_carrier(uri, table) is Carrier.URI
     carrier = _raw_uri_path(uri) if from_uri else table
     if from_uri or "://" in carrier:
         carrier_query = urlparse(carrier).query
@@ -187,46 +220,70 @@ def split_format_hint(table: str) -> Tuple[str, Optional[str]]:
     return path, format_hint
 
 
+def merge_directives(
+    format_hint: Optional[str], hints: Dict[str, str], table: Optional[str]
+) -> Tuple[Optional[str], Dict[str, str]]:
+    """Fill the directives a URI does not carry from ``table``'s fragment.
+
+    A ``#fragment`` directs the reader rather than naming a file, so unlike the
+    path it is not tied to one carrier: a table-borne ``#csv_headless`` beside a
+    URI path applies, which is also how a programmatic ``file_format=`` reaches
+    the HTTP source. Each directive is taken from the URI when the URI carries
+    it, so the ``#format`` token comes from the URI if it names one and hints
+    merge per key with the URI's winning.
+    """
+    _, table_format, table_hints = parse_fragment((table or "").strip())
+    return format_hint or table_format, {**table_hints, **hints}
+
+
 def blob_directives(
     parsed_uri: ParseResult, table: str
 ) -> Tuple[Optional[str], Dict[str, str]]:
-    """Extract the ``#format`` token and ``#key=value`` hints a source URI carries.
+    """Extract the ``#format`` token and ``#key=value`` hints of a source selection.
 
-    Both come out of the same fragment and off the same carrier, so they are read
-    together: reading only the hints left a URI-borne ``#csv`` silently ignored
-    while ``#sheet_name=foo`` beside it worked. That asymmetry is invisible for a
-    blob source, whose fragment conventionally rides ``--source-table``, and
-    unavoidable for an HTTP URL, where the URI is the only carrier there is.
-
-    See :func:`blob_hints` for how the carrier is chosen.
+    Read off both carriers through :func:`merge_directives`, the URI's fragment
+    first. :func:`urllib.parse.urlparse` has already split the URI's fragment
+    into ``parsed_uri.fragment``; it is re-attached to the path so a literal
+    ``#`` in an object name (``vendor#1/data.csv``) stays literal.
     """
-    if parsed_uri.path.strip() or not table.strip():
-        if parsed_uri.fragment:
-            _, format_hint, hints = parse_fragment(
-                f"{parsed_uri.path}#{parsed_uri.fragment}"
-            )
-            return format_hint, hints
-        return None, {}
-    _, format_hint, hints = parse_fragment(table)
-    return format_hint, hints
+    format_hint: Optional[str] = None
+    hints: Dict[str, str] = {}
+    if parsed_uri.fragment:
+        _, format_hint, hints = parse_fragment(
+            f"{parsed_uri.path}#{parsed_uri.fragment}"
+        )
+    return merge_directives(format_hint, hints, table)
 
 
 def blob_hints(parsed_uri: ParseResult, table: str) -> Dict[str, str]:
-    """Extract ``#key=value`` reader hints for a blob (S3/GCS) source URI.
+    """Extract ``#key=value`` reader hints for a blob source selection.
 
-    Mirrors :func:`parse_uri`'s carrier choice so hints always track the file
-    that is actually loaded. In the recommended form the fragment rides
-    ``--source-table`` (``s3://?...`` + table ``bucket/book.xlsx#sheet_name=foo``); in
-    the deprecated URI-path form (``s3://bucket/book.xlsx#sheet_name=foo``)
-    :func:`urllib.parse.urlparse` strips it into ``parsed_uri.fragment``.
-    ``parse_uri`` uses the URI-path form whenever ``parsed_uri.path`` is set (or
-    ``table`` is empty), so the fragment is read from there in that case and only
-    falls back to ``table`` for the pure table form -- otherwise a contradictory
-    ``s3://bucket/a.csv#x`` + ``--source-table b.csv#y`` would attach ``b``'s
-    hints to the ``a`` file that ``parse_uri`` actually loads. The bucket and
-    glob still come from :func:`parse_uri`.
+    The hints half of :func:`blob_directives`. In the recommended form the
+    fragment rides ``--source-table`` (``s3://?...`` + table
+    ``bucket/book.xlsx#sheet_name=foo``); on the URI-path form it rides the URI
+    (``s3://bucket/book.xlsx#sheet_name=foo``). Where both name the same key, the
+    URI's value wins.
     """
     return blob_directives(parsed_uri, table)[1]
+
+
+def select_reader(uri: Union[ParseResult, str], table: str) -> str:
+    """Name the reader for a source selection.
+
+    A ``#format`` directive wins (:func:`blob_directives`). Otherwise the file
+    extension decides, read off the carrier :func:`select_carrier` chose, so the
+    reader and the files always come from the same place: ``s3://bucket/a.csv``
+    with a table of ``b.parquet`` reads ``a.csv`` as CSV.
+    """
+    if isinstance(uri, str):
+        uri = urlparse(uri)
+    format_hint, _ = blob_directives(uri, table)
+    if format_hint is not None:
+        return reader_for_format(format_hint)
+    _, file_glob = parse_uri(uri, table)
+    if select_carrier(uri, table) is Carrier.URI:
+        return determine_endpoint(file_glob, file_glob)
+    return determine_endpoint(table, file_glob)
 
 
 def determine_endpoint(table: str, path: str) -> str:

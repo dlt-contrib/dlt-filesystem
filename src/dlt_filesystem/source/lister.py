@@ -211,10 +211,15 @@ def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
     succeeds, so the mistake only surfaces when a reader opens the file.
 
     A path that already carries the scheme is therefore taken as the URL it is.
+    A root-addressed filesystem (``bucket_url`` of ``<scheme>:/``, as Databricks
+    is) lists absolute paths, which the fallback turns into ``dbfs:///Volumes/...``
+    and its client rejects, so those compose as ``<scheme>:<path>``.
     Every other case is left to dlt, so no scheme it does know changes shape.
     """
     if fs_path.startswith(f"{scheme}://"):
         return fs_path
+    if bucket_url == f"{scheme}:/" and fs_path.startswith("/"):
+        return f"{scheme}:{fs_path}"
     return make_fsspec_url(scheme, fs_path, bucket_url)
 
 

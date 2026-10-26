@@ -15,10 +15,14 @@ from dlt_filesystem.source.impl.remote import (
     _S3CompatibleArrowFSWrapper,
 )
 from dlt_filesystem.source.router import (
+    Carrier,
+    blob_directives,
     determine_endpoint,
     parse_endpoint,
     parse_fragment,
     parse_uri,
+    select_carrier,
+    select_reader,
     source_selects_single_file,
     split_format_hint,
 )
@@ -44,6 +48,11 @@ test_cases: list[URITestCase] = [
     URITestCase("s3://primary", "path/to/file", "primary", "path/to/file"),
     URITestCase("s3://", "s3://secondary/path/to/file", "secondary", "path/to/file"),
     URITestCase("s3://", "s3://bucket/file", "bucket", "file"),
+    URITestCase("hdfs://host:8020/", "path/to/file", "host:8020", "path/to/file"),
+    URITestCase("s3://bucket/", "file", "bucket", "file"),
+    URITestCase("s3://", "s3://Bucket/file", "Bucket", "file"),
+    URITestCase("s3://", "s3://user:pass@bucket/file", "bucket", "file"),
+    URITestCase("sftp://", "sftp://host:22/file", "host", "file"),
 ]
 
 
@@ -54,6 +63,67 @@ def test_parse_uri(test_case: URITestCase):
     (bucket, glob) = parse_uri(uri, test_case.table)
     assert bucket == test_case.expect_bucket
     assert glob == test_case.expect_glob
+
+
+@pytest.mark.parametrize(
+    ("uri", "table", "carrier"),
+    [
+        ("s3://bucket/file.csv", "", Carrier.URI),
+        ("s3://bucket/file.csv", "other.csv", Carrier.URI),
+        ("s3://bucket", "file.csv", Carrier.TABLE),
+        ("s3://bucket/", "file.csv", Carrier.TABLE),
+        ("s3://bucket//", "file.csv", Carrier.TABLE),
+        ("s3://bucket", "  ", Carrier.URI),
+        ("s3://bucket", None, Carrier.URI),
+        ("s3://", "bucket/file.csv", Carrier.TABLE),
+    ],
+)
+def test_select_carrier(uri: str, table: str | None, carrier: Carrier):
+    """The URI path carries the selection when it names anything beyond `/`."""
+    assert select_carrier(uri, table) is carrier
+    assert select_carrier(urlparse(uri), table) is carrier
+
+
+@pytest.mark.parametrize(
+    ("uri", "table", "reader"),
+    [
+        # the reader follows the listed file, not the ignored table
+        ("s3://bucket/a.csv", "b.parquet", "read_csv"),
+        ("s3://bucket/a.csv", "users", "read_csv"),
+        ("s3://", "bucket/b.parquet", "read_parquet"),
+        # a URI directive wins on either carrier
+        ("s3://bucket/data.txt#csv", "", "read_csv"),
+        ("s3://bucket#csv", "data.txt", "read_csv"),
+        ("s3://bucket/data.txt#jsonl", "x#csv", "read_jsonl"),
+        # a table directive applies where the URI carries none
+        ("s3://bucket/data.txt", "data.txt#csv_headless", "read_csv_headless"),
+    ],
+)
+def test_select_reader(uri: str, table: str, reader: str):
+    assert select_reader(uri, table) == reader
+
+
+@pytest.mark.parametrize(
+    ("uri", "table", "expected"),
+    [
+        (
+            "s3://bucket/a.xlsx#sheet_name=uri",
+            "x#sheet_name=table",
+            (None, {"sheet_name": "uri"}),
+        ),
+        ("s3://bucket/a.xlsx", "x#sheet_name=table", (None, {"sheet_name": "table"})),
+        (
+            "s3://bucket/a.xlsx#sheet_name=uri",
+            "x#xlsx&header=0",
+            ("xlsx", {"sheet_name": "uri", "header": "0"}),
+        ),
+        ("s3://bucket/vendor#1/data.csv", "", (None, {})),
+        ("s3://", "bucket/a.xlsx#sheet_name=table", (None, {"sheet_name": "table"})),
+    ],
+)
+def test_blob_directives_read_the_uri_first_then_the_table(uri, table, expected):
+    """Each directive comes from the URI when it carries one, else from the table."""
+    assert blob_directives(urlparse(uri), table) == expected
 
 
 @pytest.mark.parametrize(
