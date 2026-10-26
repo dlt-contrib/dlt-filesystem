@@ -174,13 +174,26 @@ def parse_fragment(spec: str) -> Tuple[str, Optional[str], Dict[str, str]]:
     return path, format_hint, hints
 
 
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
 def _raw_uri_path(uri: str) -> str:
-    """Return the URI path carrier without letting ``urlparse`` consume ``?`` or ``#``."""
-    _, separator, remainder = uri.partition("://")
-    if not separator:
+    """Return the URI path carrier without letting ``urlparse`` consume ``?`` or ``#``.
+
+    The scheme is matched at the start, so a ``://`` inside a query value
+    (``dbfs:/data.csv?host=https://...``) is not taken for it, and the authority
+    ends at the first ``/``, ``?`` or ``#``.
+    """
+    scheme = _URI_SCHEME.match(uri)
+    if not scheme:
         return uri
-    _, slash, path = remainder.partition("/")
-    return path if slash else ""
+    remainder = uri[scheme.end() :]
+    if not remainder.startswith("//"):
+        return remainder.lstrip("/")
+    authority_end = re.search(r"[/?#]", remainder[2:])
+    if authority_end is None or authority_end.group() != "/":
+        return ""
+    return remainder[2 + authority_end.end() :]
 
 
 def source_selects_single_file(uri: str, table: Optional[str]) -> bool:
@@ -243,8 +256,9 @@ def blob_directives(
 
     Read off both carriers through :func:`merge_directives`, the URI's fragment
     first. :func:`urllib.parse.urlparse` has already split the URI's fragment
-    into ``parsed_uri.fragment``; it is re-attached to the path so a literal
-    ``#`` in an object name (``vendor#1/data.csv``) stays literal.
+    into ``parsed_uri.fragment``; :func:`parse_fragment`'s all-or-nothing rule is
+    what keeps a literal ``#`` in an object name (``vendor#1/data.csv``) from
+    reading as a directive.
     """
     format_hint: Optional[str] = None
     hints: Dict[str, str] = {}

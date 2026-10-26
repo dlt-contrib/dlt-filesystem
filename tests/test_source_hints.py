@@ -14,13 +14,13 @@ import pytest
 from dlt_filesystem.source.core import resource_for_reader
 from dlt_filesystem.source.format.registry import READER_REGISTRATIONS
 from dlt_filesystem.source.fsspec.local import LocalFilesystemSource
-from dlt_filesystem.source.model import FilesystemReference
 from dlt_filesystem.source.impl.remote import (
     AzureSource,
     GCSSource,
     S3Source,
     SFTPSource,
 )
+from dlt_filesystem.source.model import FilesystemReference
 
 RESOURCE_FOR_READER = "dlt_filesystem.source.core.resource_for_reader"
 
@@ -103,8 +103,8 @@ def test_s3_threads_hints_from_uri_path_form():
 
 def test_s3_blob_hints_track_the_loaded_file_when_both_forms_given():
     """When a URI path and a --source-table are both supplied (a contradictory,
-    deprecated shape), parse_uri loads the URI-path file, so blob_hints must read
-    the URI fragment, not the ignored table's."""
+    deprecated shape), parse_uri loads the URI-path file, and where both name the
+    same hint the URI's value wins."""
     with (
         patch(RESOURCE_FOR_READER) as rfr,
         patch("pyarrow.fs.S3FileSystem"),
@@ -133,7 +133,6 @@ def test_sftp_threads_hints(table: str, expected_hints: dict[str, str]):
     assert _captured_ref(rfr).hints == expected_hints
 
 
-<<<<<<< HEAD
 @pytest.mark.parametrize(
     "reader_name", [entry.reader_name for entry in READER_REGISTRATIONS]
 )
@@ -211,7 +210,8 @@ def test_headerless_column_types_take_precedence_over_naming_hints(tmp_path):
         {"run_a": 1, "run_b": 2},
         {"run_a": 3, "run_b": 4},
     ]
-=======
+
+
 AZURE_QUERY = "account_name=acct&account_key=a2V5"
 
 
@@ -290,10 +290,27 @@ def test_s3_scheme_qualified_table_drops_userinfo():
     assert _captured_ref(rfr).bucket_url == "s3://bucket/"
 
 
-def test_local_table_format_hint_applies_beside_a_uri_path():
+def test_local_table_directives_apply_beside_a_uri_path():
     with patch(RESOURCE_FOR_READER) as rfr:
-        LocalFilesystemSource().dlt_source("file://data.dat", "other.csv#csv")
+        LocalFilesystemSource().dlt_source(
+            "file://data.dat", "other.csv#csv&sheet_name=foo"
+        )
     ref = _captured_ref(rfr)
     assert ref.reader_name == "read_csv"
     assert ref.file_glob == "data.dat"
->>>>>>> 92bb971 (fix(source): read the path, reader and directives off one carrier)
+    assert ref.hints == {"sheet_name": "foo"}
+
+
+@pytest.mark.parametrize(
+    ("uri", "table", "plural"),
+    [
+        # no `sheet_name` selects every sheet of the listed workbook
+        ("s3://bucket/book.xlsx", "x.csv", True),
+        ("s3://bucket/a.csv", "book.xlsx", False),
+        ("s3://bucket/book.xlsx#sheet_name=%5B%22a%22%2C%22b%22%5D", "x.csv", True),
+        ("s3://bucket/book.dat#xlsx&sheet_name=%5B%22a%22%2C%22b%22%5D", "", True),
+    ],
+)
+def test_workbook_fanout_follows_the_listed_file(uri, table, plural):
+    """Worksheet dispatch reads the same carrier and reader the source loads with."""
+    assert S3Source().produces_multiple_tables(uri, table) is plural
