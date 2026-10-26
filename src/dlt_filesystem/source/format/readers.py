@@ -15,6 +15,7 @@
 import codecs
 import importlib.util
 import io
+import operator
 import shutil
 import tempfile
 from contextlib import contextmanager
@@ -138,39 +139,39 @@ def spreadsheet_selection_is_plural(hints: Mapping[str, Any]) -> bool:
     return True
 
 
+def _csv_kwargs(kwargs: Dict[str, Any], chunksize: int) -> Dict[str, Any]:
+    """Keep typed options intact and cast only hints supplied as strings."""
+    import polars as pl
+
+    kwargs = dict(kwargs)
+    kwargs.setdefault("batch_size", chunksize)
+    # Polars 2 removed batch_size from read_csv; output slicing supplies our bound.
+    if is_polars_2():
+        kwargs.pop("batch_size", None)
+    strings = {key: value for key, value in kwargs.items() if isinstance(value, str)}
+    return {
+        **kwargs,
+        **cast_kwargs_to_signature(pl.read_csv, strings, symbols=_polars_csv_symbols()),
+    }
+
+
 def read_csv(
     items: Iterator[FileItemDict], chunksize: int = 10000, **kwargs: Any
 ) -> Iterator[TDataItems]:
-    """CSV reader using Polars.
+    """Read CSV using Polars and yield at most ``chunksize`` rows at a time.
 
-    Args:
-        chunksize (int): Number of records to read in one chunk
-        **polars_kwargs: Additional keyword arguments passed to polars.read_csv
-    Returns:
-        TDataItem: The file content
+    Each file is loaded into one frame; chunksize bounds the emitted row lists,
+    not the memory used to parse the file. Additional keywords go to polars.read_csv.
     """
-
-    # Apply defaults.
-    kwargs.setdefault("batch_size", chunksize)
-
-    # pl.read_csv is now dispatched to pl.scan_csv(...).collect().
-    # It loses n_threads, batch_size, sample_size, and rechunk,
-    # which have no equivalent in the lazy reader.
-    # https://docs.pola.rs/releases/upgrade/2/#plread_csv-is-now-dispatched-to-plscan_csvcollect
-    if is_polars_2():
-        kwargs.pop("batch_size", None)
-
     import polars as pl
 
-    kwargs = cast_kwargs_to_signature(
-        pl.read_csv, kwargs, symbols=_polars_csv_symbols()
-    )
-
+    chunksize = _validated_chunksize(chunksize)
+    kwargs = _csv_kwargs(kwargs, chunksize)
     for file_obj in items:
-        # Read the file in chunks to avoid loading the whole file into memory.
         with file_obj.open() as file:
-            df = pl.read_csv(file, **kwargs)
-            yield df.to_dicts()
+            frame = pl.read_csv(file, **kwargs)
+            for chunk in frame.iter_slices(chunksize):
+                yield chunk.to_dicts()
 
 
 def read_csv_headless(
@@ -179,52 +180,51 @@ def read_csv_headless(
     column_names: Optional[List[str]] = None,
     **polars_kwargs: Any,
 ) -> Iterator[TDataItems]:
-    """CSV reader using Polars. Reads CSV file without headers, using provided column names or generating them.
+    """Read headerless CSV once, naming columns before applying a projection.
 
-    Args:
-        chunksize (int): Number of records to read in one chunk
-        column_names (list[str], optional): Column names for the CSV. If not provided,
-            columns will be named unknown_col_0, unknown_col_1, etc.
-        **polars_kwargs: Additional keyword arguments passed to polars.read_csv
-    Returns:
-        TDataItem: The file content
+    ``column_names`` supplies names; ``new_columns`` is the Polars alternative.
+    Without either, names are unknown_col_0, unknown_col_1, etc. Supplied names follow
+    the installed Polars new_columns behavior. Each file is loaded into one frame;
+    chunksize bounds emitted lists rather than parsing memory.
     """
     import polars as pl
 
-    polars_kwargs = cast_kwargs_to_signature(
-        pl.read_csv, polars_kwargs, symbols=_polars_csv_symbols()
-    )
-
+    chunksize = _validated_chunksize(chunksize)
+    kwargs = _csv_kwargs(polars_kwargs, chunksize)
+    kwargs["has_header"] = False
+    if column_names:
+        kwargs["new_columns"] = _decode_column_selection(column_names)
+    # Polars selects named columns before applying new_columns. Select afterwards
+    # so callers can address the names they supplied for this headerless file.
+    selection = kwargs.pop("columns", None)
     for file_obj in items:
         with file_obj.open() as file:
-            # Determine column names
-            if column_names:
-                names = column_names
-            else:
-                # Count columns from first row
-                first_row = pl.read_csv(file, has_header=False, n_rows=1)
-                num_columns = len(first_row.columns)
-                names = [f"unknown_col_{i}" for i in range(num_columns)]
-                file.seek(0)  # Reset file pointer after reading first row
-
-            kwargs: Dict[str, Any] = {
-                # `new_columns` names the columns; `columns` *selects* them, and
-                # selecting by name from a file that has no header asks Polars for
-                # names it generated itself, which it rejects outright on some
-                # inputs and answers with shifted values on others.
-                **{"has_header": False, "new_columns": names, "batch_size": chunksize},
-                **polars_kwargs,
-            }
-
-            # pl.read_csv is now dispatched to pl.scan_csv(...).collect().
-            # It loses n_threads, batch_size, sample_size, and rechunk,
-            # which have no equivalent in the lazy reader.
-            # https://docs.pola.rs/releases/upgrade/2/#plread_csv-is-now-dispatched-to-plscan_csvcollect
-            if is_polars_2():
-                kwargs.pop("batch_size", None)
-
-            df = pl.read_csv(file, **kwargs)
-            yield df.to_dicts()
+            frame = pl.read_csv(file, **kwargs)
+            if not kwargs.get("new_columns"):
+                data_columns = [
+                    name
+                    for name in frame.columns
+                    if name != kwargs.get("row_index_name")
+                ]
+                frame = frame.rename(
+                    {name: f"unknown_col_{i}" for i, name in enumerate(data_columns)}
+                )
+            if selection is not None:
+                row_index = kwargs.get("row_index_name")
+                input_columns = [name for name in frame.columns if name != row_index]
+                requested = [selection] if isinstance(selection, str) else selection
+                selected = [
+                    input_columns[c] if isinstance(c, int) else c for c in requested
+                ]
+                if (
+                    selected
+                    and row_index in frame.columns
+                    and row_index not in selected
+                ):
+                    selected.insert(0, row_index)
+                frame = frame.select(selected)
+            for chunk in frame.iter_slices(chunksize):
+                yield chunk.to_dicts()
 
 
 def read_excel(
@@ -470,16 +470,16 @@ def read_spreadsheet(
 
 
 def _validated_chunksize(chunksize: Any) -> int:
-    """Coerce a ``#chunksize=`` reader hint to a positive integer.
-
-    Hints arrive as strings, so the cast is the validation: a non-numeric value is a
-    ``TypeError`` naming what was given, and a non-positive one a ``ValueError``, rather
-    than an empty read or an infinite loop further down.
-    """
+    """Accept positive integers and integer strings, without truncating fractions."""
+    original = chunksize
     try:
-        chunksize = int(chunksize)
-    except (TypeError, ValueError):
-        raise TypeError(f"chunksize must be an integer, not {chunksize}")
+        if isinstance(chunksize, bool):
+            raise TypeError
+        chunksize = (
+            int(chunksize) if isinstance(chunksize, str) else operator.index(chunksize)
+        )
+    except (TypeError, ValueError, OverflowError):
+        raise TypeError(f"chunksize must be an integer, not {original}") from None
     if chunksize < 1:
         raise ValueError(f"chunksize must be greater than zero, not {chunksize}")
     return chunksize
@@ -684,6 +684,7 @@ def read_jsonl(
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     for file_obj in items:
         with file_obj.open() as f:
             lines_chunk = []
@@ -717,6 +718,7 @@ def read_json(
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     for file_obj in items:
         with file_obj.open() as f:
             data = f.read()
@@ -789,6 +791,7 @@ def read_bson(
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     bson = _import_bson()
     from dlt.common.utils import map_nested_values_in_place
 
@@ -824,6 +827,7 @@ def read_msgpack(
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     yield from read_via_iterable(items, file_format="msgpack", chunksize=chunksize)
 
 
@@ -848,11 +852,12 @@ def read_cbor(
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     yield from read_via_iterable(items, file_format="cbor", chunksize=chunksize)
 
 
 def read_xml(
-    items: Iterator[FileItemDict], chunksize: int = 1000, **options: Any
+    items: Iterator[FileItemDict], chunksize: int = 1000, tagname: Optional[str] = None
 ) -> Iterator[TDataItems]:
     """XML reader (parsed with a hardened lxml parser through the generic harness).
 
@@ -869,18 +874,19 @@ def read_xml(
 
     Args:
         chunksize (int, optional): The number of records to load and yield at once, defaults to 1000.
-        **options: Reader hints forwarded to the decoder (``tagname`` for XML).
+        tagname (str, optional): Repeated element to decode; required when reading files.
 
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     yield from read_via_iterable(
-        items, file_format="xml", chunksize=chunksize, **options
+        items, file_format="xml", chunksize=chunksize, tagname=tagname
     )
 
 
 def read_yaml(
-    items: Iterator[FileItemDict], chunksize: int = 1000, **options: Any
+    items: Iterator[FileItemDict], chunksize: int = 1000
 ) -> Iterator[TDataItems]:
     """YAML reader (parsed with ``yaml.safe_load_all`` through the generic harness).
 
@@ -894,35 +900,38 @@ def read_yaml(
 
     Args:
         chunksize (int, optional): The number of records to load and yield at once, defaults to 1000.
-        **options: Reader hints forwarded to the decoder (YAML takes none).
 
     Returns:
         TDataItem: The file content
     """
-    yield from read_via_iterable(
-        items, file_format="yaml", chunksize=chunksize, **options
-    )
+    chunksize = _validated_chunksize(chunksize)
+    yield from read_via_iterable(items, file_format="yaml", chunksize=chunksize)
 
 
 def read_parquet(
     items: Iterator[FileItemDict],
-    chunksize: int = 10,
+    chunksize: int = 1000,
+    use_pyarrow: bool = False,
 ) -> Iterator[TDataItems]:
     """Parquet reader using pyarrow.
 
     Args:
-        chunksize (int, optional): The number of files to process at once, defaults to 10.
+        chunksize (int, optional): The number of rows to yield at once, defaults to 1000.
+        use_pyarrow (bool, optional): Yield native RecordBatch objects when true;
+            otherwise yield lists of row dictionaries, as dlt does.
 
     Returns:
         TDataItem: The file content
     """
+    chunksize = _validated_chunksize(chunksize)
     from pyarrow import parquet as pq
 
+    use_pyarrow = asbool(use_pyarrow)
     for file_obj in items:
         with file_obj.open() as f:
             parquet_file = pq.ParquetFile(f)
             for rows in parquet_file.iter_batches(batch_size=chunksize):
-                yield rows.to_pylist()
+                yield rows if use_pyarrow else rows.to_pylist()
 
 
 def read_vortex(
@@ -1023,6 +1032,8 @@ def read_csv_duckdb(
     items: Iterator[FileItemDict],
     chunk_size: Optional[int] = DEFAULT_CHUNK_SIZE,
     use_pyarrow: bool = False,
+    *,
+    chunksize: Optional[int] = None,
     **duckdb_kwargs: Any,
 ) -> Iterator[TDataItems]:
     """CSV reader using DuckDB.
@@ -1032,7 +1043,9 @@ def read_csv_duckdb(
     Args:
         items (Iterator[FileItemDict]): CSV files to read.
         chunk_size (Optional[int]):
-            The number of rows to read at once. Defaults to 5000.
+            The number of rows to read at once. Defaults to 50,000.
+        chunksize (Optional[int]): Alias for chunk_size; takes precedence when both
+            are supplied. None leaves chunk_size in effect.
         use_pyarrow (bool):
             Whether to use `pyarrow` to read the data and designate
             data schema. If set to False (by default), JSON is used.
@@ -1042,6 +1055,10 @@ def read_csv_duckdb(
     Returns:
         Iterable[TDataItem]: Data items, read from the given CSV files.
     """
+    if chunksize is not None:
+        chunk_size = _validated_chunksize(chunksize)
+    elif chunk_size is not None:
+        chunk_size = _validated_chunksize(chunk_size)
     duckdb = _import_duckdb()
 
     parsed_use_pyarrow = False if use_pyarrow == "" else asbool(use_pyarrow)

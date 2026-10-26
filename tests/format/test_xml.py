@@ -195,13 +195,11 @@ def test_missing_tagname_raises_reader_option_error(tmp_path):
     assert "#tagname=" in message
 
 
-def test_irrelevant_hint_is_dropped_not_forwarded(tmp_path):
-    """A hint the reader doesn't declare (here ``sheet``) is filtered out, so it can't reach the
-    decoder; without a ``tagname`` the mandatory-option error still fires."""
+def test_irrelevant_hint_names_the_reader_and_accepted_hints(tmp_path):
+    """Unknown hints fail at binding rather than disappearing in the decoder."""
     path = write_xml(tmp_path / "d.xml", "<data><item><v>a</v></item></data>")
-    with pytest.raises(Exception) as exc:
-        list(LocalFilesystemSource().dlt_source(f"file://{path}#sheet=foo", ""))
-    assert "tagname" in str(exc.value)
+    with pytest.raises(TypeError, match="read_xml.*sheet.*Accepted hints:.*tagname"):
+        LocalFilesystemSource().dlt_source(f"file://{path}#sheet=foo", "")
 
 
 # --- parser-safety attack matrix (driven directly for precise behaviour) ------
