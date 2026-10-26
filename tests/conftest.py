@@ -1,4 +1,4 @@
-"""Fixtures for the local HTTP servers the HTTP source is tested against.
+"""Test environment isolation and local HTTP server fixtures.
 
 One server per behaviour is started once per session and shared, because binding
 a socket and generating the document root is the expensive part. The request log
@@ -21,6 +21,12 @@ from http_server import (
     self_signed_certificate,
     serve,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_terminal_columns(monkeypatch):
+    """Keep terminal width out of dlt's reader configuration."""
+    monkeypatch.delenv("COLUMNS", raising=False)
 
 
 @pytest.fixture(scope="session")

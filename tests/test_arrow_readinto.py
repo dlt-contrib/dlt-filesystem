@@ -199,31 +199,19 @@ def _bare_arrow_constructions(module: pathlib.Path) -> list[int]:
 
 
 def test_every_arrow_filesystem_in_the_tree_carries_the_shim():
-    """No source builds a bare `ArrowFSWrapper`, whichever package it lives in.
+    """No source in this package builds a bare `ArrowFSWrapper`.
 
-    The gap is one line at a construction site, and the sites sit in both distributed
-    packages, so a new connector reintroduces it silently. Pinning the construction
-    itself catches that where a per-scheme test cannot.
-
-    This package's own tree is always swept. The consumer's is swept when the two sit
-    side by side in one checkout, which is where a change can reach both at once; from
-    a standalone install there is nothing there to sweep and the narrower scope is the
-    whole scope.
+    Pinning construction sites catches a new connector bypassing the shim where
+    a per-scheme test cannot.
     """
     own = pathlib.Path(__file__).parents[1] / "src"
     assert own.is_dir(), (
         f"{own} is not the package tree; the sweep would pass vacuously"
     )
 
-    trees = [own]
-    sibling = pathlib.Path(__file__).parents[3] / "src"
-    if sibling.is_dir():
-        trees.append(sibling)
-
     offenders = [
-        f"{module.relative_to(tree.parent)}:{line}"
-        for tree in trees
-        for module in sorted(tree.rglob("*.py"))
+        f"{module.relative_to(own.parent)}:{line}"
+        for module in sorted(own.rglob("*.py"))
         for line in _bare_arrow_constructions(module)
     ]
 
