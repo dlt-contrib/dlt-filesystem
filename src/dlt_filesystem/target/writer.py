@@ -526,10 +526,22 @@ def write_msgpack(path: str, rows: list[dict]) -> None:
 
     def default(value):
         # A subclass of `datetime` (pendulum's, which the MessagePack reader itself
-        # returns) misses the C packer's exact-type check, so it is converted here
-        # rather than spelled, and reads back as a timestamp like any other aware one.
+        # returns) misses the C packer's exact-type check, so it is rebuilt as the
+        # standard type, which the packer then writes as a timestamp like any other
+        # aware one. Not `Timestamp.from_datetime`: given a pendulum datetime it
+        # refuses one before 1970 and shifts it by a second on msgpack 1.1.
         if isinstance(value, datetime.datetime) and value.tzinfo is not None:
-            return msgpack.Timestamp.from_datetime(value)
+            return datetime.datetime(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                value.tzinfo,
+                fold=value.fold,
+            )
         return _json_spelling(value)
 
     packer = msgpack.Packer(datetime=True, default=default)

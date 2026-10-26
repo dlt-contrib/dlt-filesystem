@@ -270,6 +270,26 @@ WRITTEN_AND_READ_BACK = {
         pendulum.datetime(2020, 1, 2, 3, 4, 5, tz="Pacific/Auckland"),
         datetime.datetime(2020, 1, 1, 14, 4, 5, tzinfo=datetime.timezone.utc),
     ),
+    # The timestamp extension's edges: seconds before the epoch with a positive
+    # fraction, and the last microsecond a datetime holds.
+    "a pendulum datetime before 1970": (
+        pendulum.datetime(1900, 1, 1, 0, 0, 0, 1, tz="UTC"),
+        datetime.datetime(1900, 1, 1, 0, 0, 0, 1, tzinfo=datetime.timezone.utc),
+    ),
+    "half a second before 1970": (
+        datetime.datetime(
+            1969, 12, 31, 23, 59, 59, 500000, tzinfo=datetime.timezone.utc
+        ),
+        datetime.datetime(
+            1969, 12, 31, 23, 59, 59, 500000, tzinfo=datetime.timezone.utc
+        ),
+    ),
+    "a pendulum datetime at the end of 9999": (
+        pendulum.datetime(9999, 12, 31, 23, 59, 59, 999999, tz="UTC"),
+        datetime.datetime(
+            9999, 12, 31, 23, 59, 59, 999999, tzinfo=datetime.timezone.utc
+        ),
+    ),
     "a naive datetime": (NAIVE, "2020-01-02T03:04:05"),
     "a naive datetime in a list": ([NAIVE], ["2020-01-02T03:04:05"]),
     "a naive datetime in a tuple": ((NAIVE,), ["2020-01-02T03:04:05"]),
