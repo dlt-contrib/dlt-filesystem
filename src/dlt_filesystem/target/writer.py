@@ -521,38 +521,28 @@ def write_msgpack(path: str, rows: list[dict]) -> None:
             "Install it with: pip install 'dlt-filesystem[iterable]'"
         ) from e
 
-    for row in rows:
-        _refuse_for_msgpack(None, row)
-
-    def default(value):
-        # A subclass of `datetime` (pendulum's, which the MessagePack reader itself
-        # returns) misses the C packer's exact-type check, so it is rebuilt as the
-        # standard type, which the packer then writes as a timestamp like any other
-        # aware one. Not `Timestamp.from_datetime`: given a pendulum datetime it
-        # refuses one before 1970 and shifts it by a second on msgpack 1.1.
-        if isinstance(value, datetime.datetime) and value.tzinfo is not None:
-            return datetime.datetime(
-                value.year,
-                value.month,
-                value.day,
-                value.hour,
-                value.minute,
-                value.second,
-                value.microsecond,
-                value.tzinfo,
-                fold=value.fold,
-            )
-        return _json_spelling(value)
-
-    packer = msgpack.Packer(datetime=True, default=default)
-    encoded = b"".join(packer.pack(row) for row in rows)
+    prepared = [_prepared_for_msgpack(None, row, msgpack.Timestamp) for row in rows]
+    packer = msgpack.Packer(default=_json_spelling)
+    encoded = b"".join(packer.pack(row) for row in prepared)
     with open(path, "wb") as handle:
         handle.write(encoded)
 
 
-def _refuse_for_msgpack(column: str | None, value) -> None:
-    """Refuse a key or an integer MessagePack cannot carry back, at any depth."""
+_EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
+def _prepared_for_msgpack(column: str | None, value, timestamp: type):
+    """Return ``value`` as ``write_msgpack`` packs it, refusing what cannot read back.
+
+    Walks dicts, lists and tuples, building new ones rather than changing the caller's
+    rows. An aware ``datetime`` becomes a ``msgpack.Timestamp`` here, from exact integer
+    arithmetic, rather than being left to the packer: msgpack's pure-Python packer
+    converts one through a float and hands a subclass (pendulum's, which the reader
+    itself returns) straight to that conversion, so an instant before 1970 came back a
+    second out, or not at all, depending on the msgpack release.
+    """
     if isinstance(value, dict):
+        prepared = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 kind = type(key).__name__
@@ -565,29 +555,51 @@ def _refuse_for_msgpack(column: str | None, value) -> None:
                     f"{where}, and MessagePack reads back only string keys. Spell "
                     "the key as a string."
                 )
-            _refuse_for_msgpack(key if column is None else column, item)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _refuse_for_msgpack(column, item)
-    elif (
-        isinstance(value, int)
-        and not isinstance(value, bool)
-        and not _fits_64_bits(value)
-    ):
-        raise ValueError(
-            f"Column '{column}' carries the number {value}, which MessagePack cannot "
-            "hold: its integers stop at 64 bits. Write this load to "
-            f"{_keeps_the_number(value)} the number as itself."
+            prepared[key] = _prepared_for_msgpack(
+                key if column is None else column, item, timestamp
+            )
+        return prepared
+    if isinstance(value, list):
+        return [_prepared_for_msgpack(column, item, timestamp) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_prepared_for_msgpack(column, item, timestamp) for item in value)
+    if isinstance(value, int) and not isinstance(value, bool):
+        if not _fits_64_bits(value):
+            raise ValueError(
+                f"Column '{column}' carries the number {value}, which MessagePack "
+                "cannot hold: its integers stop at 64 bits. Write this load to "
+                f"{_keeps_the_number(value)} the number as itself."
+            )
+        return value
+    if isinstance(value, datetime.datetime) and value.utcoffset() is not None:
+        # Rebuilt as the standard type first: a subclass's own arithmetic need not
+        # return a plain `timedelta`.
+        standard = datetime.datetime(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            value.tzinfo,
+            fold=value.fold,
         )
-    elif isinstance(value, datetime.datetime) and value.tzinfo is not None:
         try:
-            value.astimezone(datetime.timezone.utc)
+            since = standard.astimezone(datetime.timezone.utc) - _EPOCH
         except OverflowError as e:
             raise ValueError(
                 f"Column '{column}' carries {value}, which is outside the range of a "
                 "datetime in UTC: MessagePack writes a timestamp as UTC, so it would "
                 "not read back."
             ) from e
+        # `timedelta` keeps its seconds and microseconds non-negative, so a moment
+        # before 1970 is negative whole seconds plus a positive fraction, which is
+        # the shape the timestamp extension takes.
+        return timestamp(
+            since.days * 86_400 + since.seconds, since.microseconds * 1_000
+        )
+    return value
 
 
 def write_orc(path: str, rows: list[dict]) -> None:
