@@ -199,10 +199,11 @@ def test_split_form_takes_the_bucket_from_the_table(source_cls, uri, table):
 
 
 def test_a_selected_bucket_wins_over_the_endpoint_surrogate():
-    """`endpoint` stands in for a host only when the selection names no bucket.
+    """The selection's bucket wins over an `endpoint` query parameter.
 
-    Taking it first addressed `Actual/data.csv` and dropped `Placeholder` from the
-    selection, which for OSS, whose `endpoint` is the service URL, could not work.
+    Taking `endpoint` first addressed `Actual/data.csv` and dropped `Placeholder`
+    from the selection, which for OSS, whose `endpoint` is the service URL, could
+    not work.
     """
     ref = build_reference(
         GoogleDriveSource, "gdrive://?endpoint=Actual", "Placeholder/data.csv"
@@ -266,6 +267,11 @@ def test_databricks_state_key_survives_token_rotation():
         ("host=https://prod.example.com", "profile=prod.example.com"),
         ("profile=prod", "profile=staging"),
         ("profile=prod", ""),
+        (
+            "azure_workspace_resource_id=/sub/a/ws/one",
+            "azure_workspace_resource_id=/sub/a/ws/two",
+        ),
+        ("profile=prod&config_file=/etc/a.cfg", "profile=prod&config_file=/etc/b.cfg"),
     ],
 )
 def test_databricks_state_key_separates_workspaces(first, second):
@@ -275,6 +281,38 @@ def test_databricks_state_key_separates_workspaces(first, second):
     two = build_reference(DatabricksSource, f"{path}?{second}" if second else path, "")
 
     assert one.incremental_resource_name != two.incremental_resource_name
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "host=https://ADB.example.com/",
+        "host=adb.example.com",
+        "host=https://adb.example.com",
+    ],
+)
+def test_databricks_state_key_ignores_host_spelling(spelling):
+    """A respelled host is the same workspace, so incremental state carries over."""
+    path = "dbfs:/Volumes/c/s/v/data.csv"
+    reference = build_reference(DatabricksSource, f"{path}?host=adb.example.com", "")
+    respelled = build_reference(DatabricksSource, f"{path}?{spelling}", "")
+
+    assert respelled.incremental_resource_name == reference.incremental_resource_name
+
+
+def test_databricks_concrete_file_must_match_with_a_url_in_the_query():
+    """A `://` inside a query value is not the URI's scheme separator.
+
+    Read as one, the selection's path came out empty, so a missing concrete file
+    listed nothing and loaded zero rows instead of raising.
+    """
+    ref = build_reference(
+        DatabricksSource,
+        "dbfs:/Volumes/c/s/v/data.csv?host=https://adb.example.com&token=t",
+        "",
+    )
+
+    assert ref.require_file_match is True
 
 
 def test_databricks_open_url_is_one_the_client_accepts():
@@ -294,6 +332,12 @@ def test_databricks_reads_rows_end_to_end():
     class DatabricksShapedMemory(MemoryFileSystem):
         protocol = ("dbfs",)
         cachable = False
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            # MemoryFileSystem keeps its files on the class; keep these to this instance.
+            self.store = {}
+            self.pseudo_dirs = [""]
 
         @classmethod
         def _strip_protocol(cls, path):

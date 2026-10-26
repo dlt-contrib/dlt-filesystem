@@ -224,15 +224,12 @@ class FilesystemLocator:
         #   dlt.common.configuration.exceptions.ConfigurationValueError: File `path`
         #   and `netloc` are missing. Field `bucket_url` of `FilesystemClientConfiguration`
         #   must contain valid url with a path or host:password component.
-        # When that happens, take the bucket the selection names, and only then try to
-        # borrow a hostname from other suitable parameters like `endpoint`.
+        # When that happens, take the bucket the selection names. `validate()` has
+        # already refused a selection that names none.
         elif self.bucket_name:
             return f"{address['protocol']}://{self.bucket_name}"
         else:
-            surrogate_host_port = self.options.params.get("endpoint")
-            if not surrogate_host_port:
-                raise ValueError("dlt needs bucket_url to include netloc and path")
-            return f"{address['protocol']}://{surrogate_host_port}"
+            raise ValueError("dlt needs bucket_url to include netloc and path")
 
     @property
     def bucket_name(self) -> str:

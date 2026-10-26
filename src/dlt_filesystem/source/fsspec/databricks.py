@@ -24,17 +24,22 @@ class DatabricksSource(FilesystemSource):
         return DatabricksFileSystem
 
     def workspace_namespace(self, fs_kwargs: Dict[str, Any]) -> str:
-        """Name the workspace without secrets: its host, else its profile.
+        """Name the workspace without secrets, from the options that select it.
 
-        Each kind is tagged, so a profile spelled like a host cannot share state
-        with that host. A host the SDK resolves from the environment or a profile
-        file is not visible here, and reads as the profile or `default`.
+        Its host, else its Azure resource id, else its profile and the config file
+        that defines it, else `default`. Each kind is tagged, so a profile spelled
+        like a host cannot share state with that host. A host the SDK resolves from
+        the environment is not visible here, and reads as `default`.
         """
         host = self.endpoint_namespace(fs_kwargs.get("host"), "")
         if host:
             return f"databricks:host:{host}"
+        if fs_kwargs.get("azure_workspace_resource_id"):
+            return (
+                f"databricks:azure:{fs_kwargs['azure_workspace_resource_id'].lower()}"
+            )
         if fs_kwargs.get("profile"):
-            return f"databricks:profile:{fs_kwargs['profile']}"
+            return f"databricks:profile:{fs_kwargs.get('config_file') or ''}:{fs_kwargs['profile']}"
         return "databricks:default"
 
     def dlt_source(

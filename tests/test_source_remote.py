@@ -152,6 +152,9 @@ def test_blob_directives_read_the_uri_first_then_the_table(uri, table, expected)
         ("s3://bucket/bar/baz?.csv?token=secret", "ignored.csv", False),
         ("s3://bucket/file.csv?token=secret", "ignored.csv", True),
         ("s3://bucket/vendor#1/*.csv", "ignored.csv", False),
+        ("dbfs:/Volumes/v/data.csv?host=https://adb.example.com", "", True),
+        ("dbfs:/Volumes/v/*.csv?host=https://adb.example.com", "", False),
+        ("s3://bucket?token=a/b", "", False),
     ],
 )
 def test_source_selects_single_file(uri: str, table: str | None, expected: bool):
