@@ -2,10 +2,12 @@ from dataclasses import dataclass
 from typing import Callable
 
 from dlt_filesystem.target.writer import (
+    write_cbor,
     write_csv,
     write_feather,
     write_json,
     write_jsonl,
+    write_msgpack,
     write_orc,
     write_parquet,
     write_vortex,
@@ -38,11 +40,18 @@ class WriterRegistration:
 # supported-format error message lists, so it is pinned here (lexical) rather than left
 # to whatever a dict literal happens to iterate.
 #
-# The write side registers fewer formats than the read side, and the gap is deliberate
-# rather than pending: `csv_headless` is a read-only concept (parsing a header-less CSV;
-# writing always emits a header), `csv_duckdb` is a reader choice for the same bytes CSV
-# already writes, and `bson` / `xml` are read-only for reasons the docs give per format.
+# The write side registers fewer formats than the read side. `csv_headless` is a
+# read-only concept (parsing a header-less CSV; writing always emits a header), and
+# `csv_duckdb` is a reader choice for the same bytes CSV already writes. `avro` is
+# read-only until Polars fixes its writer: `DataFrame.write_avro` mis-frames a list
+# column holding an empty list before a non-empty one, and the file then fails to read
+# or reads back wrong values (`tests/format/test_avro.py` pins it). `ods` needs a
+# writer the `spreadsheet` extra does not carry: fastexcel only reads it, and the
+# extra's xlsxwriter writes only XLSX. `bson` and `xml` writers are not scoped.
 WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
+    # Registered unconditionally, like `msgpack` below: `write_cbor` names the
+    # `iterable` extra if cbor2 is missing.
+    WriterRegistration(write_cbor, ("cbor",)),
     WriterRegistration(write_csv, ("csv",)),
     # `arrow` and `ipc` are aliases for the same reason `yml` is one below: Feather V2
     # is the Arrow IPC file format and travels under all three extensions, so a
@@ -54,6 +63,8 @@ WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
     # split the readers already make: a `.json` file is read as a single document.
     WriterRegistration(write_json, ("json",)),
     WriterRegistration(write_jsonl, ("jsonl",)),
+    # Registered unconditionally, like `vortex` and `xlsx` under their extras.
+    WriterRegistration(write_msgpack, ("msgpack",)),
     WriterRegistration(write_orc, ("orc",)),
     WriterRegistration(write_parquet, ("parquet",)),
     WriterRegistration(write_vortex, ("vortex",)),

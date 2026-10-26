@@ -91,7 +91,7 @@ optional-dependencies.full = [
 # package name is the generic `iterable`, which can shadow a same-named local package.
 # See dlt_filesystem/source/format/iterable_codec.py.
 optional-dependencies.iterable = [
-  "cbor2<7",
+  "cbor2>=5.6,<7",
   "iterabledata>=1.0.15,<2",
   "lxml<7",
   "msgpack<2",

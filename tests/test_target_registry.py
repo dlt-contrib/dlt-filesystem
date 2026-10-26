@@ -191,6 +191,40 @@ def test_the_pages_that_stopped_naming_the_write_set_have_not_regrown_it():
     assert offenders == []
 
 
+README = Path(__file__).resolve().parents[1] / "README.md"
+
+
+def _readme_write_rows() -> list[list[str]]:
+    """The format keys of every row the README's Formats table marks `Write: yes`.
+
+    A row is identified by its Read and Write cells both holding `yes` or `no`, which
+    the header and separator rows do not, for the reason `_matrix_write_formats` gives:
+    a ticked row this parser skipped is the one way the test could pass over a wrong
+    table.
+    """
+    marks = {"yes", "no"}
+    rows = []
+    for line in README.read_text(encoding="utf-8").splitlines():
+        cells = [cell.strip() for cell in line.split("|")]
+        # | Format | Keys | Read | Write | Extra |
+        if len(cells) != 7 or cells[3] not in marks or cells[4] not in marks:
+            continue
+        if cells[4] == "yes":
+            rows.append(re.findall(r"`([^`]+)`", cells[2]))
+    return rows
+
+
+def test_the_readme_write_column_matches_the_registry():
+    """This package's own README, so unlike the omniload pages above it is always
+    there to compare against. A writer registered without its row, or a row ticked
+    with no writer behind it, fails here rather than at whoever reads the table."""
+    rows = _readme_write_rows()
+    assert rows, "found no ticked Write cell, so the parser no longer fits the table"
+    assert {keys[0] for keys in rows} == set(ADVERTISED_WRITE_FORMATS)
+    # Aliases too: a row lists every key a destination may name.
+    assert {key for keys in rows for key in keys} == set(WRITE_FORMATS)
+
+
 def test_vortex_writer_without_the_extra_names_the_install(monkeypatch, tmp_path):
     """`vortex` stays advertised on the write side, like `yaml`, so a missing package
     has to surface as an install hint rather than a bare `ModuleNotFoundError`."""

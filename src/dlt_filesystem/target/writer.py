@@ -6,6 +6,7 @@ rejects anything else, and Polars defaults to it), so a locale-encoded export wo
 read back on the machine that wrote it.
 """
 
+import collections.abc
 import datetime
 import decimal
 import functools
@@ -130,12 +131,21 @@ def _reads_back_as(source, written) -> bool:
 def _keeps_the_number(source) -> str:
     """The destinations that write ``source`` as itself, for a refusal to name.
 
-    dlt's JSON writes an integer only from ``-(2**63)`` to ``2**64-1`` and raises past
-    that (``Integer exceeds 64-bit range``), so for one outside it YAML is the one left.
+    dlt's default JSON backend (orjson) writes an integer only from ``-(2**63)`` to
+    ``2**64-1`` and raises past that (``Integer exceeds 64-bit range``), and
+    MessagePack's integers span the same range, so for one outside it CBOR and YAML are
+    the ones named: CBOR writes an integer of any size as a bignum. The ``simplejson``
+    backend writes such an integer, but the hint cannot know which backend the next run
+    is configured with.
     """
-    if isinstance(source, int) and not -(2**63) <= source < 2**64:
-        return "a YAML destination, which keeps"
-    return "a JSON, JSONL or YAML destination, which keep"
+    if isinstance(source, int) and not _fits_64_bits(source):
+        return "a CBOR or YAML destination, which keep"
+    return "a CBOR, JSON, JSONL, MessagePack or YAML destination, which keep"
+
+
+def _fits_64_bits(number: int) -> bool:
+    """Whether a signed or an unsigned 64-bit integer holds ``number``."""
+    return -(2**63) <= number < 2**64
 
 
 def _refuse_a_rounded_number(name: str, source, written) -> None:
@@ -262,6 +272,119 @@ def _spell_rows_flat(rows: list[dict]) -> list[dict]:
     ]
 
 
+def write_cbor(path: str, rows: list[dict]) -> None:
+    """Write rows as one CBOR array, one element per row.
+
+    One top-level array rather than a sequence of items: the CBOR reader decodes the
+    file as a single value, expands an array to one row per element, and reads only the
+    first of several concatenated items. An empty load is the empty array, which reads
+    back as no rows, as an empty file also does.
+
+    cbor2 writes an integer of any size, a finite ``Decimal`` with its digits and scale
+    (not the sign of a zero), a ``date`` and an aware ``datetime`` with its offset, and
+    the reader returns each as itself. An offset that is not a whole number of minutes
+    (a historical zone's local mean time) is written as the same instant in UTC: cbor2
+    5.x decodes no such offset, and 6.x still rejects one under a minute (``Z:30``) and
+    moves the instant of a negative one under a second. One whose instant falls outside
+    the range of a datetime in UTC is refused, naming the column.
+
+    CBOR has no type for a ``time``, and cbor2 refuses a naive ``datetime`` outright,
+    its fallback hook included, so those are spelled the way ``write_json`` spells
+    them. A naive timestamp is spelled rather than read as UTC, because stamping it
+    would add an offset the source never had. ``bytes`` read back as the base64 string
+    the JSON writers write, and NaN and infinity stay floats.
+
+    A map key that is a string, bytes, an integer, a float, a boolean or null is written
+    as itself, and the reader returns it so. Any other key is refused, naming the
+    column: spelling it could land on a string key already in the map and drop that
+    entry's value, and keeping the set small keeps the keys a reader gets plain.
+
+    All of that is done in one pass over the rows before encoding, so the encoder's
+    fallback only ever spells a value, and the whole load is encoded in memory before
+    the file is opened: neither a refusal nor an encoder error leaves a truncated file.
+    """
+    try:
+        import cbor2
+    except ImportError as e:
+        raise MissingDecoderError(
+            "Writing CBOR files needs the cbor2 package. "
+            "Install it with: pip install 'dlt-filesystem[iterable]'"
+        ) from e
+
+    def default(encoder, value):
+        # A hook has to encode, not return: a returned value is dropped and the
+        # document ends early.
+        encoder.encode(_json_spelling(value))
+
+    prepared = [_prepared_for_cbor(None, row) for row in rows]
+    encoded = cbor2.dumps(prepared, default=default)
+    with open(path, "wb") as handle:
+        handle.write(encoded)
+
+
+#: The key types ``write_cbor`` writes. ``bool`` is named although ``int`` already
+#: covers it, so narrowing ``int`` cannot drop it.
+_CBOR_KEYS = (str, bytes, bool, int, float, type(None))
+
+
+def _prepared_for_cbor(column: str | None, value):
+    """Return ``value`` as ``write_cbor`` encodes it, refusing a key it cannot keep.
+
+    Walks mappings, lists and tuples, building a dict, list or tuple rather than
+    changing the caller's rows. Any other container a direct caller passes (a set, a
+    ``cbor2.CBORTag``) is left to cbor2 unwalked; no load hands a writer one. A ``date``
+    or an aware ``datetime`` of a subclass (pendulum's) becomes the standard type,
+    because cbor2 finds its encoder for those by exact type and would otherwise spell
+    them.
+    """
+    if isinstance(value, datetime.datetime):
+        offset = value.utcoffset()
+        if offset is None:
+            return _json_spelling(value)
+        if offset % datetime.timedelta(minutes=1):
+            try:
+                value = value.astimezone(datetime.timezone.utc)
+            except OverflowError as e:
+                raise ValueError(
+                    f"Column '{column}' carries {value}, whose offset this writer "
+                    "writes in UTC, and it is outside the range of a datetime in UTC."
+                ) from e
+        return datetime.datetime(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            value.tzinfo,
+            fold=value.fold,
+        )
+    if isinstance(value, datetime.date):
+        return datetime.date(value.year, value.month, value.day)
+    if isinstance(value, collections.abc.Mapping):
+        prepared = {}
+        for key, item in value.items():
+            if not isinstance(key, _CBOR_KEYS):
+                where = (
+                    f"This load has a column named by the {type(key).__name__} {key!r}"
+                    if column is None
+                    else f"Column '{column}' holds a map with the "
+                    f"{type(key).__name__} key {key!r}"
+                )
+                raise ValueError(
+                    f"{where}, and a CBOR export keeps only string, bytes, integer, "
+                    "float, boolean and null keys. Spell the key as a string."
+                )
+            prepared[key] = _prepared_for_cbor(key if column is None else column, item)
+        return prepared
+    if isinstance(value, list):
+        return [_prepared_for_cbor(column, item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_prepared_for_cbor(column, item) for item in value)
+    return value
+
+
 def write_csv(path: str, rows: list[dict]) -> None:
     """CSV writer using Polars.
 
@@ -342,6 +465,116 @@ def write_jsonl(path: str, rows: list[dict]) -> None:
     with open(path, "wb") as handle:
         for row in rows:
             handle.write(json.dumpb(row) + b"\n")
+
+
+def _json_spelling(value):
+    """The value as the JSON writers write it, as the nearest Python value.
+
+    ``Decimal`` becomes its string, keeping the scale; ``date``, ``time`` and a naive
+    ``datetime`` become their ISO strings. What ``_yaml_dumper`` and ``_spell_flat`` do
+    for the types their format has no spelling of its own for.
+
+    Only a value dlt spells as a scalar. An object it spells as a document (a
+    dataclass, a pydantic model) is refused instead, because spelling it whole would
+    write its nested floats and keys past the checks a writer runs on them: a NaN
+    inside it would become null, and an integer key a string.
+    """
+    from dlt.common import json
+
+    spelled = json.loads(json.dumps(value))
+    if isinstance(spelled, (dict, list)):
+        raise TypeError(
+            f"A {type(value).__name__} has no type in this format, and dlt spells it "
+            "as a nested document. Convert it to a dict or a list before writing it."
+        )
+    return spelled
+
+
+def write_msgpack(path: str, rows: list[dict]) -> None:
+    """Write rows as a stream of MessagePack maps, one per row.
+
+    Back to back with no array around them, the shape ``msgpack.Packer`` emits and the
+    MessagePack reader streams, so an empty load is an empty file.
+
+    An aware ``datetime`` is written as MessagePack's timestamp extension and reads back
+    as the same instant in UTC, to the microsecond the reader resolves. MessagePack has
+    no type for a ``Decimal``, a ``date``, a ``time`` or a naive ``datetime``, all of
+    which ``--loader-file-format parquet`` hands a writer, so those are spelled the way
+    ``write_json`` spells them. A naive timestamp is spelled rather than read as UTC,
+    because stamping it would add an offset the source never had. ``bytes`` are written
+    as binary and read back as the base64 string the JSON writers write, and NaN and
+    infinity stay floats.
+
+    Three things are refused, naming the column, before the file is opened: an integer
+    outside 64 bits, which MessagePack has no encoding for, a map key that is not a
+    string, which the reader either refuses (an integer, a boolean, null) or hands back
+    as undecoded ``bytes``, and an aware ``datetime`` outside the range of one in UTC,
+    which writes but fails to read back. The whole load is encoded in memory first, so
+    neither a refusal nor an encoder error leaves a truncated file at the path.
+    """
+    try:
+        import msgpack
+    except ImportError as e:
+        raise MissingDecoderError(
+            "Writing MessagePack files needs the msgpack package. "
+            "Install it with: pip install 'dlt-filesystem[iterable]'"
+        ) from e
+
+    for row in rows:
+        _refuse_for_msgpack(None, row)
+
+    def default(value):
+        # A subclass of `datetime` (pendulum's, which the MessagePack reader itself
+        # returns) misses the C packer's exact-type check, so it is converted here
+        # rather than spelled, and reads back as a timestamp like any other aware one.
+        if isinstance(value, datetime.datetime) and value.tzinfo is not None:
+            return msgpack.Timestamp.from_datetime(value)
+        return _json_spelling(value)
+
+    packer = msgpack.Packer(datetime=True, default=default)
+    encoded = b"".join(packer.pack(row) for row in rows)
+    with open(path, "wb") as handle:
+        handle.write(encoded)
+
+
+def _refuse_for_msgpack(column: str | None, value) -> None:
+    """Refuse a key or an integer MessagePack cannot carry back, at any depth."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                kind = type(key).__name__
+                where = (
+                    f"This load has a column named by the {kind} {key!r}"
+                    if column is None
+                    else f"Column '{column}' holds a map with the {kind} key {key!r}"
+                )
+                raise ValueError(
+                    f"{where}, and MessagePack reads back only string keys. Spell "
+                    "the key as a string."
+                )
+            _refuse_for_msgpack(key if column is None else column, item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _refuse_for_msgpack(column, item)
+    elif (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and not _fits_64_bits(value)
+    ):
+        raise ValueError(
+            f"Column '{column}' carries the number {value}, which MessagePack cannot "
+            "hold: its integers stop at 64 bits. Write this load to "
+            f"{_keeps_the_number(value)} the number as itself."
+        )
+    elif isinstance(value, datetime.datetime) and value.tzinfo is not None:
+        try:
+            value.astimezone(datetime.timezone.utc)
+        except OverflowError as e:
+            raise ValueError(
+                f"Column '{column}' carries {value}, which is outside the range of a "
+                "datetime in UTC: MessagePack writes a timestamp as UTC, so it would "
+                "not read back."
+            ) from e
 
 
 def write_orc(path: str, rows: list[dict]) -> None:
@@ -608,8 +841,8 @@ def _refuse_for_xlsx(name: str, value, where: str) -> None:
             raise ValueError(
                 f"Column '{name}' carries the number {value} ({where}), which an "
                 "Excel cell cannot hold: a cell is a double, and a double does not "
-                "represent that number exactly. Write this load to a YAML destination, "
-                "which keeps the number as itself."
+                "represent that number exactly. Write this load to "
+                f"{_keeps_the_number(value)} the number as itself."
             )
     elif isinstance(value, float):
         if math.isnan(value) or math.isinf(value):

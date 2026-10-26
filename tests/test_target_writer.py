@@ -3,9 +3,11 @@
 import csv
 import datetime
 import decimal
+import io
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 
@@ -134,6 +136,16 @@ def test_write_yaml_spells_native_types_the_way_the_json_writers_do(tmp_path):
     assert loaded["blob"] == b"hi"
 
 
+def test_write_msgpack_emits_one_map_per_row_back_to_back(tmp_path):
+    """A stream of maps, the shape `msgpack.Packer` emits and the reader streams, not
+    one array holding them, which would unpack as a single list."""
+    msgpack = pytest.importorskip("msgpack")
+    path = tmp_path / "out.msgpack"
+    writer_for_format("msgpack")(str(path), ROWS)
+
+    assert list(msgpack.Unpacker(io.BytesIO(path.read_bytes()))) == ROWS
+
+
 def test_write_yaml_without_pyyaml_names_the_install(tmp_path, monkeypatch):
     """The same install hint the reader gives, rather than a bare ImportError.
 
@@ -156,7 +168,17 @@ def test_writers_emit_utf8_whatever_the_locale(tmp_path):
     forcing a non-UTF-8 default needs a child process rather than a monkeypatch.
     """
     # XLSX is a zip container, so it has no text encoding to get wrong at this level.
-    binary_formats = {"arrow", "feather", "ipc", "orc", "parquet", "vortex", "xlsx"}
+    binary_formats = {
+        "arrow",
+        "cbor",
+        "feather",
+        "ipc",
+        "msgpack",
+        "orc",
+        "parquet",
+        "vortex",
+        "xlsx",
+    }
     text_formats = [f for f in WRITE_FORMATS if f not in binary_formats]
     child = subprocess.run(  # noqa: S603  # trusted: sys.executable + a fixed code string
         [
@@ -528,15 +550,18 @@ def test_the_rounding_check_writes_a_large_integer_as_itself(tmp_path):
 
 
 @pytest.mark.parametrize("number", [2**64, -(2**63) - 1], ids=["above", "below"])
-def test_a_number_past_64_bits_is_pointed_at_yaml_alone(tmp_path, number):
-    """dlt's JSON raises past 64 bits, so a refusal naming it would send the operator
-    to a destination that fails the same load. The first value past each end."""
-    with pytest.raises(ValueError, match="YAML") as excinfo:
+def test_a_number_past_64_bits_is_pointed_at_cbor_and_yaml_alone(tmp_path, number):
+    """dlt's default JSON backend (orjson) raises past 64 bits and MessagePack has no
+    encoding for them, so a refusal naming either would send the operator to a
+    destination that fails the same load. The first value past each end."""
+    with pytest.raises(ValueError) as excinfo:
         writer_for_format("parquet")(
             str(tmp_path / "out.parquet"), [{"v": [number]}, {"v": [0.5]}]
         )
 
-    assert "JSON" not in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "CBOR" in message and "YAML" in message
+    assert "JSON" not in message and "MessagePack" not in message
 
 
 @pytest.mark.parametrize(
@@ -546,11 +571,14 @@ def test_a_number_past_64_bits_is_pointed_at_yaml_alone(tmp_path, number):
 )
 def test_a_number_inside_64_bits_is_still_pointed_at_json(tmp_path, number):
     """The band JSON does keep, which is where a rounded number usually sits, up to
-    and including both ends of it."""
-    with pytest.raises(ValueError, match="JSON, JSONL or YAML"):
+    and including both ends of it. Every destination that keeps it is named."""
+    with pytest.raises(ValueError) as excinfo:
         writer_for_format("parquet")(
             str(tmp_path / "out.parquet"), [{"v": [number]}, {"v": [0.5]}]
         )
+
+    for name in ("CBOR", "JSON", "JSONL", "MessagePack", "YAML"):
+        assert re.search(rf"\b{name}\b", str(excinfo.value)), name
 
 
 # Loads Polars would write with a number missing. A column holding an integer from
@@ -580,6 +608,7 @@ def test_writers_refuse_a_number_polars_would_write_as_null(
     lost = next(row["v"] for row in rows if row["v"] >= 2**127)
     assert str(lost) in str(excinfo.value), "names the value"
     assert "YAML" in str(excinfo.value)
+    assert "CBOR" in str(excinfo.value)
     assert not path.exists()
 
 
