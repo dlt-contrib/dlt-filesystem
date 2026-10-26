@@ -278,16 +278,24 @@ def test_headless_positional_projection(tmp_path, row_index):
     assert chunks == [[row] for row in expected]
 
 
-def test_headless_schema_supplies_column_names(tmp_path):
+@pytest.mark.parametrize(
+    "names",
+    [
+        ("id", "value"),
+        ("column_0", "column_1"),
+        ("column_0", "value"),
+    ],
+)
+def test_headless_schema_supplies_column_names(tmp_path, names):
     path = tmp_path / "rows.csv"
     path.write_text("1,2\n3,4\n")
     assert list(
         formats.read_csv_headless(
             _items(FileItemStub(path)),
             chunksize=1,
-            schema={"id": pl.Int64, "value": pl.Int64},
+            schema=dict.fromkeys(names, pl.Int64),
         )
-    ) == [[{"id": 1, "value": 2}], [{"id": 3, "value": 4}]]
+    ) == [[dict(zip(names, (1, 2)))], [dict(zip(names, (3, 4)))]]
 
 
 @pytest.mark.skipif(
