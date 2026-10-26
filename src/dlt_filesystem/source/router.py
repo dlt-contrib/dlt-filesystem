@@ -297,7 +297,9 @@ def select_reader(uri: Union[ParseResult, str], table: str) -> str:
     _, file_glob = parse_uri(uri, table)
     if select_carrier(uri, table) is Carrier.URI:
         return determine_endpoint(file_glob, file_glob)
-    return determine_endpoint(table, file_glob)
+    # The table less its directives, so a hint value ending in an extension
+    # (`#sheet_name=Q1.csv`) cannot name the reader.
+    return determine_endpoint(parse_fragment(table.strip())[0], file_glob)
 
 
 def determine_endpoint(table: str, path: str) -> str:
