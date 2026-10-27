@@ -1,7 +1,7 @@
 import abc
 import base64
 import json
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 import dlt.destinations.impl.filesystem.filesystem
 from dlt.common.configuration.specs import (
@@ -37,6 +37,11 @@ class BlobStorageDestination(abc.ABC):
         # layout shapes the written paths, not the credentials, so a query carrying
         # only a layout still leaves the credentials to dlt.
         layout = params.pop("layout", [None])[0]
+        # parse_qs drops blank values, so `access_key_id=` would read as no query at all
+        named = any(
+            key != "layout"
+            for key, _ in parse_qsl(parsed_uri.query, keep_blank_values=True)
+        )
 
         dest_table = kwargs["dest_table"]
 
@@ -62,14 +67,14 @@ class BlobStorageDestination(abc.ABC):
             # supresses dlt warnings about dataset name normalization.
             # we don't use dataset names in S3 so it's fine to disable this.
             "enable_dataset_name_normalization": False,
-            **self.destination_options(params),
+            **self.destination_options(params, named=named),
         }
         if layout is not None:
             opts["layout"] = layout
 
         return BlobFS(**opts)  # type: ignore
 
-    def destination_options(self, params: dict) -> dict:
+    def destination_options(self, params: dict, *, named: bool = False) -> dict:
         """Build the dlt filesystem options this protocol derives from URI query params.
 
         ``params`` is the ``urllib.parse.parse_qs`` output. The return value carries
@@ -81,8 +86,12 @@ class BlobStorageDestination(abc.ABC):
         non-empty query is built strictly instead: a partial credential set raises
         ``MissingConnectorOption`` naming the missing option, because a URI that
         carries half a credential asked for that credential to be used.
+
+        ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
+        value (``access_key_id=``). It is built strictly too, so the blank option is
+        reported missing rather than replaced by the environment's credentials.
         """
-        if not params:
+        if not params and not named:
             return {}
 
         options: dict = {"credentials": self.credentials(params)}

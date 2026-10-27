@@ -508,3 +508,20 @@ def test_dlt_dest_leaves_a_layout_only_query_to_dlt():
 def test_dlt_dest_is_strict_once_a_credential_is_given():
     with pytest.raises(MissingConnectorOption, match="^secret_access_key"):
         S3Destination().dlt_dest("s3://?access_key_id=KEY", dest_table="bucket/table")
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://?access_key_id=&secret_access_key=",
+        "s3://?access_key_id=&layout=x",
+        "gs://?credentials_base64=",
+        "az://?connection_string=",
+    ],
+)
+def test_dlt_dest_is_strict_when_a_credential_is_blank(uri):
+    destination = {"s3": S3Destination, "gs": GCSDestination, "az": AzureDestination}[
+        uri.split(":", 1)[0]
+    ]()
+    with pytest.raises(MissingConnectorOption):
+        destination.dlt_dest(uri, dest_table="bucket/table")
