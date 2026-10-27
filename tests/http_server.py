@@ -425,12 +425,13 @@ class _Handler(BaseHTTPRequestHandler):
         method: str,
         extra: Sequence[Tuple[str, str]] = (),
     ) -> None:
+        # A client can return on headers before this handler resumes.
+        record.status = status
         self.send_response(status)
         for key, value in extra:
             self.send_header(key, value)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        record.status = status
         if method == "GET" and body:
             record.bytes_served += len(body)
             self.wfile.write(body)
@@ -450,13 +451,13 @@ class _Handler(BaseHTTPRequestHandler):
         and object-store gateways do, and is measured to be read correctly (a
         client never looks for a body on a HEAD response).
         """
+        record.status = 200
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         for key, value in extra:
             self.send_header(key, value)
         self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
-        record.status = 200
         if method != "GET":
             return
         for start in range(0, len(body), CHUNK_SIZE):
