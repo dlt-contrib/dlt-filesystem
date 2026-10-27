@@ -301,6 +301,25 @@ def test_an_integer_a_double_cannot_hold_is_refused(tmp_path, value):
     _assert_refused(tmp_path, [{"id": 1, "n": value}], r"Column 'n'.*row 1")
 
 
+@pytest.mark.parametrize(
+    ("value", "named", "not_named"),
+    [(2**53 + 1, ("CBOR", "JSON"), None), (2**64, ("CBOR", "YAML"), "JSON")],
+    ids=["inside 64 bits", "past 64 bits"],
+)
+def test_an_integer_refusal_names_a_destination_that_keeps_it(
+    tmp_path, value, named, not_named
+):
+    """The hint the other numeric refusals give, so past 64 bits it names no
+    destination that fails the same load."""
+    with pytest.raises(ValueError) as excinfo:
+        write_xlsx(str(tmp_path / "out.xlsx"), [{"n": value}], table_name="rows")
+
+    for name in named:
+        assert name in str(excinfo.value), name
+    if not_named:
+        assert not_named not in str(excinfo.value)
+
+
 def test_an_integer_a_double_holds_is_written(tmp_path):
     path = tmp_path / "out.xlsx"
     write_xlsx(str(path), [{"n": 2**53}, {"n": -(2**53)}], table_name="rows")

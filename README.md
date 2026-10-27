@@ -49,7 +49,7 @@ whose extra is missing raises an error that names the extra to install.
 |---------------|-------------------------------------------------------------------|
 | `bson`        | BSON (pymongo)                                                    |
 | `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
-| `iterable`    | CBOR, MessagePack and XML readers                                 |
+| `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
 | `spreadsheet` | XLSX (read and write) and ODS (read)                              |
 | `vortex`      | Vortex (read and write), Python 3.11 and later                    |
 | `full`        | All of the above (Vortex only on Python 3.11 and later)           |
@@ -113,8 +113,8 @@ format, so `events.csv.gz` reads as CSV.
 | Excel                  | `xlsx`                    | yes  | yes   | `spreadsheet` |
 | OpenDocument           | `ods`                     | yes  | no    | `spreadsheet` |
 | BSON                   | `bson`                    | yes  | no    | `bson`        |
-| CBOR                   | `cbor`                    | yes  | no    | `iterable`    |
-| MessagePack            | `msgpack`                 | yes  | no    | `iterable`    |
+| CBOR                   | `cbor`                    | yes  | yes   | `iterable`    |
+| MessagePack            | `msgpack`                 | yes  | yes   | `iterable`    |
 | XML                    | `xml`                     | yes  | no    | `iterable`    |
 | YAML                   | `yaml`, `yml`             | yes  | yes   |               |
 
