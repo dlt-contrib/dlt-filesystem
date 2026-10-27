@@ -1,6 +1,8 @@
 from typing import Any, Dict, Optional, Type
+from urllib.parse import urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
+from webdav4.fsspec import WebdavFileSystem
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -8,6 +10,35 @@ from dlt_filesystem.source.core import infer_resource
 from dlt_filesystem.source.impl.util import strip_protocol_suffix
 from dlt_filesystem.source.model import FilesystemLocator, ResourceOptions
 from dlt_filesystem.util.python import asbool, cast_to_bool, cast_to_dict, cast_to_int
+
+
+class WebdavPathFileSystem(WebdavFileSystem):
+    """Translate HTTP URLs to paths relative to the WebDAV server root."""
+
+    root_marker = "/"
+
+    @classmethod
+    def _strip_protocol(cls, path: str) -> str:
+        parsed = urlsplit(path)
+        if parsed.scheme in {"http", "https"}:
+            path = parsed.path
+        else:
+            path = super()._strip_protocol(path)
+        return "/" + path.strip("/")
+
+    def info(self, path: str, **kwargs):
+        info = super().info(path, **kwargs)
+        info["name"] = self._strip_protocol(info["name"])
+        return info
+
+    def ls(self, path: str, detail: bool = True, **kwargs):
+        items = super().ls(path, detail=detail, **kwargs)
+        return [
+            self._strip_protocol(item)
+            if isinstance(item, str)
+            else {**item, "name": self._strip_protocol(item["name"])}
+            for item in items
+        ]
 
 
 class WebdavSource(FilesystemSource):
@@ -20,9 +51,7 @@ class WebdavSource(FilesystemSource):
 
     @property
     def fs_class(self) -> Type["AbstractFileSystem"]:
-        from webdav4.fsspec import WebdavFileSystem
-
-        return WebdavFileSystem
+        return WebdavPathFileSystem
 
     def dlt_source(
         self,
@@ -75,5 +104,7 @@ class WebdavSource(FilesystemSource):
         fs_kwargs.pop("port", None)
 
         # Create filesystem and dlt resource wrapper.
-        fs = self.fs_class(uri, auth=auth, **fs_kwargs)
+        parsed_uri = urlsplit(uri)
+        base_url = urlunsplit((parsed_uri.scheme, parsed_uri.netloc, "", "", ""))
+        fs = self.fs_class(base_url, auth=auth, **fs_kwargs)
         return infer_resource(fs=fs, locator=locator, options=resource_options)
