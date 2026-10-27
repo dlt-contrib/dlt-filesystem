@@ -1,7 +1,7 @@
 """Dropbox paths are validated by the SDK without contacting the service."""
 
 import io
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -11,6 +11,7 @@ from dropbox.exceptions import ApiError
 from dropboxdrivefs import DropboxDriveFileSystem
 
 from dlt_filesystem.source.fsspec.dropbox import DropboxSource
+from dlt_filesystem.source.lister import glob_files
 
 
 @pytest.fixture
@@ -20,7 +21,7 @@ def dropbox_client():
         name="data.csv",
         id="id:test-file",
         client_modified=datetime(2026, 1, 1),
-        server_modified=datetime(2026, 1, 1),
+        server_modified=datetime(2026, 1, 2),
         rev="0123456789",
         size=4,
         path_display="/path/to/data.csv",
@@ -98,6 +99,10 @@ def test_dropbox_reads_rows_with_the_server_modification_time(
     uri = "dropbox://" if split else "dropbox://" + selection
     table = selection if split else ""
     resource = DropboxSource().dlt_source(uri, table, client=dropbox_client)
+
+    fs = DropboxSource().fs_class(client=dropbox_client, skip_instance_cache=True)
+    listing = list(glob_files(fs, "dropbox://path", selection.removeprefix("path/")))
+    assert listing[0]["modification_date"] == datetime(2026, 1, 2, tzinfo=timezone.utc)
 
     with patch(
         "dropboxdrivefs.core.webhdfs.WebHDFile", return_value=io.BytesIO(b"x\n1\n")
