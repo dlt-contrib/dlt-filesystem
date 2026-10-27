@@ -82,7 +82,12 @@ class BlobStorageDestination(abc.ABC):
         not model, ready to splat into a filesystem destination.
 
         An empty query returns no options, so the caller omits ``credentials`` and dlt
-        resolves them from the environment as it does for a bare bucket URL. A
+        resolves them as it does for a bare bucket URL: from its config providers, where
+        this destination's section is ``destination.blobfs``
+        (``DESTINATION__BLOBFS__CREDENTIALS__...``) rather than
+        ``destination.filesystem``, and from the cloud SDK's default chain (boto,
+        Application Default Credentials, ``DefaultAzureCredential`` once an account
+        name resolves). A
         non-empty query is built strictly instead: a partial credential set raises
         ``MissingConnectorOption`` naming the missing option, because a URI that
         carries half a credential asked for that credential to be used.
@@ -264,9 +269,10 @@ def blob_destination_options(protocol: str, params: dict) -> dict:
 
     See ``BlobStorageDestination.destination_options``; a protocol dlt does not
     type credentials for returns no options. ``parse_qs`` has already dropped blank
-    values from ``params``, so a query whose only credential options are blank
-    (``access_key_id=``) reads here as an empty query and returns no options, where
-    ``dlt_dest``, which sees the raw query, builds it strictly.
+    values from ``params``, so a query whose options are all blank
+    (``access_key_id=``) reads here as an empty query and returns no options.
+    ``dlt_dest`` sees the raw query and builds one that names a blank credential
+    option strictly.
     """
     builder_class = _CREDENTIAL_BUILDERS.get(protocol)
     if builder_class is None:

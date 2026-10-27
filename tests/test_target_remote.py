@@ -412,6 +412,28 @@ def test_azure_connection_string_write_through(capturing_backend, tmp_path):
         assert "account_key" not in kwargs
 
 
+def test_a_bare_azure_uri_reads_dlt_config_under_blobfs(
+    capturing_backend, tmp_path, monkeypatch
+):
+    """An empty query leaves the credentials to dlt, which reads them under this
+    destination's own section, ``destination.blobfs``, and never under the
+    ``destination.filesystem`` section dlt documents for its filesystem destination."""
+    prefix = "DESTINATION__{}__CREDENTIALS__AZURE_STORAGE_ACCOUNT_{}"
+    monkeypatch.setenv(prefix.format("FILESYSTEM", "NAME"), "other")
+    monkeypatch.setenv(prefix.format("BLOBFS", "NAME"), "acct")
+    monkeypatch.setenv(prefix.format("BLOBFS", "KEY"), "a2V5")
+    written, captured = write_through(
+        capturing_backend, tmp_path, AzureDestination(), "az", "", "container/out"
+    )
+    assert user_columns(read_parquet(written)) == ROWS
+    assert captured
+    for kwargs in captured:
+        assert (kwargs.get("account_name"), kwargs.get("account_key")) == (
+            "acct",
+            "a2V5",
+        )
+
+
 @pytest.mark.parametrize(
     ("query", "error", "match"),
     [
