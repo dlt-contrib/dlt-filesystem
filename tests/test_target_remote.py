@@ -209,21 +209,16 @@ def test_dlt_dest_without_a_host_needs_a_bucket_in_the_table(table):
         S3Destination().dlt_dest(f"s3://?{S3_AUTH}", dest_table=table)
 
 
-@pytest.mark.xfail(
-    raises=AssertionError,
-    reason=(
-        "dlt_dest strips the table's slashes only when the URI has no host, and "
-        "dlt_run_params never does, so a trailing slash names an empty table, and "
-        "with a host also moves the bucket URL down a level. Remove this marker "
-        "when both forms agree."
-    ),
-)
 @pytest.mark.parametrize(
     ("uri", "table"),
-    [(f"s3://?{S3_AUTH}", "bucket/table/"), (f"s3://bucket?{S3_AUTH}", "table/")],
-    ids=["no-host", "host"],
+    [
+        (f"s3://?{S3_AUTH}", "bucket/table/"),
+        (f"s3://bucket?{S3_AUTH}", "table/"),
+        (f"s3://bucket?{S3_AUTH}", "/table"),
+    ],
+    ids=["no-host", "host", "host-leading"],
 )
-def test_a_trailing_slash_on_the_table_is_ignored(uri, table):
+def test_a_slash_around_the_table_is_ignored(uri, table):
     dest = S3Destination().dlt_dest(uri, dest_table=table)
     assert dest.config_params["bucket_url"] == "s3://bucket"
     assert S3Destination().dlt_run_params(uri, table) == {"table_name": "table"}
@@ -494,15 +489,6 @@ def test_blob_destination_options_is_strict_once_a_query_is_given():
         blob_destination_options("s3", parse_qs("access_key_id=KEY"))
 
 
-@pytest.mark.xfail(
-    raises=MissingConnectorOption,
-    reason=(
-        "dlt_dest builds credentials itself and requires them, where "
-        "blob_destination_options leaves an empty query to dlt's own resolution "
-        "(environment, instance role, workload identity). Remove this marker when "
-        "the two agree."
-    ),
-)
 @pytest.mark.parametrize(
     ("destination", "protocol"),
     [(S3Destination, "s3"), (GCSDestination, "gs"), (AzureDestination, "az")],
@@ -510,3 +496,15 @@ def test_blob_destination_options_is_strict_once_a_query_is_given():
 def test_dlt_dest_leaves_an_empty_query_to_dlt(destination, protocol):
     dest = destination().dlt_dest(f"{protocol}://", dest_table="bucket/table")
     assert "credentials" not in dest.config_params
+    assert "kwargs" not in dest.config_params
+
+
+def test_dlt_dest_leaves_a_layout_only_query_to_dlt():
+    dest = S3Destination().dlt_dest("s3://?layout=x", dest_table="bucket/table")
+    assert dest.config_params["layout"] == "x"
+    assert "credentials" not in dest.config_params
+
+
+def test_dlt_dest_is_strict_once_a_credential_is_given():
+    with pytest.raises(MissingConnectorOption, match="^secret_access_key"):
+        S3Destination().dlt_dest("s3://?access_key_id=KEY", dest_table="bucket/table")
