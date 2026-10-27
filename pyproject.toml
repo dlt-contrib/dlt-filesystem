@@ -7,7 +7,7 @@ requires = [
 
 [project]
 name = "dlt-filesystem"
-description = "Filesystem and blob storage sources and destinations for dlt, across 13 file formats."
+description = "Filesystem and blob storage sources and destinations for dlt."
 readme = "README.md"
 license = "MIT"
 maintainers = [
@@ -71,9 +71,11 @@ optional-dependencies.bson = [
   "pymongo<5",
 ]
 optional-dependencies.develop = [
+  "build",
   "poethepoet<1",
   "pyproject-fmt<3",
   "ruff==0.17.*",
+  "twine",
   "ty==0.0.92",
   "validate-pyproject<1",
 ]
@@ -104,6 +106,7 @@ optional-dependencies.spreadsheet = [
   "polars[calamine,xlsxwriter]>=1.34,<3",
 ]
 optional-dependencies.test = [
+  "cryptography",
   "openpyxl",
   "pandas<4",
   "pytest<10",
@@ -172,8 +175,6 @@ lint.extend-ignore = [
   "B905",
   # Found commented-out code
   "ERA001",
-  # collapsible-else-if
-  "PLR5501",
   # Unnecessary variable assignment before `return` statement
   "RET504",
   # Unnecessary `elif` after `return` statement
@@ -187,6 +188,10 @@ lint.extend-ignore = [
   # Probable insecure usage of temporary file or directory
   "S108",
 ]
+lint.per-file-ignores."release/util/*" = [
+  # `print` found. These are command-line programs whose output is the result.
+  "T201",
+]
 lint.per-file-ignores."src/dlt_filesystem/source/*" = [
   # line-too-long
   "E501",
@@ -199,52 +204,7 @@ lint.per-file-ignores."src/dlt_filesystem/testing/{stub.py}" = [
   # line-too-long
   "E501",
 ]
-lint.per-file-ignores."release/util/*" = [
-  # `print` found. These are command-line programs whose output is the result.
-  "T201",
-]
-lint.per-file-ignores."src/omniload/api.py" = [
-  # line-too-long
-  "E501",
-]
-lint.per-file-ignores."src/omniload/core/router.py" = [
-  # line-too-long
-  "E501",
-]
-lint.per-file-ignores."src/omniload/{source,target}/*" = [
-  # TODO: Review B008
-  #       Do not perform function call in argument defaults;
-  #       instead, perform the call within the function,
-  #       or read the default from a module-level singleton variable
-  "B008",
-  # Unnecessary list comprehension (rewrite as a set comprehension)
-  "C403",
-  # Unnecessary `dict()` call (rewrite as a literal)
-  "C408",
-  # Unnecessary `list()` call within `sorted()`
-  "C414",
-  # Unnecessary list comprehension (rewrite using `list()`)
-  "C416",
-  # Unnecessary `map()` usage (rewrite using a generator expression)
-  "C417",
-  # line-too-long
-  "E501",
-]
-lint.per-file-ignores."src/omniload/{source,target}/**/{client,helpers}.py" = [
-  # `print` found
-  "T201",
-]
-lint.per-file-ignores."tests/saas/*" = [
-  # Possible hardcoded password assigned to argument
-  "S106",
-]
-lint.per-file-ignores."tests/{warehouse,util}/*" = [
-  # `try`-`except`-`pass` detected, consider logging the exception
-  "S110",
-  # Audit URL open for permitted schemes. Allowing use of `file:` or custom schemes is often unexpected.
-  "S310",
-]
-lint.per-file-ignores."{tests,packages/*/tests}/*" = [
+lint.per-file-ignores."tests/*" = [
   # Variable is shadowing a Python builtin
   "A001",
   # Function argument is shadowing a Python builtin
@@ -262,25 +222,18 @@ lint.per-file-ignores."{tests,packages/*/tests}/*" = [
 ]
 
 [tool.pytest]
-ini_options.minversion = "2.0"
 ini_options.testpaths = [
-  "src",
   "tests",
 ]
 ini_options.pythonpath = [
   ".",
 ]
 ini_options.addopts = """
-  -rfEXsS -p pytester --strict-markers --verbosity=3
-  --cov --cov-report=term-missing --cov-report=xml
-  --numprocesses auto
+  -rfEXsS --strict-markers --verbosity=3
   """
-ini_options.markers = [
-]
+ini_options.markers = []
 ini_options.xfail_strict = true
 ini_options.log_format = "%(asctime)-15s [%(name)-36s] %(levelname)-8s: %(message)s"
-ini_options.log_level = "DEBUG"
-ini_options.log_cli_level = "DEBUG"
 
 [tool.coverage]
 run.omit = [ "tests/**" ]
@@ -312,7 +265,7 @@ tasks.release = [
   { cmd = "python -m build" },
   { cmd = "twine upload --verbose --skip-existing dist/*" },
 ]
-tasks.test = { cmd = "pytest", env = { TESTCONTAINERS_RYUK_DISABLED = "true" } }
+tasks.test = { cmd = "pytest --cov=dlt_filesystem --cov-report=term-missing --cov-report=xml --numprocesses auto" }
 
 [tool.versioningit]
 vcs.method = "git-archive"
