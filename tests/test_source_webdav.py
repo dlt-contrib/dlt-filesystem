@@ -14,6 +14,7 @@ from dlt_filesystem.source.lister import glob_files
     "scheme", ["http+webdav", "https+webdav", "http+dav", "https+dav"]
 )
 @pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("known_size", [False, True])
 @pytest.mark.parametrize("wildcard", ["none", "all", "prefix"])
 @pytest.mark.parametrize(
     "filename",
@@ -32,7 +33,9 @@ from dlt_filesystem.source.lister import glob_files
         "report[1].csv",
     ],
 )
-def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
+def test_webdav_requests_the_selection_once(
+    scheme, split, wildcard, filename, known_size
+):
     requests = []
     content = b"x\n1\n"
     encoded_path = "/p/" + quote(filename, safe="")
@@ -57,6 +60,7 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     <D:propstat>
       <D:prop>
         <D:resourcetype/>
+        <D:getetag>test-etag</D:getetag>
         <D:creationdate>2025-01-01T00:00:00Z</D:creationdate>
         <D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified>
       </D:prop>
@@ -65,6 +69,11 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
   </D:response>
 </D:multistatus>"""
             body = body.replace("/p/x.csv", encoded_path)
+            if known_size:
+                body = body.replace(
+                    "<D:resourcetype/>",
+                    "<D:resourcetype/><D:getcontentlength>4</D:getcontentlength>",
+                )
             if request.url.path.rstrip("/") == "/p":
                 directory = """<D:response><D:href>/p/</D:href><D:propstat>
 <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
@@ -97,7 +106,8 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     assert ref.fs.info(encoded_path)["name"] == encoded_path
     assert ref.fs.modified(encoded_path).year == 2025
     assert ref.fs.created(encoded_path).year == 2025
-    assert ref.fs.size(encoded_path) is None
+    assert ref.fs.size(encoded_path) == (4 if known_size else None)
+    assert ref.fs.checksum(encoded_path) == "test-etag"
     assert items[0]["relative_path"] == encoded_path.lstrip("/")
     with ref.fs.open(items[0]["file_url"], "rb", block_size=0) as stream:
         assert stream.read() == content

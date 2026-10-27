@@ -46,21 +46,23 @@ class _DecodedWebdavFileSystem(WebdavFileSystem):
         ]
 
 
-class WebdavPathFileSystem(WebdavFileSystem):
-    """Use escaped source paths, with decoded paths inside the backend.
+class WebdavPathFileSystem(AbstractFileSystem):
+    """Source filesystem paths, with decoded paths inside the WebDAV backend.
 
     The lister reuses glob results for info calls and URL reconstruction. Keeping
     this public view escaped makes those paths reusable; the decoded view shares
     its client and supplies fsspec matching and backend file objects.
     """
 
+    protocol = ("webdav", "dav")
     root_marker = "/"
 
     def __init__(self, base_url, auth=None, client=None, **client_opts):
         client_opts.setdefault("chunk_size", self.blocksize)
         if client is None:
             client = WebdavPathClient(base_url, auth=auth, **client_opts)
-        super().__init__(base_url, auth=auth, client=client, **client_opts)
+        super().__init__()
+        self.client = client
         self._decoded_fs = _DecodedWebdavFileSystem(
             base_url, client=self.client, skip_instance_cache=True
         )
@@ -122,6 +124,9 @@ class WebdavPathFileSystem(WebdavFileSystem):
 
     def size(self, path: str):
         return self._decoded_fs.size(self._decoded_path(path))
+
+    def checksum(self, path: str):
+        return self._decoded_fs.checksum(self._decoded_path(path))
 
 
 class WebdavSource(FilesystemSource):
