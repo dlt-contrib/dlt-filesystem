@@ -6,6 +6,7 @@ from fsspec import AbstractFileSystem
 
 from dlt_filesystem.source.adapter import filesystem, readers
 from dlt_filesystem.source.error import UnsupportedEndpointError
+from dlt_filesystem.source.format.hints import prepare_reader_hints
 from dlt_filesystem.source.format.registry import (
     reader_for_format,
     supported_file_format_message,
@@ -21,8 +22,9 @@ from dlt_filesystem.source.router import determine_endpoint
 def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResource]:
     """Build the filesystem reader resource named by ``ref.reader_name``.
 
-    Threads ``column_types`` into ``read_csv_headless`` and per-URI reader hints (e.g. XML's
-    ``#tagname``) into a hint-consuming reader; every other reader is selected as-is.
+    Validate per-URI hint names before binding. Readers coerce their chunk sizes
+    through one shared validator on extraction, including direct calls. ``column_types``
+    supplies headerless CSV names ahead of ``column_names`` and ``new_columns`` hints.
     """
 
     # Enforce concrete selections on this outer lister only. Piping it into the
@@ -50,18 +52,16 @@ def resource_for_reader(ref: FilesystemReference) -> Union[DltSource, DltResourc
 
     # Apply parameter bindings for certain readers.
     # TODO: Can this be generalized? Why not always loop in column_names into reader hints?
-    reader_kwargs: dict[str, Any] = dict(ref.hints)
+    reader_kwargs: dict[str, Any] = prepare_reader_hints(ref.reader_name, ref.hints)
     if ref.reader_name in {"read_excel", "read_ods"}:
         # The filesystem lister yields pages of files. Keep one collision registry
         # bound to the reader so distinct worksheet names cannot normalize to the
         # same table even when the workbooks occur in different pages.
         reader_kwargs["worksheet_names"] = {}
 
-    if ref.reader_name == "read_csv_headless":
-        column_names = list(ref.column_types.keys()) if ref.column_types else None
-        reader = reader.bind(column_names=column_names, **reader_kwargs)
-    else:
-        reader = reader.bind(**reader_kwargs)
+    if ref.reader_name == "read_csv_headless" and ref.column_types:
+        reader_kwargs["column_names"] = list(ref.column_types)
+    reader = reader.bind(**reader_kwargs)
 
     # Connect and propagate elements.
     return filesystem_resource | reader

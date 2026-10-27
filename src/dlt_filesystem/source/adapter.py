@@ -56,10 +56,10 @@ def readers(
     incremental: Optional[dlt.sources.incremental[Any]] = None,
 ) -> Tuple[DltResource, ...]:
     """This source provides a few resources that are chunked file readers. Readers can be further parametrized before use
-       read_csv(chunksize, **pandas_kwargs)
+       read_csv(chunksize, **polars_kwargs)
        read_json(chunksize)
        read_jsonl(chunksize)
-       read_parquet(chunksize)
+       read_parquet(chunksize, use_pyarrow=False)
 
     Args:
         bucket_url (str): The url to the bucket.

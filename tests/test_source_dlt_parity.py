@@ -502,3 +502,35 @@ def test_readers_forwards_the_incremental_cursor_to_its_lister(
         )
         lister = source.resources["read_csv"]._parent
         assert [item["file_name"] for item in lister] == expected
+
+
+def _transformer_parameter_cases():
+    source = dlt_filesystem_source.readers("memory://bucket", MemoryFileSystem())
+    return [
+        pytest.param(
+            name, parameter.name, parameter.default, id=f"{name}-{parameter.name}"
+        )
+        for name, resource in source.resources.items()
+        for parameter in inspect.signature(resource).parameters.values()
+        if parameter.kind
+        not in (inspect.Parameter.VAR_KEYWORD, inspect.Parameter.VAR_POSITIONAL)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reader_name", "parameter_name", "default"), _transformer_parameter_cases()
+)
+def test_transformer_declares_dlt_parameter_with_dlt_default(
+    reader_name, parameter_name, default
+):
+    source = readers("memory://bucket", MemoryFileSystem())
+    parameters = inspect.signature(source.resources[reader_name]).parameters
+    assert parameter_name in parameters
+    # DuckDB deliberately retains the package's 50,000-row default, documented
+    # alongside the backend-option differences in the README.
+    expected = (
+        50_000
+        if (reader_name, parameter_name) == ("read_csv_duckdb", "chunk_size")
+        else default
+    )
+    assert parameters[parameter_name].default == expected
