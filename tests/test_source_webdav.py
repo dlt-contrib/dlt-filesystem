@@ -22,6 +22,10 @@ from dlt_filesystem.source.lister import glob_files
         "report#1.csv",
         "report?1.csv",
         "report%23.csv",
+        "report%2a.csv",
+        "report%3f.csv",
+        "report%5b.csv",
+        "report%5d.csv",
         "space here.csv",
         "x+1.csv",
         "café.csv",
@@ -35,12 +39,16 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     if wildcard == "all":
         selection = "p/*.csv"
     elif wildcard == "prefix":
-        selection = "p/" + quote(filename[:-4], safe="") + "*.csv"
+        prefix = filename[:-4]
+        for char in "%#?[]":
+            prefix = prefix.replace(char, quote(char, safe=""))
+        selection = "p/" + prefix + "*.csv"
     else:
         selection = encoded_path.lstrip("/")
 
     def respond(request):
         requests.append(request)
+        assert request.url.raw_path.decode() in {"/p", "/p/", encoded_path}
         if request.method == "PROPFIND":
             body = """<?xml version="1.0"?>
 <D:multistatus xmlns:D="DAV:">
@@ -49,7 +57,7 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     <D:propstat>
       <D:prop>
         <D:resourcetype/>
-        <D:getcontentlength>4</D:getcontentlength>
+        <D:creationdate>2025-01-01T00:00:00Z</D:creationdate>
         <D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
@@ -82,13 +90,19 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     assert ref.fs.client.base_url.path == "/"
     assert not ref.fs.client.base_url.query
     assert not ref.fs.client.base_url.fragment
-    items = list(glob_files(ref.fs, ref.bucket_url, ref.file_glob))
+    items = list(
+        glob_files(ref.fs, ref.bucket_url, ref.file_glob, fetch_file_info=True)
+    )
     assert len(items) == 1
+    assert ref.fs.info(encoded_path)["name"] == encoded_path
+    assert ref.fs.modified(encoded_path).year == 2025
+    assert ref.fs.created(encoded_path).year == 2025
+    assert ref.fs.size(encoded_path) is None
     assert items[0]["relative_path"] == encoded_path.lstrip("/")
     with ref.fs.open(items[0]["file_url"], "rb", block_size=0) as stream:
         assert stream.read() == content
 
-    assert ref.fs.ls("p", detail=False) == ["/p/" + filename]
+    assert ref.fs.ls("p", detail=False) == [encoded_path]
     # Exercise a single-character glob directly: '?' on a source URI is a query.
     one_character = "/p/" + quote(filename[:-5], safe="") + "?.csv"
     assert encoded_path in ref.fs.glob(one_character)

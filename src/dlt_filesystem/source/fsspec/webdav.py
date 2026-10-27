@@ -23,30 +23,18 @@ class WebdavPathClient(Client):
         )
 
 
-class WebdavPathFileSystem(WebdavFileSystem):
-    """Translate HTTP URLs to paths relative to the WebDAV server root."""
+class _DecodedWebdavFileSystem(WebdavFileSystem):
+    """A decoded path view for fsspec's glob matcher and the WebDAV client."""
 
     root_marker = "/"
 
-    def __init__(self, base_url, auth=None, client=None, **client_opts):
-        client_opts.setdefault("chunk_size", self.blocksize)
-        if client is None:
-            client = WebdavPathClient(base_url, auth=auth, **client_opts)
-        super().__init__(base_url, auth=auth, client=client, **client_opts)
-
     @classmethod
     def _strip_protocol(cls, path: str) -> str:
-        parsed = urlsplit(path)
-        if parsed.scheme in {"http", "https"}:
-            path = unquote(parsed.path)
-        else:
-            path = super()._strip_protocol(path)
-        return "/" + path.strip("/")
+        return "/" + super()._strip_protocol(path).strip("/")
 
     def info(self, path: str, **kwargs):
         info = super().info(path, **kwargs)
-        info["name"] = self._strip_protocol(info["name"])
-        return info
+        return {**info, "name": self._strip_protocol(info["name"])}
 
     def ls(self, path: str, detail: bool = True, **kwargs):
         items = super().ls(path, detail=detail, **kwargs)
@@ -57,11 +45,57 @@ class WebdavPathFileSystem(WebdavFileSystem):
             for item in items
         ]
 
-    def glob(self, path, maxdepth=None, **kwargs):
-        # Match decoded names, retaining the distinction between URI-escaped
-        # literal glob characters and the pattern's operators.
+
+class WebdavPathFileSystem(WebdavFileSystem):
+    """Use escaped source paths, with decoded paths inside the backend.
+
+    The lister reuses glob results for info calls and URL reconstruction. Keeping
+    this public view escaped makes those paths reusable; the decoded view shares
+    its client and supplies fsspec matching and backend file objects.
+    """
+
+    root_marker = "/"
+
+    def __init__(self, base_url, auth=None, client=None, **client_opts):
+        client_opts.setdefault("chunk_size", self.blocksize)
+        if client is None:
+            client = WebdavPathClient(base_url, auth=auth, **client_opts)
+        super().__init__(base_url, auth=auth, client=client, **client_opts)
+        self._decoded_fs = _DecodedWebdavFileSystem(
+            base_url, client=self.client, skip_instance_cache=True
+        )
+
+    @classmethod
+    def _strip_protocol(cls, path: str) -> str:
         parsed = urlsplit(path)
-        pattern = parsed.path if parsed.scheme in {"http", "https"} else path
+        if parsed.scheme in {"http", "https"}:
+            path = parsed.path
+        else:
+            path = super()._strip_protocol(path)
+        return "/" + path.strip("/")
+
+    def _decoded_path(self, path):
+        return unquote(self._strip_protocol(path))
+
+    @staticmethod
+    def _escaped_info(info):
+        return {**info, "name": quote(info["name"], safe="/")}
+
+    def info(self, path: str, **kwargs):
+        return self._escaped_info(
+            self._decoded_fs.info(self._decoded_path(path), **kwargs)
+        )
+
+    def ls(self, path: str, detail: bool = True, **kwargs):
+        items = self._decoded_fs.ls(self._decoded_path(path), detail=detail, **kwargs)
+        return [
+            quote(item, safe="/") if isinstance(item, str) else self._escaped_info(item)
+            for item in items
+        ]
+
+    def glob(self, path, maxdepth=None, **kwargs):
+        # URI-escaped glob characters are literals, unlike raw pattern operators.
+        pattern = self._strip_protocol(path)
         literals = {"2a": "[*]", "3f": "[?]", "5b": "[[]", "5d": "[]]"}
         pattern = re.sub(
             r"%(2a|3f|5b|5d)",
@@ -69,12 +103,25 @@ class WebdavPathFileSystem(WebdavFileSystem):
             pattern,
             flags=re.IGNORECASE,
         )
-        matches = super().glob(unquote(pattern), maxdepth=maxdepth, **kwargs)
-        # The lister reconstructs URLs from these paths, so escape only after
-        # matching; requests decode the URL once at _strip_protocol above.
+        matches = self._decoded_fs.glob(unquote(pattern), maxdepth=maxdepth, **kwargs)
         if isinstance(matches, dict):
-            return {quote(name, safe="/"): info for name, info in matches.items()}
+            return {
+                quote(name, safe="/"): self._escaped_info(info)
+                for name, info in matches.items()
+            }
         return [quote(name, safe="/") for name in matches]
+
+    def _open(self, path, *args, **kwargs):
+        return self._decoded_fs._open(self._decoded_path(path), *args, **kwargs)
+
+    def modified(self, path: str):
+        return self._decoded_fs.modified(self._decoded_path(path))
+
+    def created(self, path: str):
+        return self._decoded_fs.created(self._decoded_path(path))
+
+    def size(self, path: str):
+        return self._decoded_fs.size(self._decoded_path(path))
 
 
 class WebdavSource(FilesystemSource):
