@@ -82,14 +82,15 @@ class BlobStorageDestination(abc.ABC):
         not model, ready to splat into a filesystem destination.
 
         An empty query returns no options, so the caller omits ``credentials`` and dlt
-        resolves them as it does for a bare bucket URL: from its config providers, where
-        this destination's section is ``destination.BlobFS``
-        (``[destination.BlobFS.credentials]`` in TOML, where the case matters, or
-        ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the environment) rather than
-        ``destination.filesystem``, and from the cloud SDK's default chain (boto,
-        Application Default Credentials, ``DefaultAzureCredential`` once an account
-        name resolves). A
-        non-empty query is built strictly instead: a partial credential set raises
+        resolves them as it does for a bare bucket URL: from the cloud SDK's default
+        chain (boto, Application Default Credentials, ``DefaultAzureCredential`` once an
+        account name resolves), and from its config providers under the section of the
+        destination the options are splatted into. For the one ``dlt_dest`` builds that
+        is ``destination.BlobFS`` (``[destination.BlobFS.credentials]`` in TOML, where
+        the case matters, or ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the
+        environment); for ``dlt.destinations.filesystem`` it is
+        ``destination.filesystem``. A non-empty query is built strictly instead: a
+        partial credential set raises
         ``MissingConnectorOption`` naming the missing option, because a URI that
         carries half a credential asked for that credential to be used.
 
