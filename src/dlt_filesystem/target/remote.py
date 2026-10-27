@@ -263,7 +263,10 @@ def blob_destination_options(protocol: str, params: dict) -> dict:
     """Build the dlt filesystem options a blob protocol derives from URI query params.
 
     See ``BlobStorageDestination.destination_options``; a protocol dlt does not
-    type credentials for returns no options.
+    type credentials for returns no options. ``parse_qs`` has already dropped blank
+    values from ``params``, so a query whose only options are blank
+    (``access_key_id=``) reads here as an empty query and is left to dlt, where
+    ``dlt_dest``, which sees the raw query, builds it strictly.
     """
     builder_class = _CREDENTIAL_BUILDERS.get(protocol)
     if builder_class is None:
