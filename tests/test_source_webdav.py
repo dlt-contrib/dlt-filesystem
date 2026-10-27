@@ -1,5 +1,6 @@
 """Exercise the real WebDAV filesystem with an offline HTTP transport."""
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 from urllib.parse import quote
 
@@ -15,7 +16,7 @@ from dlt_filesystem.source.lister import glob_files
 )
 @pytest.mark.parametrize("split", [False, True])
 @pytest.mark.parametrize("known_size", [False, True])
-@pytest.mark.parametrize("wildcard", ["none", "all", "prefix"])
+@pytest.mark.parametrize("wildcard", ["none", "all", "prefix", "directories"])
 @pytest.mark.parametrize(
     "filename",
     [
@@ -39,7 +40,9 @@ def test_webdav_requests_the_selection_once(
     requests = []
     content = b"x\n1\n"
     encoded_path = "/p/" + quote(filename, safe="")
-    if wildcard == "all":
+    if wildcard == "directories":
+        selection = "p/*/"
+    elif wildcard == "all":
         selection = "p/*.csv"
     elif wildcard == "prefix":
         prefix = filename[:-4]
@@ -61,7 +64,7 @@ def test_webdav_requests_the_selection_once(
       <D:prop>
         <D:resourcetype/>
         <D:getetag>test-etag</D:getetag>
-        <D:creationdate>2025-01-01T00:00:00Z</D:creationdate>
+        <D:creationdate>2024-01-01T00:00:00Z</D:creationdate>
         <D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified>
       </D:prop>
       <D:status>HTTP/1.1 200 OK</D:status>
@@ -102,10 +105,14 @@ def test_webdav_requests_the_selection_once(
     items = list(
         glob_files(ref.fs, ref.bucket_url, ref.file_glob, fetch_file_info=True)
     )
+    if wildcard == "directories":
+        assert items == []
+        assert ref.fs.glob("/p/*/") == []
+        return
     assert len(items) == 1
     assert ref.fs.info(encoded_path)["name"] == encoded_path
-    assert ref.fs.modified(encoded_path).year == 2025
-    assert ref.fs.created(encoded_path).year == 2025
+    assert ref.fs.modified(encoded_path) == datetime(2025, 1, 1, tzinfo=timezone.utc)
+    assert ref.fs.created(encoded_path) == datetime(2024, 1, 1, tzinfo=timezone.utc)
     assert ref.fs.size(encoded_path) == (4 if known_size else None)
     assert ref.fs.checksum(encoded_path) == "test-etag"
     assert items[0]["relative_path"] == encoded_path.lstrip("/")
@@ -127,3 +134,47 @@ def test_webdav_requests_the_selection_once(
         assert request.url.scheme == scheme.split("+")[0]
         assert not request.url.query
         assert request.headers["Authorization"] == "Basic dXNlcjpwYXNz"
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ("p/report%2A1.csv", {"/p/report%2A1.csv"}),
+        ("p/report%3F1.csv", {"/p/report%3F1.csv"}),
+        (
+            "p/report*1.csv",
+            {"/p/report%2A1.csv", "/p/report%3F1.csv", "/p/reportX1.csv"},
+        ),
+    ],
+)
+def test_webdav_escaped_glob_characters_are_literals(split, selection, expected):
+    filenames = ["report*1.csv", "report?1.csv", "reportX1.csv"]
+    directory = """<D:response><D:href>/p/</D:href><D:propstat>
+<D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>"""
+
+    def respond(request):
+        entries = [directory]
+        for filename in filenames:
+            href = quote("/p/" + filename, safe="/")
+            entries.append(f"""<D:response><D:href>{href}</D:href><D:propstat>
+<D:prop><D:resourcetype/><D:getcontentlength>4</D:getcontentlength>
+<D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>""")
+        body = '<D:multistatus xmlns:D="DAV:">' + "".join(entries) + "</D:multistatus>"
+        return httpx.Response(207, text=body)
+
+    origin = "https+webdav://example.test"
+    uri = origin if split else origin + "/" + selection
+    with patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref):
+        ref = WebdavSource().dlt_source(
+            uri + "#csv",
+            selection if split else "",
+            transport=httpx.MockTransport(respond),
+        )
+    items = list(glob_files(ref.fs, ref.bucket_url, ref.file_glob))
+    assert {"/" + item["relative_path"] for item in items} == expected
+    assert set(ref.fs.glob("/p/report?1.csv")) == {
+        quote("/p/" + name, safe="/") for name in filenames
+    }

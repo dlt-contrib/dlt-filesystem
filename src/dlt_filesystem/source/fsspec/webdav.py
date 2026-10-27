@@ -98,6 +98,10 @@ class WebdavPathFileSystem(AbstractFileSystem):
     def glob(self, path, maxdepth=None, **kwargs):
         # URI-escaped glob characters are literals, unlike raw pattern operators.
         pattern = self._strip_protocol(path)
+        parsed = urlsplit(path)
+        raw_path = parsed.path if parsed.scheme in {"http", "https"} else path
+        if raw_path.endswith("/") and not pattern.endswith("/"):
+            pattern += "/"
         literals = {"2a": "[*]", "3f": "[?]", "5b": "[[]", "5d": "[]]"}
         pattern = re.sub(
             r"%(2a|3f|5b|5d)",
