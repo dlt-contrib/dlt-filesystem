@@ -120,6 +120,9 @@ def test_webdav_requests_the_selection_once(
         assert stream.read() == content
 
     assert ref.fs.ls("p", detail=False) == [encoded_path]
+    listed = ref.fs.ls("p", detail=True)[0]
+    assert "size" in listed
+    assert listed["size"] == (4 if known_size else None)
     # Exercise a single-character glob directly: '?' on a source URI is a query.
     one_character = "/p/" + quote(filename[:-5], safe="") + "?.csv"
     assert encoded_path in ref.fs.glob(one_character)
@@ -212,6 +215,7 @@ def test_webdav_directory_whitespace_is_preserved(split, directory):
         )
     items = list(glob_files(ref.fs, ref.bucket_url, ref.file_glob))
     assert ["/" + item["relative_path"] for item in items] == [encoded_file]
+    assert items[0]["size_in_bytes"] == 4
     assert ref.fs.ls(encoded_directory, detail=False) == [encoded_file]
     with pytest.raises(FileNotFoundError):
         ref.fs.ls("/p/missing")
