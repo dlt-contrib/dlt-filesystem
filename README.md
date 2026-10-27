@@ -170,7 +170,8 @@ Of the four readers both packages have, only `read_jsonl` takes the same options
 - `read_parquet` and `read_csv_duckdb` default to different chunk sizes.
 
 `filesystem()` also accepts `require_file_match=True`, which raises when the selection
-matches no file instead of loading an empty table. The source classes below turn it on
+matches no file instead of loading an empty table.
+The source classes in the [sources](#sources) turn it on
 when the URI names one file, and leave globs free to match nothing.
 
 For incremental loads by modification date, the lister reads the date from what each
