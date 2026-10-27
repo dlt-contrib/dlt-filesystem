@@ -13,6 +13,10 @@ dlt-filesystem's `readers` and `filesystem` are compatible with dlt's
 `dlt.sources.filesystem`. While dlt reads CSV, JSONL and Parquet, plus CSV through
 DuckDB, dlt-filesystem features readers for 17 [file formats](#file-formats).
 
+The package provides 19 [storage sources](#sources) for local files, HTTP,
+object stores, file servers and cloud drives. These include S3, Azure,
+SFTP, WebDAV, Google Drive and SharePoint.
+
 ## Install
 
 ```shell
