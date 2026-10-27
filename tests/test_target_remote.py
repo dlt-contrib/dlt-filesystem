@@ -416,7 +416,7 @@ def test_a_bare_azure_uri_reads_dlt_config_under_blobfs(
     capturing_backend, tmp_path, monkeypatch
 ):
     """An empty query leaves the credentials to dlt, which reads them under this
-    destination's own section, ``destination.blobfs``, and never under the
+    destination's own section, ``destination.BlobFS``, and never under the
     ``destination.filesystem`` section dlt documents for its filesystem destination."""
     prefix = "DESTINATION__{}__CREDENTIALS__AZURE_STORAGE_ACCOUNT_{}"
     monkeypatch.setenv(prefix.format("FILESYSTEM", "NAME"), "other")

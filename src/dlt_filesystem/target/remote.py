@@ -83,8 +83,9 @@ class BlobStorageDestination(abc.ABC):
 
         An empty query returns no options, so the caller omits ``credentials`` and dlt
         resolves them as it does for a bare bucket URL: from its config providers, where
-        this destination's section is ``destination.blobfs``
-        (``DESTINATION__BLOBFS__CREDENTIALS__...``) rather than
+        this destination's section is ``destination.BlobFS``
+        (``[destination.BlobFS.credentials]`` in TOML, where the case matters, or
+        ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the environment) rather than
         ``destination.filesystem``, and from the cloud SDK's default chain (boto,
         Application Default Credentials, ``DefaultAzureCredential`` once an account
         name resolves). A
