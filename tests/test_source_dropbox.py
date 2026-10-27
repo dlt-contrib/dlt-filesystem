@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 from dropbox import files
+from dropbox.exceptions import ApiError
 from dropboxdrivefs import DropboxDriveFileSystem
 
 from dlt_filesystem.source.fsspec.dropbox import DropboxSource
@@ -87,3 +88,30 @@ def test_dropbox_root_listing_uses_the_sdk_root(dropbox_client, path):
 
     assert fs.ls(path, detail=False) == ["/path/to/data.csv"]
     assert dropbox_client.files_list_folder.call_args.args == ("",)
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("selection", ["path/to/data.csv", "path/to/*.csv"])
+def test_dropbox_reads_rows_with_the_server_modification_time(
+    dropbox_client, split, selection
+):
+    uri = "dropbox://" if split else "dropbox://" + selection
+    table = selection if split else ""
+    resource = DropboxSource().dlt_source(uri, table, client=dropbox_client)
+
+    with patch(
+        "dropboxdrivefs.core.webhdfs.WebHDFile", return_value=io.BytesIO(b"x\n1\n")
+    ):
+        assert list(resource) == [{"x": 1}]
+
+
+def test_dropbox_directory_errors_remain_failures(dropbox_client):
+    dropbox_client.files_list_folder.side_effect = ApiError(
+        "test-request", "test-error", None, None
+    )
+    fs = DropboxSource().fs_class(client=dropbox_client, skip_instance_cache=True)
+
+    with pytest.raises(
+        RuntimeError, match="Dropbox directory listing failed for /path/to"
+    ):
+        fs.glob("dropbox://path/to/*.csv")

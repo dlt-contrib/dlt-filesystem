@@ -25,9 +25,20 @@ class DropboxFileSystem(DropboxDriveFileSystem):
     def ls(self, path, detail=True, recursive=False, **kwargs):
         path = self._strip_protocol(path)
         # Dropbox addresses the account's root folder with an empty string.
-        return super().ls(
+        listing = super().ls(
             "" if path == "/" else path, detail=detail, recursive=recursive, **kwargs
         )
+        # The backend logs SDK errors and returns None instead of a listing.
+        if listing is None:
+            raise RuntimeError(f"Dropbox directory listing failed for {path}")
+        return listing
+
+    def _refactor_metadata(self, metadata, detail=True):
+        """Expose the server's modification time under the shared lister's key."""
+        info = super()._refactor_metadata(metadata, detail=detail)
+        if detail and info["type"] == "file":
+            info["mtime"] = info["server_modified"]
+        return info
 
 
 class DropboxSource(FilesystemSource):
