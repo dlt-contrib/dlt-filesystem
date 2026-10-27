@@ -1,8 +1,10 @@
-from typing import Any, Dict, Optional, Type
-from urllib.parse import urlsplit, urlunsplit
+from typing import Any, Dict, List, Optional, Type, cast
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
+from webdav4.client import Client
 from webdav4.fsspec import WebdavFileSystem
+from webdav4.multistatus import prepare_propfind_request_data
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -12,10 +14,26 @@ from dlt_filesystem.source.model import FilesystemLocator, ResourceOptions
 from dlt_filesystem.util.python import asbool, cast_to_bool, cast_to_dict, cast_to_int
 
 
+class WebdavPathClient(Client):
+    """Match property responses by the decoded path of the requested URL."""
+
+    def get_props(self, path, name=None, namespace=None, data=None):
+        data = data or prepare_propfind_request_data(name, namespace)
+        headers = {"Content-Type": "application/xml"} if data else {}
+        result = self.propfind(path, headers=headers, data=data)
+        return result.responses[self.join_url(path).path.rstrip("/") or "/"].properties
+
+
 class WebdavPathFileSystem(WebdavFileSystem):
     """Translate HTTP URLs to paths relative to the WebDAV server root."""
 
     root_marker = "/"
+
+    def __init__(self, base_url, auth=None, client=None, **client_opts):
+        client_opts.setdefault("chunk_size", self.blocksize)
+        if client is None:
+            client = WebdavPathClient(base_url, auth=auth, **client_opts)
+        super().__init__(base_url, auth=auth, client=client, **client_opts)
 
     @classmethod
     def _strip_protocol(cls, path: str) -> str:
@@ -28,17 +46,18 @@ class WebdavPathFileSystem(WebdavFileSystem):
 
     def info(self, path: str, **kwargs):
         info = super().info(path, **kwargs)
-        info["name"] = self._strip_protocol(info["name"])
+        info["name"] = self._strip_protocol(quote(info["name"], safe="/"))
         return info
 
     def ls(self, path: str, detail: bool = True, **kwargs):
-        items = super().ls(path, detail=detail, **kwargs)
-        return [
-            self._strip_protocol(item)
-            if isinstance(item, str)
-            else {**item, "name": self._strip_protocol(item["name"])}
+        # Keep names escaped through URL reconstruction and the client's join_url.
+        # A decoded '#' or '?' would otherwise become a fragment or query.
+        items = cast(List[Dict[str, Any]], super().ls(path, detail=True, **kwargs))
+        listing = [
+            {**item, "name": self._strip_protocol(quote(item["name"], safe="/"))}
             for item in items
         ]
+        return listing if detail else [item["name"] for item in listing]
 
 
 class WebdavSource(FilesystemSource):
