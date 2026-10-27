@@ -1,10 +1,10 @@
-from typing import Any, Dict, List, Optional, Type, cast
-from urllib.parse import quote, urlsplit, urlunsplit
+import re
+from typing import Any, Dict, Optional, Type
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
 from webdav4.client import Client
 from webdav4.fsspec import WebdavFileSystem
-from webdav4.multistatus import prepare_propfind_request_data
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -15,13 +15,12 @@ from dlt_filesystem.util.python import asbool, cast_to_bool, cast_to_dict, cast_
 
 
 class WebdavPathClient(Client):
-    """Match property responses by the decoded path of the requested URL."""
+    """Escape decoded filesystem paths when constructing a request URL."""
 
-    def get_props(self, path, name=None, namespace=None, data=None):
-        data = data or prepare_propfind_request_data(name, namespace)
-        headers = {"Content-Type": "application/xml"} if data else {}
-        result = self.propfind(path, headers=headers, data=data)
-        return result.responses[self.join_url(path).path.rstrip("/") or "/"].properties
+    def join_url(self, path, add_trailing_slash=False):
+        return super().join_url(
+            quote(path, safe="/"), add_trailing_slash=add_trailing_slash
+        )
 
 
 class WebdavPathFileSystem(WebdavFileSystem):
@@ -39,25 +38,43 @@ class WebdavPathFileSystem(WebdavFileSystem):
     def _strip_protocol(cls, path: str) -> str:
         parsed = urlsplit(path)
         if parsed.scheme in {"http", "https"}:
-            path = parsed.path
+            path = unquote(parsed.path)
         else:
             path = super()._strip_protocol(path)
         return "/" + path.strip("/")
 
     def info(self, path: str, **kwargs):
         info = super().info(path, **kwargs)
-        info["name"] = self._strip_protocol(quote(info["name"], safe="/"))
+        info["name"] = self._strip_protocol(info["name"])
         return info
 
     def ls(self, path: str, detail: bool = True, **kwargs):
-        # Keep names escaped through URL reconstruction and the client's join_url.
-        # A decoded '#' or '?' would otherwise become a fragment or query.
-        items = cast(List[Dict[str, Any]], super().ls(path, detail=True, **kwargs))
-        listing = [
-            {**item, "name": self._strip_protocol(quote(item["name"], safe="/"))}
+        items = super().ls(path, detail=detail, **kwargs)
+        return [
+            self._strip_protocol(item)
+            if isinstance(item, str)
+            else {**item, "name": self._strip_protocol(item["name"])}
             for item in items
         ]
-        return listing if detail else [item["name"] for item in listing]
+
+    def glob(self, path, maxdepth=None, **kwargs):
+        # Match decoded names, retaining the distinction between URI-escaped
+        # literal glob characters and the pattern's operators.
+        parsed = urlsplit(path)
+        pattern = parsed.path if parsed.scheme in {"http", "https"} else path
+        literals = {"2a": "[*]", "3f": "[?]", "5b": "[[]", "5d": "[]]"}
+        pattern = re.sub(
+            r"%(2a|3f|5b|5d)",
+            lambda match: literals[match.group(1).lower()],
+            pattern,
+            flags=re.IGNORECASE,
+        )
+        matches = super().glob(unquote(pattern), maxdepth=maxdepth, **kwargs)
+        # The lister reconstructs URLs from these paths, so escape only after
+        # matching; requests decode the URL once at _strip_protocol above.
+        if isinstance(matches, dict):
+            return {quote(name, safe="/"): info for name, info in matches.items()}
+        return [quote(name, safe="/") for name in matches]
 
 
 class WebdavSource(FilesystemSource):

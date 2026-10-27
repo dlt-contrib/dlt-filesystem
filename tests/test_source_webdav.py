@@ -14,16 +14,30 @@ from dlt_filesystem.source.lister import glob_files
     "scheme", ["http+webdav", "https+webdav", "http+dav", "https+dav"]
 )
 @pytest.mark.parametrize("split", [False, True])
-@pytest.mark.parametrize("wildcard", [False, True])
+@pytest.mark.parametrize("wildcard", ["none", "all", "prefix"])
 @pytest.mark.parametrize(
     "filename",
-    ["x.csv", "report#1.csv", "report?1.csv", "report%23.csv", "space here.csv"],
+    [
+        "x.csv",
+        "report#1.csv",
+        "report?1.csv",
+        "report%23.csv",
+        "space here.csv",
+        "x+1.csv",
+        "café.csv",
+        "report[1].csv",
+    ],
 )
 def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     requests = []
     content = b"x\n1\n"
     encoded_path = "/p/" + quote(filename, safe="")
-    selection = "p/*.csv" if wildcard else encoded_path.lstrip("/")
+    if wildcard == "all":
+        selection = "p/*.csv"
+    elif wildcard == "prefix":
+        selection = "p/" + quote(filename[:-4], safe="") + "*.csv"
+    else:
+        selection = encoded_path.lstrip("/")
 
     def respond(request):
         requests.append(request)
@@ -74,7 +88,10 @@ def test_webdav_requests_the_selection_once(scheme, split, wildcard, filename):
     with ref.fs.open(items[0]["file_url"], "rb", block_size=0) as stream:
         assert stream.read() == content
 
-    assert ref.fs.ls("p", detail=False) == [encoded_path]
+    assert ref.fs.ls("p", detail=False) == ["/p/" + filename]
+    # Exercise a single-character glob directly: '?' on a source URI is a query.
+    one_character = "/p/" + quote(filename[:-5], safe="") + "?.csv"
+    assert encoded_path in ref.fs.glob(one_character)
     assert {request.method for request in requests} == {"PROPFIND", "GET"}
     for request in requests:
         if request.method == "GET":
