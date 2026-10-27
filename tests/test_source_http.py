@@ -19,6 +19,8 @@ network.
 """
 
 import ssl
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,7 +38,10 @@ from http_server import (
     HTTP_LAST_MODIFIED,
     PEOPLE,
     HttpFixture,
+    ServerMode,
+    _Handler,
     closed_port,
+    serve,
 )
 
 from dlt_filesystem.error import MissingConnectorOption
@@ -303,6 +308,43 @@ def test_first_records_arrive_before_the_whole_body_is_served(range_server):
     assert 0 < served < len(body) // 2, (
         f"first batch cost {served} of {len(body)} bytes"
     )
+
+
+@pytest.mark.parametrize("method", ["HEAD", "GET"])
+@pytest.mark.parametrize(
+    "mode,document,headers,status",
+    [
+        (ServerMode.RANGE, "absent.csv", {}, 404),
+        (ServerMode.RANGE, "people.csv", {}, 200),
+        (ServerMode.RANGE, "people.csv", {"Range": "bytes=0-3"}, 206),
+        (ServerMode.CHUNKED, "people.csv", {}, 200),
+    ],
+)
+def test_http_status_is_recorded_before_headers_are_sent(
+    http_document_root, monkeypatch, method, mode, document, headers, status
+):
+    """A client can finish as soon as headers arrive, even before a body is sent."""
+    observed = []
+    end_headers = _Handler.end_headers
+
+    def observe_status(handler):
+        observed.extend(record.status for record in handler.server.fixture.requests)
+        end_headers(handler)
+
+    monkeypatch.setattr(_Handler, "end_headers", observe_status)
+    with serve(http_document_root, mode) as server:
+        request = urllib.request.Request(  # noqa: S310 - fixture URL
+            server.url(document), method=method, headers=headers
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=30)  # noqa: S310
+        except urllib.error.HTTPError as error:
+            response = error
+        with response:
+            assert response.status == status
+            response.read()
+
+    assert observed == [status]
 
 
 def test_missing_document_fails_loudly(range_server, tmp_path):
@@ -934,9 +976,9 @@ def test_block_size_zero_reads_the_body_whole(range_server):
 
     fsspec's streaming file cannot seek and reports `seekable()` as True anyway, so
     a reader that asks the handle first and seeks second fails at the seek: Parquet,
-    ORC, Feather, JSONL and a headerless CSV all do. Reading the body whole is the
-    answer this method already gives a server that cannot serve ranges, and every
-    reader here can work with it.
+    ORC, Feather and JSONL do. Reading the body whole is the answer this method
+    already gives a server that cannot serve ranges, and every reader here can
+    work with it.
 
     No range probe is issued either way, because nothing about range support would
     change the answer.
@@ -1011,14 +1053,14 @@ def test_a_zero_block_size_reaches_a_reader_that_seeks(
     )
 
 
-def test_a_zero_block_size_reaches_the_headerless_csv_rewind(range_server, tmp_path):
-    """The third seeking reader, and the only one whose seek is conditional.
+def test_block_size_zero_loads_headerless_csv_with_generated_column_names(
+    range_server, tmp_path
+):
+    """A headerless CSV loads with generated names when no column names are supplied.
 
-    `read_csv_headless` sniffs the first row for a column count and rewinds, but
-    only when it has no `column_types` keys to name the columns from. Supplying
-    them is the documented way to load one of these, and it takes the seek out,
-    so this case has to omit them to reach the path at all: with them, the load
-    survives a streaming handle and pins nothing.
+    Omitting `column_types` leaves the reader to generate `unknown_col_0` and
+    `unknown_col_1`. Check those names and all rows when `block_size=0` selects
+    a whole-body read.
     """
     destination = load(
         range_server,
