@@ -4,7 +4,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
 from webdav4.client import Client
-from webdav4.fsspec import WebdavFileSystem
+from webdav4.fsspec import WebdavFileSystem, translate_exceptions, translate_info
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -37,7 +37,13 @@ class _DecodedWebdavFileSystem(WebdavFileSystem):
         return {**info, "name": self._strip_protocol(info["name"])}
 
     def ls(self, path: str, detail: bool = True, **kwargs):
-        items = super().ls(path, detail=detail, **kwargs)
+        # The backend's ls strips whitespace, which can change a directory name.
+        with translate_exceptions():
+            items = self.client.ls(
+                self._strip_protocol(path), detail=detail, allow_listing_resource=False
+            )
+            if detail:
+                items = [translate_info(item) for item in items]
         return [
             self._strip_protocol(item)
             if isinstance(item, str)

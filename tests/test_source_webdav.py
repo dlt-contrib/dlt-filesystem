@@ -178,3 +178,40 @@ def test_webdav_escaped_glob_characters_are_literals(split, selection, expected)
     assert set(ref.fs.glob("/p/report?1.csv")) == {
         quote("/p/" + name, safe="/") for name in filenames
     }
+
+
+@pytest.mark.parametrize("split", [False, True])
+@pytest.mark.parametrize("directory", ["trailing ", "trailing\t", "trailing\n"])
+def test_webdav_directory_whitespace_is_preserved(split, directory):
+    encoded_directory = "/p/" + quote(directory, safe="")
+    encoded_file = encoded_directory + "/x.csv"
+
+    def respond(request):
+        path = request.url.raw_path.decode()
+        if path.rstrip("/") != encoded_directory:
+            return httpx.Response(404)
+        body = f"""<D:multistatus xmlns:D="DAV:">
+<D:response><D:href>{encoded_directory}/</D:href><D:propstat>
+<D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+<D:response><D:href>{encoded_file}</D:href><D:propstat>
+<D:prop><D:resourcetype/><D:getcontentlength>4</D:getcontentlength>
+<D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>"""
+        return httpx.Response(207, text=body)
+
+    origin = "https+webdav://example.test"
+    selection = encoded_directory.lstrip("/") + "/*.csv"
+    uri = origin if split else origin + "/" + selection
+    with patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref):
+        ref = WebdavSource().dlt_source(
+            uri + "#csv",
+            selection if split else "",
+            transport=httpx.MockTransport(respond),
+        )
+    items = list(glob_files(ref.fs, ref.bucket_url, ref.file_glob))
+    assert ["/" + item["relative_path"] for item in items] == [encoded_file]
+    assert ref.fs.ls(encoded_directory, detail=False) == [encoded_file]
+    with pytest.raises(FileNotFoundError):
+        ref.fs.ls("/p/missing")
