@@ -7,34 +7,11 @@ The package started inside [omniload](https://github.com/panodata/omniload) and 
 ships on its own, so any dlt project can build on it. Issues and pull requests are
 welcome.
 
-## What it adds to dlt
+## What's inside
 
-dlt's own `dlt.sources.filesystem` reads CSV, JSONL and Parquet, plus CSV through
-DuckDB. This package has the 17 readers listed under [File formats](#file-formats).
-Its `readers` and `filesystem` accept every keyword argument dlt's versions accept,
-so a pipeline on dlt's filesystem source moves across by changing the import, as
-long as it passes `kwargs`, `client_kwargs` and `incremental` by keyword.
-
-Of the four readers both packages have, only `read_jsonl` takes the same options:
-
-- `read_csv` takes Polars' `read_csv` options, where dlt's takes Pandas' and also
-  opens the file with any `encoding` it is given. It yields each file as one batch, so
-  `chunksize` does not split it.
-- `read_parquet` has no `use_pyarrow`.
-- `read_csv_duckdb` hands `filename=True` to DuckDB, where dlt turns it into a
-  `filename` field on each record.
-- `read_parquet` and `read_csv_duckdb` default to different chunk sizes.
-
-`filesystem()` also accepts `require_file_match=True`, which raises when the selection
-matches no file instead of loading an empty table. The source classes below turn it on
-when the URI names one file, and leave globs free to match nothing.
-
-For incremental loads by modification date, the lister reads the date from what each
-backend's listing returns. dlt's lookup table has no entry for `r2`, `oss`, `hdfs`,
-`webhdfs`, `smb`, `ftp`, `dbfs` or `oci`, and it expects a backend-specific key that
-the Arrow-backed S3 and Azure clients do not carry. Over HTTP an incremental load
-needs a valid `Last-Modified` header. WebDAV is addressed over HTTP too, and asks the
-WebDAV server for each file's date.
+dlt-filesystem's `readers` and `filesystem` are compatible with dlt's
+`dlt.sources.filesystem`. While dlt reads CSV, JSONL and Parquet, plus CSV through
+DuckDB, dlt-filesystem features readers for 17 [file formats](#file-formats).
 
 ## Install
 
@@ -170,6 +147,34 @@ dataset directory level. A `layout` query parameter sets dlt's file layout.
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
 and `dlt_dest` returns the dlt destination to load into.
+
+## Comparison with dlt
+
+dlt-filesystem's `readers` and `filesystem` accept every keyword argument dlt's
+versions accept, so a pipeline on dlt's filesystem source moves across by
+changing the import, as long as it passes `kwargs`, `client_kwargs` and
+`incremental` by keyword.
+
+Of the four readers both packages have, only `read_jsonl` takes the same options:
+
+- `read_csv` takes Polars' `read_csv` options, where dlt's takes Pandas' and also
+  opens the file with any `encoding` it is given. It yields each file as one batch, so
+  `chunksize` does not split it.
+- `read_parquet` has no `use_pyarrow`.
+- `read_csv_duckdb` hands `filename=True` to DuckDB, where dlt turns it into a
+  `filename` field on each record.
+- `read_parquet` and `read_csv_duckdb` default to different chunk sizes.
+
+`filesystem()` also accepts `require_file_match=True`, which raises when the selection
+matches no file instead of loading an empty table. The source classes below turn it on
+when the URI names one file, and leave globs free to match nothing.
+
+For incremental loads by modification date, the lister reads the date from what each
+backend's listing returns. dlt's lookup table has no entry for `r2`, `oss`, `hdfs`,
+`webhdfs`, `smb`, `ftp`, `dbfs` or `oci`, and it expects a backend-specific key that
+the Arrow-backed S3 and Azure clients do not carry. Over HTTP an incremental load
+needs a valid `Last-Modified` header. WebDAV is addressed over HTTP too, and asks the
+WebDAV server for each file's date.
 
 ## Documentation
 
