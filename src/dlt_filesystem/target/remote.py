@@ -1,7 +1,7 @@
 import abc
 import base64
 import json
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlparse
 
 import dlt.destinations.impl.filesystem.filesystem
 from dlt.common.configuration.specs import (
@@ -34,12 +34,21 @@ class BlobStorageDestination(abc.ABC):
     def dlt_dest(self, uri: str, **kwargs):
         parsed_uri = urlparse(uri)
         params = parse_qs(parsed_uri.query)
-        creds = self.credentials(params)
+        # layout shapes the written paths, not the credentials, so a query carrying
+        # only a layout still leaves the credentials to dlt.
+        layout = params.pop("layout", [None])[0]
+        # parse_qs drops blank values, so `access_key_id=` would read as no query at all
+        named = any(
+            key != "layout"
+            for key, _ in parse_qsl(parsed_uri.query, keep_blank_values=True)
+        )
 
         dest_table = kwargs["dest_table"]
 
-        # only validate if dest_table is not a full URI
-        if not parsed_uri.netloc:
+        # a host names the bucket, so only a hostless URI needs one in the table
+        if parsed_uri.netloc:
+            dest_table = dest_table.strip("/ ")
+        else:
             dest_table = self.validate_table(dest_table)
 
         table_parts = dest_table.split("/")
@@ -55,19 +64,48 @@ class BlobStorageDestination(abc.ABC):
 
         opts = {
             "bucket_url": f"{self.protocol}://{base_path}",
-            "credentials": creds,
             # supresses dlt warnings about dataset name normalization.
             # we don't use dataset names in S3 so it's fine to disable this.
             "enable_dataset_name_normalization": False,
+            **self.destination_options(params, named=named),
         }
-        layout = params.get("layout", [None])[0]
         if layout is not None:
             opts["layout"] = layout
-        filesystem_kwargs = self.filesystem_kwargs(params)
-        if filesystem_kwargs:
-            opts["kwargs"] = filesystem_kwargs
 
         return BlobFS(**opts)  # type: ignore
+
+    def destination_options(self, params: dict, *, named: bool = False) -> dict:
+        """Build the dlt filesystem options this protocol derives from URI query params.
+
+        ``params`` is the ``urllib.parse.parse_qs`` output. The return value carries
+        ``credentials``, and ``kwargs`` where the protocol forwards anything dlt does
+        not model, ready to splat into a filesystem destination.
+
+        An empty query returns no options, so the caller omits ``credentials`` and dlt
+        resolves them as it does for a bare bucket URL: from the cloud SDK's default
+        chain (boto, Application Default Credentials, ``DefaultAzureCredential`` once an
+        account name resolves), and from its config providers under the section of the
+        destination the options are splatted into. For the one ``dlt_dest`` builds that
+        is ``destination.BlobFS`` (``[destination.BlobFS.credentials]`` in TOML, where
+        the case matters, or ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the
+        environment); for ``dlt.destinations.filesystem`` it is
+        ``destination.filesystem``. A non-empty query is built strictly instead: a
+        partial credential set raises
+        ``MissingConnectorOption`` naming the missing option, because a URI that
+        carries half a credential asked for that credential to be used.
+
+        ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
+        value (``access_key_id=``). It is built strictly too, so the blank option is
+        reported missing rather than replaced by the environment's credentials.
+        """
+        if not params and not named:
+            return {}
+
+        options: dict = {"credentials": self.credentials(params)}
+        filesystem_kwargs = self.filesystem_kwargs(params)
+        if filesystem_kwargs:
+            options["kwargs"] = filesystem_kwargs
+        return options
 
     def filesystem_kwargs(self, params: dict) -> dict:
         """Return extra fsspec constructor arguments for the destination."""
@@ -80,7 +118,7 @@ class BlobStorageDestination(abc.ABC):
         return table
 
     def dlt_run_params(self, uri: str, table: str, **kwargs):
-        table_parts = table.split("/")
+        table_parts = table.strip("/ ").split("/")
         return {
             "table_name": table_parts[-1].strip(),
         }
@@ -231,26 +269,17 @@ _CREDENTIAL_BUILDERS: dict[str, type[BlobStorageDestination]] = {
 def blob_destination_options(protocol: str, params: dict) -> dict:
     """Build the dlt filesystem options a blob protocol derives from URI query params.
 
-    ``params`` is the ``urllib.parse.parse_qs`` output. The return value carries
-    ``credentials``, and ``kwargs`` where the protocol forwards anything dlt does
-    not model, ready to splat into a filesystem destination.
-
-    An empty query returns no options, so the caller omits ``credentials`` and dlt
-    resolves them from the environment as it does for a bare bucket URL. A
-    non-empty query is built strictly instead: a partial credential set raises
-    ``MissingConnectorOption`` naming the missing option, because a URI that
-    carries half a credential asked for that credential to be used.
+    See ``BlobStorageDestination.destination_options``; a protocol dlt does not
+    type credentials for returns no options. ``parse_qs`` has already dropped blank
+    values from ``params``, so a query whose options are all blank
+    (``access_key_id=``) reads here as an empty query and returns no options.
+    ``dlt_dest`` sees the raw query and builds one that names a blank credential
+    option strictly.
     """
     builder_class = _CREDENTIAL_BUILDERS.get(protocol)
-    if builder_class is None or not params:
+    if builder_class is None:
         return {}
-
-    builder = builder_class()
-    options: dict = {"credentials": builder.credentials(params)}
-    filesystem_kwargs = builder.filesystem_kwargs(params)
-    if filesystem_kwargs:
-        options["kwargs"] = filesystem_kwargs
-    return options
+    return builder_class().destination_options(params)
 
 
 class BlobFSClient(dlt.destinations.impl.filesystem.filesystem.FilesystemClient):
