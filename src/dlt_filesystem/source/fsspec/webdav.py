@@ -102,12 +102,16 @@ class WebdavPathFileSystem(AbstractFileSystem):
         ]
 
     def glob(self, path, maxdepth=None, **kwargs):
-        # URI-escaped glob characters are literals, unlike raw pattern operators.
         pattern = self._strip_protocol(path)
         parsed = urlsplit(path)
         raw_path = parsed.path if parsed.scheme in {"http", "https"} else path
         if raw_path.endswith("/") and not pattern.endswith("/"):
             pattern += "/"
+        # Patterns arrive URI-escaped, but matching runs on decoded names, so
+        # unquoting `report%2A.csv` would turn a literal `*` into a wildcard.
+        # Rewrite the escaped glob characters as one-character classes first:
+        # `%2A` becomes `[*]`, which matches only `*`. Raw `*`, `?` and `[...]`
+        # in the pattern stay operators.
         literals = {"2a": "[*]", "3f": "[?]", "5b": "[[]", "5d": "[]]"}
         pattern = re.sub(
             r"%(2a|3f|5b|5d)",
