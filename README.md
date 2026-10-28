@@ -151,10 +151,10 @@ dataset directory level. A `layout` query parameter sets dlt's file layout.
 With no query parameters, or only `layout`, the bucket destinations leave
 credentials to dlt. In `.dlt/secrets.toml`, use
 `[destination.BlobFS.credentials]` (the TOML section name is case-sensitive), or
-set `DESTINATION__BLOBFS__CREDENTIALS__...` environment variables. Any other query
-parameter switches to explicit URI credential options. Missing or blank required
-URI options raise an error; dlt can still fill missing fields inside decoded GCS
-credentials from its configuration.
+set `DESTINATION__BLOBFS__CREDENTIALS__...` environment variables. With any other
+query parameters, missing or blank required URI credential options raise an
+error. Unset credential fields can still resolve from dlt's configuration,
+including fields inside decoded GCS credentials.
 
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
