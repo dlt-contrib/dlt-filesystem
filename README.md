@@ -148,6 +148,13 @@ to the named file without dlt's `_dlt_*` columns. The bucket destinations hand t
 load to dlt's filesystem destination, write one table per run, and leave out dlt's
 dataset directory level. A `layout` query parameter sets dlt's file layout.
 
+With no query parameters, or only `layout`, the bucket destinations leave
+credentials to dlt. In `.dlt/secrets.toml`, use
+`[destination.BlobFS.credentials]` (the TOML section name is case-sensitive), or
+set `DESTINATION__BLOBFS__CREDENTIALS__...` environment variables. Any other query
+parameter switches to explicit URI credentials, so an incomplete or blank
+credential set raises an error instead of falling back to dlt's configuration.
+
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
 and `dlt_dest` returns the dlt destination to load into.
@@ -159,15 +166,21 @@ versions accept, so a pipeline on dlt's filesystem source moves across by
 changing the import, as long as it passes `kwargs`, `client_kwargs` and
 `incremental` by keyword.
 
-Of the four readers both packages have, only `read_jsonl` takes the same options:
+`read_jsonl` and `read_parquet` take the same options as dlt's. `read_parquet`
+defaults to `chunksize=1000` and yields at most that many rows per batch, as lists
+of row dictionaries or, with `use_pyarrow=True`, `pyarrow.RecordBatch` objects.
+
+The CSV readers differ:
 
 - `read_csv` takes Polars' `read_csv` options, where dlt's takes Pandas' and also
-  opens the file with any `encoding` it is given. It yields each file as one batch, so
-  `chunksize` does not split it.
-- `read_parquet` has no `use_pyarrow`.
-- `read_csv_duckdb` hands `filename=True` to DuckDB, where dlt turns it into a
-  `filename` field on each record.
-- `read_parquet` and `read_csv_duckdb` default to different chunk sizes.
+  opens the file with any `encoding` it is given. Both `read_csv` and
+  `read_csv_headless` yield at most `chunksize` rows per batch (10,000 by default),
+  but load each file into a Polars frame first. The limit bounds emitted row
+  lists, not parsing memory.
+- `read_csv_duckdb` forwards a caller's `filename=True` option to DuckDB, where
+  dlt adds a `filename` field to each record itself.
+- `read_csv_duckdb` defaults to `chunk_size=50000`, compared with dlt's 5,000.
+  It also accepts `chunksize`, which takes precedence over `chunk_size`.
 
 `filesystem()` also accepts `require_file_match=True`, which raises when the selection
 matches no file instead of loading an empty table.
