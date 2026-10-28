@@ -152,8 +152,9 @@ With no query parameters, or only `layout`, the bucket destinations leave
 credentials to dlt. In `.dlt/secrets.toml`, use
 `[destination.BlobFS.credentials]` (the TOML section name is case-sensitive), or
 set `DESTINATION__BLOBFS__CREDENTIALS__...` environment variables. Any other query
-parameter switches to explicit URI credentials, so an incomplete or blank
-credential set raises an error instead of falling back to dlt's configuration.
+parameter switches to explicit URI credential options. Missing or blank required
+URI options raise an error; dlt can still fill missing fields inside decoded GCS
+credentials from its configuration.
 
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
