@@ -17,6 +17,10 @@ The package provides 19 [storage sources](#sources) for local files, HTTP,
 object stores, file servers and cloud drives. These include S3, Azure,
 SFTP, WebDAV, Google Drive and SharePoint.
 
+For [storage destinations](#destinations), omniload supports local files,
+Amazon S3 and S3-compatible block storage, Google Cloud Storage,
+Azure Blob Storage and ADLS Gen2.
+
 ## Install
 
 The base installation covers most formats for reading and writing.
