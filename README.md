@@ -17,29 +17,24 @@ The package provides 19 [storage sources](#sources) for local files, HTTP,
 object stores, file servers and cloud drives. These include S3, Azure,
 SFTP, WebDAV, Google Drive and SharePoint.
 
+For [storage destinations](#destinations), omniload supports local files,
+Amazon S3 and S3-compatible object storage, Google Cloud Storage,
+Azure Blob Storage and ADLS Gen2.
+
 ## Install
+
+The base installation covers most file formats for reading and writing.
 
 ```shell
 pip install dlt-filesystem
 ```
 
-The base install reads and writes most formats. A few need an extra, and a format
-whose extra is missing raises an error that names the extra to install.
-
-| Extra         | Adds                                                              |
-|---------------|-------------------------------------------------------------------|
-| `bson`        | BSON (pymongo)                                                    |
-| `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
-| `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
-| `spreadsheet` | XLSX (read and write) and ODS (read)                              |
-| `vortex`      | Vortex (read and write), Python 3.11 and later                    |
-| `full`        | All of the above (Vortex only on Python 3.11 and later)           |
+To enable additional formats, install the required [extras](#extras).
+The `full` extra includes **all** optional dependencies.
 
 ```shell
 pip install 'dlt-filesystem[full]'
 ```
-
-YAML reads and writes on the base install, because dlt itself depends on PyYAML.
 
 ## Usage
 
@@ -195,9 +190,31 @@ the Arrow-backed S3 and Azure clients do not carry. Over HTTP an incremental loa
 needs a valid `Last-Modified` header. WebDAV is addressed over HTTP too, and asks the
 WebDAV server for each file's date.
 
+## Extras
+
+Some formats require optional dependencies. If a dependency is missing,
+the error names the extra to install.
+
+Install one or multiple extras:
+
+```shell
+pip install 'dlt-filesystem[spreadsheet,vortex]'
+```
+
+Available format extras:
+
+| Extra         | Adds                                                              |
+|---------------|-------------------------------------------------------------------|
+| `bson`        | BSON (pymongo)                                                    |
+| `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
+| `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
+| `spreadsheet` | XLSX (read and write) and ODS (read)                              |
+| `vortex`      | Vortex (read and write), Python 3.11 and later                    |
+| `full`        | All of the above (Vortex only on Python 3.11 and later)           |
+
 ## Documentation
 
-Connection options and per-format reader hints are documented with omniload:
+See the omniload documentation for connection options and per-format reader hints:
 <https://omniload.readthedocs.io/supported-sources/filesystem.html>
 
 ## License
