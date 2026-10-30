@@ -19,27 +19,19 @@ SFTP, WebDAV, Google Drive and SharePoint.
 
 ## Install
 
+The base installation covers most formats for reading and writing.
+
 ```shell
 pip install dlt-filesystem
 ```
 
-The base install reads and writes most formats. A few need an extra, and a format
-whose extra is missing raises an error that names the extra to install.
-
-| Extra         | Adds                                                              |
-|---------------|-------------------------------------------------------------------|
-| `bson`        | BSON (pymongo)                                                    |
-| `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
-| `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
-| `spreadsheet` | XLSX (read and write) and ODS (read)                              |
-| `vortex`      | Vortex (read and write), Python 3.11 and later                    |
-| `full`        | All of the above (Vortex only on Python 3.11 and later)           |
+For enabling certain formats beyond the base installation,
+see the list of all [extras](#extras) and how to install them individually.
+The `full` extra includes **all** those optional dependencies.
 
 ```shell
 pip install 'dlt-filesystem[full]'
 ```
-
-YAML reads and writes on the base install, because dlt itself depends on PyYAML.
 
 ## Usage
 
@@ -194,6 +186,27 @@ backend's listing returns. dlt's lookup table has no entry for `r2`, `oss`, `hdf
 the Arrow-backed S3 and Azure clients do not carry. Over HTTP an incremental load
 needs a valid `Last-Modified` header. WebDAV is addressed over HTTP too, and asks the
 WebDAV server for each file's date.
+
+## Extras
+
+A few formats for reading and writing need an extra dependency.
+If an extra is missing, an error is raised that names the extra to install.
+You can install one or multiple extras like this.
+
+```shell
+pip install 'dlt-filesystem[spreadsheet,vortex]'
+```
+
+The list of available dependencies:
+
+| Extra         | Adds                                                              |
+|---------------|-------------------------------------------------------------------|
+| `bson`        | BSON (pymongo)                                                    |
+| `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
+| `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
+| `spreadsheet` | XLSX (read and write) and ODS (read)                              |
+| `vortex`      | Vortex (read and write), Python 3.11 and later                    |
+| `full`        | All of the above (Vortex only on Python 3.11 and later)           |
 
 ## Documentation
 
