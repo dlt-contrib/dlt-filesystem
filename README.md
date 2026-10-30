@@ -18,20 +18,19 @@ object stores, file servers and cloud drives. These include S3, Azure,
 SFTP, WebDAV, Google Drive and SharePoint.
 
 For [storage destinations](#destinations), omniload supports local files,
-Amazon S3 and S3-compatible block storage, Google Cloud Storage,
+Amazon S3 and S3-compatible object storage, Google Cloud Storage,
 Azure Blob Storage and ADLS Gen2.
 
 ## Install
 
-The base installation covers most formats for reading and writing.
+The base installation covers most file formats for reading and writing.
 
 ```shell
 pip install dlt-filesystem
 ```
 
-For enabling certain formats beyond the base installation,
-see the list of all [extras](#extras) and how to install them individually.
-The `full` extra includes **all** those optional dependencies.
+To enable additional formats, install the required [extras](#extras).
+The `full` extra includes **all** optional dependencies.
 
 ```shell
 pip install 'dlt-filesystem[full]'
@@ -193,15 +192,16 @@ WebDAV server for each file's date.
 
 ## Extras
 
-A few formats for reading and writing need an extra dependency.
-If an extra is missing, an error is raised that names the extra to install.
-You can install one or multiple extras like this.
+Some formats require optional dependencies. If a dependency is missing,
+the error names the extra to install.
+
+Install one or multiple extras:
 
 ```shell
 pip install 'dlt-filesystem[spreadsheet,vortex]'
 ```
 
-The list of available dependencies:
+Available format extras:
 
 | Extra         | Adds                                                              |
 |---------------|-------------------------------------------------------------------|
@@ -214,7 +214,7 @@ The list of available dependencies:
 
 ## Documentation
 
-Connection options and per-format reader hints are documented with omniload:
+See the omniload documentation for connection options and per-format reader hints:
 <https://omniload.readthedocs.io/supported-sources/filesystem.html>
 
 ## License
