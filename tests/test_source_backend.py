@@ -21,6 +21,7 @@ from dlt_filesystem.source.fsspec.oci import OCISource
 from dlt_filesystem.source.router import fsspec_from_resource
 
 OCI_URL = "oci://bucket@ns/prefix"
+OCI_URLS = [OCI_URL, "OCI://bucket@ns/prefix", "ocilake://bucket@ns/prefix"]
 HINT = "pip install 'dlt-filesystem[oci]'"
 
 ENTRY_POINTS = {
@@ -37,9 +38,16 @@ def extraction_error(entry_point: str, url: str) -> BaseException:
     return exc.value.__cause__
 
 
+def forget_oci_implementations() -> None:
+    """Another test importing `ocifs` registers it, which fsspec then serves from memory."""
+    _registry.pop("oci", None)
+    _registry.pop("ocilake", None)
+
+
 @pytest.fixture
 def without_ocifs():
-    with patch.dict(sys.modules, {"ocifs": None}):
+    with patch.dict(sys.modules, {"ocifs": None}), patch.dict(_registry):
+        forget_oci_implementations()
         yield
 
 
@@ -53,15 +61,17 @@ def ocifs_raising(tmp_path, monkeypatch):
         (package / "__init__.py").write_text(statement + "\n")
         monkeypatch.syspath_prepend(str(tmp_path))
         monkeypatch.delitem(sys.modules, "ocifs", raising=False)
+        forget_oci_implementations()
 
-    return install
+    with patch.dict(_registry):
+        yield install
 
 
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)
-@pytest.mark.parametrize("url", [OCI_URL, "OCI://bucket@ns/prefix"])
+@pytest.mark.parametrize("url", OCI_URLS)
 @pytest.mark.usefixtures("without_ocifs")
 def test_public_api_names_the_extra_to_install(entry_point, url):
-    """The scheme is matched the way `urlsplit` reads it, so its case does not matter."""
+    """Every scheme fsspec resolves to `ocifs`, in whatever case `urlsplit` lowers."""
     cause = extraction_error(entry_point, url)
 
     assert isinstance(cause, MissingBackendError)
@@ -69,9 +79,10 @@ def test_public_api_names_the_extra_to_install(entry_point, url):
     assert isinstance(cause.__cause__, ImportError)
 
 
+@pytest.mark.parametrize("url", OCI_URLS)
 @pytest.mark.usefixtures("without_ocifs")
-def test_fsspec_from_resource_names_the_extra_to_install():
-    resource = filesystem(OCI_URL, file_glob="*.parquet")
+def test_fsspec_from_resource_names_the_extra_to_install(url):
+    resource = filesystem(url, file_glob="*.parquet")
 
     with pytest.raises(MissingBackendError, match=r"dlt-filesystem\[oci\]") as exc:
         fsspec_from_resource(resource)
@@ -89,8 +100,16 @@ def test_a_constructed_filesystem_needs_no_backend():
     assert listed == []
 
 
-def test_an_installed_backend_reaches_dlt():
-    """The guard fires on a missing package only."""
+@pytest.mark.usefixtures("without_ocifs")
+def test_an_implementation_the_caller_registered_needs_no_ocifs():
+    """fsspec serves a registered class first, so `ocifs` would never be imported."""
+    with patch.dict(_registry, {"oci": MemoryFileSystem}):
+        assert list(filesystem("oci://nothing-here", file_glob="*.parquet")) == []
+
+
+@pytest.mark.parametrize("url", [OCI_URL, "ocilake://bucket@ns/prefix"])
+def test_an_installed_backend_reaches_dlt(url):
+    """The guard fires on a missing package only, including before fsspec has seen `ocifs`."""
     pytest.importorskip("ocifs")
     reached = []
 
@@ -98,10 +117,11 @@ def test_an_installed_backend_reaches_dlt():
         reached.append(bucket_url)
         return MemoryFileSystem(), "/bucket"
 
-    with patch.object(adapter, "fsspec_filesystem", spy):
-        list(filesystem(OCI_URL, file_glob="*.parquet"))
+    with patch.dict(_registry), patch.object(adapter, "fsspec_filesystem", spy):
+        forget_oci_implementations()
+        list(filesystem(url, file_glob="*.parquet"))
 
-    assert reached == [OCI_URL]
+    assert reached == [url]
 
 
 @pytest.mark.parametrize("entry_point", ENTRY_POINTS)

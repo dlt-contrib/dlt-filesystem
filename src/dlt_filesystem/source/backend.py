@@ -3,6 +3,8 @@
 from typing import Any
 from urllib.parse import urlsplit
 
+from fsspec.registry import known_implementations, registry
+
 from dlt_filesystem.source.error import MissingBackendError
 
 
@@ -29,8 +31,12 @@ def require_backend(bucket_url: str) -> None:
     """Raise the install hint before dlt resolves a backend that sits behind an extra.
 
     dlt's ``fsspec_filesystem`` answers any ``ImportError`` with
-    ``pip install "dlt[<protocol>]"``, and dlt has no ``oci`` extra to install. Every other
-    scheme stays with dlt's own handling.
+    ``pip install "dlt[<protocol>]"``, and dlt has no such extra for the schemes fsspec
+    resolves to ``ocifs``, ``oci`` and ``ocilake``. Every other scheme stays with dlt's own
+    handling, and so does an implementation the caller registered, which needs no ``ocifs``.
     """
-    if urlsplit(bucket_url).scheme == "oci":
+    scheme = urlsplit(bucket_url).scheme
+    if scheme in registry:
+        return
+    if known_implementations.get(scheme, {}).get("class", "").startswith("ocifs."):
         import_ocifs()
