@@ -12,7 +12,7 @@ import pytest
 from dlt.common.exceptions import MissingDependencyException
 from dlt.extract.exceptions import ResourceExtractionError
 from fsspec.implementations.memory import MemoryFileSystem
-from fsspec.registry import _registry
+from fsspec.registry import _registry, known_implementations
 
 from dlt_filesystem.source import adapter
 from dlt_filesystem.source.adapter import filesystem, readers
@@ -71,7 +71,11 @@ def ocifs_raising(tmp_path, monkeypatch):
 @pytest.mark.parametrize("url", OCI_URLS)
 @pytest.mark.usefixtures("without_ocifs")
 def test_public_api_names_the_extra_to_install(entry_point, url):
-    """Every scheme fsspec resolves to `ocifs`, in whatever case `urlsplit` lowers."""
+    """Every scheme fsspec resolves to `ocifs`.
+
+    `urlsplit` lowers the scheme, so `OCI://` gets the hint as well, as it got dlt's. fsspec
+    does not resolve that spelling, so it still fails once the package is installed.
+    """
     cause = extraction_error(entry_point, url)
 
     assert isinstance(cause, MissingBackendError)
@@ -104,6 +108,15 @@ def test_a_constructed_filesystem_needs_no_backend():
 def test_an_implementation_the_caller_registered_needs_no_ocifs():
     """fsspec serves a registered class first, so `ocifs` would never be imported."""
     with patch.dict(_registry, {"oci": MemoryFileSystem}):
+        assert list(filesystem("oci://nothing-here", file_glob="*.parquet")) == []
+
+
+@pytest.mark.usefixtures("without_ocifs")
+def test_an_implementation_registered_by_name_needs_no_ocifs():
+    """A dotted name lands in `known_implementations`, not the registry, so it is read there."""
+    implementation = {"class": "fsspec.implementations.memory.MemoryFileSystem"}
+
+    with patch.dict(known_implementations, {"oci": implementation}):
         assert list(filesystem("oci://nothing-here", file_glob="*.parquet")) == []
 
 

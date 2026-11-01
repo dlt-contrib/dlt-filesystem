@@ -16,7 +16,7 @@ from unittest.mock import patch
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
 
-from dlt_filesystem.source.error import MissingBackendError
+from dlt_filesystem.source.error import MissingBackendError, UnsupportedEndpointError
 from dlt_filesystem.source.fsspec.databricks import DatabricksSource
 from dlt_filesystem.source.fsspec.dropbox import DropboxSource
 from dlt_filesystem.source.fsspec.ftp import FTPSource
@@ -399,4 +399,5 @@ def test_oci_without_ocifs_names_the_extra_to_install():
     ):
         OCISource().dlt_source("oci://bucket@ns/prefix/x.parquet", "")
 
+    assert isinstance(exc.value, UnsupportedEndpointError)
     assert isinstance(exc.value.__cause__, ImportError)
