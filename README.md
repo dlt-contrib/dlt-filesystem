@@ -29,7 +29,7 @@ The base installation covers most file formats for reading and writing.
 pip install dlt-filesystem
 ```
 
-To enable additional formats, install the required [extras](#extras).
+To enable additional formats or storage backends, install the required [extras](#extras).
 The `full` extra includes **all** optional dependencies.
 
 ```shell
@@ -116,7 +116,7 @@ resource. The scheme column is the URI scheme omniload routes to the class.
 | WebHDFS                                         | `webhdfs`                     | `source.fsspec.webhdfs.WebHDFSSource`         | fsspec WebHDFS              |
 | SMB (Windows shares)                            | `smb`                         | `source.fsspec.smb.SMBSource`                 | fsspec SMB (smbprotocol)    |
 | WebDAV                                          | `http+webdav`, `https+webdav` | `source.fsspec.webdav.WebdavSource`           | webdav4                     |
-| Oracle Cloud Object Storage                     | `oci`                         | `source.fsspec.oci.OCISource`                 | ocifs                       |
+| Oracle Cloud Object Storage                     | `oci`                         | `source.fsspec.oci.OCISource`                 | ocifs (`oci` extra)         |
 | Alibaba Cloud OSS                               | `oss`                         | `source.fsspec.oss.OSSSource`                 | ossfs                       |
 | Dropbox                                         | `dropbox`                     | `source.fsspec.dropbox.DropboxSource`         | dropboxdrivefs              |
 | Google Drive                                    | `gdrive`                      | `source.fsspec.gdrive.GoogleDriveSource`      | gdrive-fsspec               |
@@ -125,8 +125,8 @@ resource. The scheme column is the URI scheme omniload routes to the class.
 | Databricks (UC Volumes, Workspace files, DBFS)  | `dbfs`                        | `source.fsspec.databricks.DatabricksSource`   | fsspec-databricks           |
 
 Class paths are relative to `dlt_filesystem`. The Python packages behind every backend
-install with the base package. HDFS also needs Hadoop's native `libhdfs` library,
-which pyarrow loads at runtime.
+install with the base package, except `ocifs`, which needs the `oci` [extra](#extras).
+HDFS also needs Hadoop's native `libhdfs` library, which pyarrow loads at runtime.
 
 ## Destinations
 
@@ -192,8 +192,8 @@ WebDAV server for each file's date.
 
 ## Extras
 
-Some formats require optional dependencies. If a dependency is missing,
-the error names the extra to install.
+Some formats and storage backends require optional dependencies. If a dependency
+is missing, the error names the extra to install.
 
 Install one or multiple extras:
 
@@ -201,13 +201,14 @@ Install one or multiple extras:
 pip install 'dlt-filesystem[spreadsheet,vortex]'
 ```
 
-Available format extras:
+Available extras:
 
 | Extra         | Adds                                                              |
 |---------------|-------------------------------------------------------------------|
 | `bson`        | BSON (pymongo)                                                    |
 | `duckdb`      | The DuckDB CSV reader, `csv_duckdb`                               |
 | `iterable`    | CBOR and MessagePack (read and write), XML (read)                 |
+| `oci`         | Oracle Cloud Object Storage, the `oci` source                     |
 | `spreadsheet` | XLSX (read and write) and ODS (read)                              |
 | `vortex`      | Vortex (read and write), Python 3.11 and later                    |
 | `full`        | All of the above (Vortex only on Python 3.11 and later)           |
