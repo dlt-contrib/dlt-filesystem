@@ -66,9 +66,10 @@ class MissingDecoderError(UnsupportedEndpointError):
 class MissingBackendError(UnsupportedEndpointError):
     """A storage backend whose package is not installed.
 
-    Raised (instead of a bare ``ImportError``) when a source behind an optional extra, such
-    as ``oci``, is requested without that extra. Carries the exact ``pip install`` target so
-    the message is actionable, the way ``MissingDecoderError`` does for a format.
+    Raised (instead of a bare ``ImportError``, or dlt's own hint for an extra it does not
+    have) when a backend behind an optional extra, such as ``oci``, is requested without that
+    extra. Carries the exact ``pip install`` target so the message is actionable, the way
+    ``MissingDecoderError`` does for a format.
     """
 
     pass

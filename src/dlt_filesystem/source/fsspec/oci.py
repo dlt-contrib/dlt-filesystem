@@ -2,9 +2,9 @@ from typing import Any, Dict, Optional, Type
 
 from fsspec import AbstractFileSystem
 
+from dlt_filesystem.source.backend import import_ocifs
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
-from dlt_filesystem.source.error import MissingBackendError
 from dlt_filesystem.source.model import FilesystemLocator, ResourceOptions
 from dlt_filesystem.util.python import apply_alias, cast_to_dict, cast_to_int
 
@@ -19,15 +19,7 @@ class OCISource(FilesystemSource):
 
     @property
     def fs_class(self) -> Type["AbstractFileSystem"]:
-        try:
-            from ocifs import OCIFileSystem
-        except ImportError as e:
-            raise MissingBackendError(
-                "Accessing Oracle Cloud Object Storage needs the ocifs package. "
-                "Install it with: pip install 'dlt-filesystem[oci]'"
-            ) from e
-
-        return OCIFileSystem
+        return import_ocifs().OCIFileSystem
 
     def dlt_source(
         self,
