@@ -69,8 +69,9 @@ def _isolated_reader(
     def call(*args: Any, **kwargs: Any) -> Iterator[TDataItems]:
         yield from reader(*args, **kwargs)
 
-    # `updated=()` skips `__dict__`, so a spec another transformer stored on the public
-    # reader is not copied onto the wrapper.
+    # `updated=()` skips `__dict__`, so dlt's bookkeeping on the public reader (a spec
+    # another transformer stored there) is not carried over. dlt sets the wrapper's own
+    # spec straight afterwards either way, so this is hygiene rather than isolation.
     functools.update_wrapper(call, reader, updated=())
     # Without `__wrapped__`, dlt stores the spec on the wrapper itself.
     delattr(call, "__wrapped__")
