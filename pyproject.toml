@@ -43,7 +43,8 @@ classifiers = [
 dynamic = [ "version" ]
 # `dlt` plus what reading and writing files over fsspec costs. Everything a single
 # format or transport needs beyond this is imported inside the function that needs
-# it, so an install carries the transports and pays for a format only on use.
+# it, so an install carries the other transports and pays for a format, or for a
+# transport behind an extra such as `oci`, only on use.
 dependencies = [
   "adlfs",
   "azure-storage-blob",
@@ -55,7 +56,6 @@ dependencies = [
   "gdrive-fsspec",
   "lakefs-spec<0.16",
   "msgraphfs",
-  "ocifs",
   "ossfs",
   "paramiko",
   "polars>=1.34,<3",
@@ -84,7 +84,7 @@ optional-dependencies.duckdb = [
   "duckdb<2.1",
 ]
 optional-dependencies.full = [
-  "dlt-filesystem[bson,duckdb,iterable,spreadsheet,vortex]",
+  "dlt-filesystem[bson,duckdb,iterable,oci,spreadsheet,vortex]",
 ]
 # Long-tail file formats (MessagePack via iterabledata; CBOR via cbor2, XML via lxml, YAML via
 # PyYAML directly). iterabledata core is light (chardet, tqdm); each format's decoder is pulled
@@ -98,6 +98,12 @@ optional-dependencies.iterable = [
   "lxml<7",
   "msgpack>=1.1,<2",
   "pyyaml<7",
+]
+# Oracle Cloud Object Storage. ocifs pulls in the Oracle Cloud SDK, about 428 MiB of
+# site-packages with `.pyc` files (see panodata/omniload#425), so it is opt-in rather than
+# carried by every install of this package.
+optional-dependencies.oci = [
+  "ocifs",
 ]
 # XLSX and ODS. fastexcel (Polars' `calamine` engine) reads both, xlsxwriter writes
 # XLSX. Polars' own `excel` extra would also pull openpyxl and xlsx2csv, which no

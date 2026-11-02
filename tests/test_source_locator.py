@@ -9,12 +9,14 @@ captured reference.
 """
 
 import posixpath
+import sys
 from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
 
+from dlt_filesystem.source.error import MissingBackendError, UnsupportedEndpointError
 from dlt_filesystem.source.fsspec.databricks import DatabricksSource
 from dlt_filesystem.source.fsspec.dropbox import DropboxSource
 from dlt_filesystem.source.fsspec.ftp import FTPSource
@@ -385,3 +387,17 @@ def test_oci_keeps_the_bucket_in_the_listing_path(uri, table):
         OCIFileSystem._strip_protocol(ref.bucket_url), ref.file_glob
     )
     assert listing == "bucket@ns/prefix/x.parquet"
+
+
+def test_oci_without_ocifs_names_the_extra_to_install():
+    """`ocifs` sits behind an extra, so its absence has to say which one."""
+    with (
+        patch.dict(sys.modules, {"ocifs": None}),
+        pytest.raises(
+            MissingBackendError, match=r"pip install 'dlt-filesystem\[oci\]'"
+        ) as exc,
+    ):
+        OCISource().dlt_source("oci://bucket@ns/prefix/x.parquet", "")
+
+    assert isinstance(exc.value, UnsupportedEndpointError)
+    assert isinstance(exc.value.__cause__, ImportError)

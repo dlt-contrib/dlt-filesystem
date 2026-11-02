@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Type
 
 from fsspec import AbstractFileSystem
 
+from dlt_filesystem.source.backend import import_ocifs
 from dlt_filesystem.source.base import FilesystemSource
 from dlt_filesystem.source.core import infer_resource
 from dlt_filesystem.source.model import FilesystemLocator, ResourceOptions
@@ -18,9 +19,7 @@ class OCISource(FilesystemSource):
 
     @property
     def fs_class(self) -> Type["AbstractFileSystem"]:
-        from ocifs import OCIFileSystem
-
-        return OCIFileSystem
+        return import_ocifs().OCIFileSystem
 
     def dlt_source(
         self,

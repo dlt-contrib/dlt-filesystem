@@ -10,6 +10,7 @@ from dlt.common.storages.configuration import FileSystemCredentials
 from dlt.extract import DltResource
 from fsspec import AbstractFileSystem
 
+from dlt_filesystem.source.backend import require_backend
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import (
     FORMAT_TO_READER,
@@ -334,6 +335,7 @@ def fsspec_from_resource(filesystem_instance: DltResource) -> AbstractFileSystem
     def _get_fsspec(
         bucket_url: str, credentials: Optional[FileSystemCredentials]
     ) -> AbstractFileSystem:
+        require_backend(bucket_url)
         kwargs: Dict[str, Any] = {}
         if credentials is not None:
             kwargs["credentials"] = credentials

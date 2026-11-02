@@ -22,6 +22,7 @@ from dlt.sources.credentials import FileSystemCredentials
 from dlt.sources.filesystem import FileItem, FileItemDict, fsspec_filesystem
 from fsspec import AbstractFileSystem
 
+from dlt_filesystem.source.backend import require_backend
 from dlt_filesystem.source.error import NoFilesFoundError
 from dlt_filesystem.source.format import readers as reader_functions
 from dlt_filesystem.source.format.readers import ReadersSource
@@ -141,6 +142,7 @@ def filesystem(
         # exactly as they are in dlt's own resource.
         fs_client = credentials
     else:
+        require_backend(bucket_url)
         fs_client = fsspec_filesystem(
             bucket_url, credentials, kwargs=kwargs, client_kwargs=client_kwargs
         )[0]
