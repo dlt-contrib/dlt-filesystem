@@ -356,6 +356,47 @@ def test_s3_write_through_leaves_the_keys_to_the_backend(
 @pytest.mark.parametrize(
     "query",
     [
+        "",
+        "endpoint_url=http://localhost:9000&region=eu-west-1",
+    ],
+)
+def test_s3_write_through_fills_keys_from_dlt_config_like_a_bare_uri(
+    capturing_backend, tmp_path, monkeypatch, query
+):
+    """Keys configured for the destination fill a keyless URI, as for a bare one.
+
+    The URI's own endpoint and region win over configured values.
+    """
+    prefix = "DESTINATION__BLOBFS__CREDENTIALS__"
+    monkeypatch.setenv(prefix + "AWS_ACCESS_KEY_ID", "CFGKEY")
+    monkeypatch.setenv(prefix + "AWS_SECRET_ACCESS_KEY", "CFGSECRET")
+    monkeypatch.setenv(prefix + "AWS_SESSION_TOKEN", "CFGTOKEN")
+    monkeypatch.setenv(prefix + "ENDPOINT_URL", "http://configured:1")
+    monkeypatch.setenv(prefix + "REGION_NAME", "ap-southeast-2")
+    written, captured = write_through(
+        capturing_backend, tmp_path, S3Destination(), "s3", query, "bucket/out/people"
+    )
+    assert user_columns(read_parquet(written)) == ROWS
+    endpoint_url, region = (
+        ("http://localhost:9000", "eu-west-1")
+        if query
+        else ("http://configured:1", "ap-southeast-2")
+    )
+    assert {
+        (
+            kwargs.get("key"),
+            kwargs.get("secret"),
+            kwargs.get("token"),
+            kwargs.get("endpoint_url"),
+            kwargs.get("client_kwargs", {}).get("region_name"),
+        )
+        for kwargs in captured
+    } == {("CFGKEY", "CFGSECRET", "CFGTOKEN", endpoint_url, region)}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
         "access_key_id=&endpoint_url=http://localhost:9000",
         "secret_access_key=&region=eu-west-1",
         "access_key_id=KEY&endpoint_url=http://localhost:9000",
