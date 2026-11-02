@@ -14,9 +14,14 @@
 
 """Reads files in s3, gs or azure buckets using fsspec and provides convenience resources for chunked reading of various file formats"""
 
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, Union
+import functools
+import inspect
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple, Union
 
 import dlt
+from dlt.common.configuration import configspec
+from dlt.common.configuration.specs import BaseConfiguration
+from dlt.common.typing import TDataItems
 from dlt.sources import DltResource
 from dlt.sources.credentials import FileSystemCredentials
 from dlt.sources.filesystem import FileItem, FileItemDict, fsspec_filesystem
@@ -44,6 +49,34 @@ def _resolve_reader(registration: ReaderRegistration):
             "dlt_filesystem.source.format.readers"
         )
     return reader
+
+
+@configspec
+class _NoReaderConfiguration(BaseConfiguration):
+    """Reader arguments come from the caller, never from dlt config."""
+
+
+def _isolated_reader(
+    reader: Callable[..., Iterator[TDataItems]],
+) -> Callable[..., Iterator[TDataItems]]:
+    """Wrap `reader` so the spec dlt attaches lands on the wrapper, not the reader.
+
+    dlt stores a transformer's spec on the function it wraps and reads it back on every
+    clone. Giving the public reader function our empty spec would strip config
+    injection from any other transformer built over the same function.
+    """
+
+    def call(*args: Any, **kwargs: Any) -> Iterator[TDataItems]:
+        yield from reader(*args, **kwargs)
+
+    # `updated=()` skips `__dict__`, so a spec another transformer stored on the public
+    # reader is not copied onto the wrapper.
+    functools.update_wrapper(call, reader, updated=())
+    # Without `__wrapped__`, dlt stores the spec on the wrapper itself.
+    delattr(call, "__wrapped__")
+    # A plain assignment fails type checking: functions declare no `__signature__`.
+    setattr(call, "__signature__", inspect.signature(reader))  # noqa: B010
+    return call
 
 
 @dlt.source(_impl_cls=ReadersSource, spec=FilesystemConfigurationResource)
@@ -80,12 +113,15 @@ def readers(
         incremental=incremental,
     )
 
+    # With no spec, dlt resolves every defaulted reader argument from config, and its
+    # lookup falls back to bare keys: a shell's `COLUMNS=80` would become `columns`.
     return tuple(
         filesystem_resource
         | dlt.transformer(
             name=registration.reader_name,
             max_table_nesting=registration.max_table_nesting,
-        )(_resolve_reader(registration))
+            spec=_NoReaderConfiguration,
+        )(_isolated_reader(_resolve_reader(registration)))
         for registration in READER_REGISTRATIONS
     )
 

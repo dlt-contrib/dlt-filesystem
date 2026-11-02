@@ -160,7 +160,8 @@ and `dlt_dest` returns the dlt destination to load into.
 dlt-filesystem's `readers` and `filesystem` accept every keyword argument dlt's
 versions accept, so a pipeline on dlt's filesystem source moves across by
 changing the import, as long as it passes `kwargs`, `client_kwargs` and
-`incremental` by keyword.
+`incremental` by keyword. Reader options such as `chunksize` or `columns` come
+from call arguments or URI hints, not from dlt config or environment variables.
 
 `read_jsonl` and `read_parquet` take the same options as dlt's. `read_parquet`
 defaults to `chunksize=1000` and yields at most that many rows per batch, as lists
