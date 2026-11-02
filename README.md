@@ -127,6 +127,7 @@ resource. The scheme column is the URI scheme omniload routes to the class.
 Class paths are relative to `dlt_filesystem`. The Python packages behind every backend
 install with the base package, except `ocifs`, which needs the `oci` [extra](#extras).
 HDFS also needs Hadoop's native `libhdfs` library, which pyarrow loads at runtime.
+An `s3://` URI may leave out the keys, see [S3 credentials](#s3-credentials).
 
 ## Destinations
 
@@ -149,7 +150,25 @@ credentials to dlt. In `.dlt/secrets.toml`, use
 set `DESTINATION__BLOBFS__CREDENTIALS__...` environment variables. With any other
 query parameters, missing or blank required URI credential options raise an
 error. Unset credential fields can still resolve from dlt's configuration,
-including fields inside decoded GCS credentials.
+including fields inside decoded GCS credentials. The S3 destination also accepts
+`endpoint_url` and `region` without a key pair, as described under
+[S3 credentials](#s3-credentials).
+
+### S3 credentials
+
+An `s3://` URI that names neither `access_key_id` nor `secret_access_key` leaves
+the keys to the AWS SDK's default credential chain, which starts with the
+`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_SESSION_TOKEN` environment
+variables. That is how an AWS Lambda function receives its execution role's
+temporary credentials. `endpoint_url` and `region` still apply, so
+`s3://?endpoint_url=http://localhost:4566` reaches an emulator with credentials from
+the environment. Arrow, which serves S3 reads, ignores `AWS_ENDPOINT_URL`, so an
+S3-compatible endpoint belongs in the URI.
+
+Naming a key, even with a blank value, requires both, so `access_key_id=` is an
+error rather than a fallback to the environment. This applies to the S3 source,
+destination and object staging. `r2://` keeps requiring both keys, since the AWS
+default chain does not hold R2 credentials.
 
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,

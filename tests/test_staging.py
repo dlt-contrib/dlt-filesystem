@@ -4,6 +4,7 @@ from urllib.parse import quote
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
 
+from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.staging import (
     RemoteObject,
     RemoteObjectNotFoundError,
@@ -82,6 +83,50 @@ def test_filesystem_for_serves_an_s3_compatible_alias_through_s3fs():
     filesystem = _filesystem_for(remote)
     assert isinstance(filesystem, S3FileSystem)
     assert filesystem.client_kwargs["region_name"] == "auto"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("", {"use_listings_cache": False}),
+        (
+            "?endpoint_url=http://localhost:9000&region=eu-west-1",
+            {
+                "use_listings_cache": False,
+                "endpoint_url": "http://localhost:9000",
+                "client_kwargs": {"region_name": "eu-west-1"},
+            },
+        ),
+    ],
+)
+def test_filesystem_for_leaves_s3_keys_to_the_default_chain(mocker, query, expected):
+    filesystem = mocker.patch("s3fs.S3FileSystem")
+    _filesystem_for(RemoteObject.from_uri(f"s3://bucket/path/database.duckdb{query}"))
+    filesystem.assert_called_once_with(**expected)
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "s3://bucket/path/database.duckdb?access_key_id=",
+        "s3://bucket/path/database.duckdb"
+        "?access_key_id=&endpoint_url=http://localhost:9000",
+        "s3://bucket/path/database.duckdb?access_key_id=KEY",
+        "r2://bucket/path/database.duckdb",
+        "r2://bucket/path/database.duckdb"
+        "?endpoint_url=https://account.r2.cloudflarestorage.com",
+    ],
+)
+def test_filesystem_for_refuses_blank_partial_and_keyless_r2_credentials(uri):
+    with pytest.raises(MissingConnectorOption):
+        _filesystem_for(RemoteObject.from_uri(uri))
+
+
+def test_remote_object_records_named_options_for_s3_only():
+    assert RemoteObject.from_uri(
+        "s3://bucket/object?access_key_id=&region=x"
+    ).named_options == {"access_key_id", "region"}
+    assert RemoteObject.from_uri("r2://bucket/object?region=x").named_options is None
 
 
 def test_filesystem_for_preserves_azure_connection_string(mocker):

@@ -1,7 +1,8 @@
 import abc
 import base64
 import json
-from urllib.parse import parse_qs, parse_qsl, urlparse
+from typing import AbstractSet, Optional
+from urllib.parse import parse_qs, urlparse
 
 import dlt.destinations.impl.filesystem.filesystem
 from dlt.common.configuration.specs import (
@@ -12,7 +13,11 @@ from dlt.common.configuration.specs import (
 from dlt.common.storages.configuration import FileSystemCredentials
 
 from dlt_filesystem.error import MissingConnectorOption
-from dlt_filesystem.util.auth import parse_azure_blob_auth
+from dlt_filesystem.util.auth import (
+    parse_azure_blob_auth,
+    query_option_names,
+    s3_static_keys,
+)
 
 
 class BlobStorageDestination(abc.ABC):
@@ -21,8 +26,16 @@ class BlobStorageDestination(abc.ABC):
         return False
 
     @abc.abstractmethod
-    def credentials(self, params: dict) -> FileSystemCredentials:
-        """Build credentials for the blob storage destination."""
+    def credentials(
+        self, params: dict, *, named_options: Optional[AbstractSet[str]] = None
+    ) -> FileSystemCredentials:
+        """Build credentials for the blob storage destination.
+
+        ``named_options`` is every option the raw query names, blank ones included
+        (see ``query_option_names``), or ``None`` when the caller has only the
+        parsed ``params``. A protocol that can tell a missing key from a blank one
+        uses it; the others ignore it.
+        """
         pass
 
     @property
@@ -38,10 +51,8 @@ class BlobStorageDestination(abc.ABC):
         # only a layout still leaves the credentials to dlt.
         layout = params.pop("layout", [None])[0]
         # parse_qs drops blank values, so `access_key_id=` would read as no query at all
-        named = any(
-            key != "layout"
-            for key, _ in parse_qsl(parsed_uri.query, keep_blank_values=True)
-        )
+        named_options = query_option_names(parsed_uri.query)
+        named = any(key != "layout" for key in named_options)
 
         dest_table = kwargs["dest_table"]
 
@@ -67,14 +78,22 @@ class BlobStorageDestination(abc.ABC):
             # supresses dlt warnings about dataset name normalization.
             # we don't use dataset names in S3 so it's fine to disable this.
             "enable_dataset_name_normalization": False,
-            **self.destination_options(params, named=named),
+            **self.destination_options(
+                params, named=named, named_options=named_options
+            ),
         }
         if layout is not None:
             opts["layout"] = layout
 
         return BlobFS(**opts)  # type: ignore
 
-    def destination_options(self, params: dict, *, named: bool = False) -> dict:
+    def destination_options(
+        self,
+        params: dict,
+        *,
+        named: bool = False,
+        named_options: Optional[AbstractSet[str]] = None,
+    ) -> dict:
         """Build the dlt filesystem options this protocol derives from URI query params.
 
         ``params`` is the ``urllib.parse.parse_qs`` output. The return value carries
@@ -97,11 +116,20 @@ class BlobStorageDestination(abc.ABC):
         ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
         value (``access_key_id=``). It is built strictly too, so the blank option is
         reported missing rather than replaced by the environment's credentials.
+
+        ``named_options`` is every option the raw query names, blank ones included.
+        With it, S3 tells a query that names no key (``s3://?endpoint_url=...``,
+        ``s3://?region=...``) from one that names a blank key: the first builds
+        credentials that carry the endpoint and region and leave the keys to the
+        default chain, the second is refused. Without it (``None``) a non-empty S3
+        query needs both keys, as it always has.
         """
         if not params and not named:
             return {}
 
-        options: dict = {"credentials": self.credentials(params)}
+        options: dict = {
+            "credentials": self.credentials(params, named_options=named_options)
+        }
         filesystem_kwargs = self.filesystem_kwargs(params)
         if filesystem_kwargs:
             options["kwargs"] = filesystem_kwargs
@@ -137,14 +165,16 @@ class S3Destination(BlobStorageDestination):
     def protocol(self) -> str:
         return "s3"
 
-    def credentials(self, params: dict) -> FileSystemCredentials:
-        access_key_id = params.get("access_key_id", [None])[0]
-        if access_key_id is None:
-            raise MissingConnectorOption("access_key_id", "S3")
+    def credentials(
+        self, params: dict, *, named_options: Optional[AbstractSet[str]] = None
+    ) -> FileSystemCredentials:
+        """Build AWS credentials, with or without a static key pair.
 
-        secret_access_key = params.get("secret_access_key", [None])[0]
-        if secret_access_key is None:
-            raise MissingConnectorOption("secret_access_key", "S3")
+        A query that names no key (with ``named_options`` given) leaves the keys
+        out, and dlt fills them from the AWS SDK's default chain; ``endpoint_url``
+        and ``region`` apply either way.
+        """
+        keys = s3_static_keys(params, "S3", named_options=named_options)
 
         endpoint_url = params.get("endpoint_url", [None])[0]
         if endpoint_url is not None:
@@ -152,11 +182,13 @@ class S3Destination(BlobStorageDestination):
             if not parsed_endpoint.scheme or not parsed_endpoint.netloc:
                 raise ValueError("Invalid endpoint_url. Must be a valid URL.")
 
-        return AwsCredentials(
-            aws_access_key_id=access_key_id,
-            aws_secret_access_key=secret_access_key,
+        credentials = AwsCredentials(
             endpoint_url=endpoint_url,
+            region_name=params.get("region", [None])[0],
         )
+        if keys is not None:
+            credentials.aws_access_key_id, credentials.aws_secret_access_key = keys
+        return credentials
 
 
 class GCSDestination(BlobStorageDestination):
@@ -164,7 +196,9 @@ class GCSDestination(BlobStorageDestination):
     def protocol(self) -> str:
         return "gs"
 
-    def credentials(self, params: dict) -> FileSystemCredentials:
+    def credentials(
+        self, params: dict, *, named_options: Optional[AbstractSet[str]] = None
+    ) -> FileSystemCredentials:
         """Builds GCS credentials from the provided parameters."""
         credentials_path = params.get("credentials_path")
         credentials_base64 = params.get("credentials_base64")
@@ -202,7 +236,9 @@ class AzureDestination(BlobStorageDestination):
     def protocol(self) -> str:
         return "az"
 
-    def credentials(self, params: dict) -> FileSystemCredentials:
+    def credentials(
+        self, params: dict, *, named_options: Optional[AbstractSet[str]] = None
+    ) -> FileSystemCredentials:
         """Build dlt Azure credentials from URI query params.
 
         Maps the ingestr-style short names onto dlt's spec fields; dlt's
@@ -266,20 +302,29 @@ _CREDENTIAL_BUILDERS: dict[str, type[BlobStorageDestination]] = {
 }
 
 
-def blob_destination_options(protocol: str, params: dict) -> dict:
+def blob_destination_options(
+    protocol: str,
+    params: dict,
+    *,
+    named: bool = False,
+    named_options: Optional[AbstractSet[str]] = None,
+) -> dict:
     """Build the dlt filesystem options a blob protocol derives from URI query params.
 
     See ``BlobStorageDestination.destination_options``; a protocol dlt does not
     type credentials for returns no options. ``parse_qs`` has already dropped blank
-    values from ``params``, so a query whose options are all blank
-    (``access_key_id=``) reads here as an empty query and returns no options.
-    ``dlt_dest`` sees the raw query and builds one that names a blank credential
-    option strictly.
+    values from ``params``, so without ``named`` and ``named_options`` a query whose
+    options are all blank (``access_key_id=``) reads here as an empty query and
+    returns no options, and a non-empty S3 query needs both keys. A caller holding
+    the raw query passes both, computed as ``dlt_dest`` does, to get the same
+    behaviour as ``dlt_dest``.
     """
     builder_class = _CREDENTIAL_BUILDERS.get(protocol)
     if builder_class is None:
         return {}
-    return builder_class().destination_options(params)
+    return builder_class().destination_options(
+        params, named=named, named_options=named_options
+    )
 
 
 class BlobFSClient(dlt.destinations.impl.filesystem.filesystem.FilesystemClient):

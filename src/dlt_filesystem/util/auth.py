@@ -1,8 +1,8 @@
 import base64
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
-from urllib.parse import urlparse, urlsplit
+from typing import AbstractSet, Any, Optional
+from urllib.parse import parse_qsl, urlparse, urlsplit
 
 from dlt_filesystem.error import MissingConnectorOption
 
@@ -10,6 +10,8 @@ AZURE_SERVICE_PRINCIPAL_FIELDS = ("tenant_id", "client_id", "client_secret")
 #: The service labels an Azure endpoint suffix carries, which arrow keeps apart.
 AZURE_BLOB_LABEL = ".blob."
 AZURE_DFS_LABEL = ".dfs."
+#: The two URI options that make up a static S3 credential.
+S3_KEY_OPTIONS = frozenset({"access_key_id", "secret_access_key"})
 
 
 def _first(params: dict[str, list[str]], key: str) -> Optional[str]:
@@ -17,25 +19,68 @@ def _first(params: dict[str, list[str]], key: str) -> Optional[str]:
     return params.get(key, [None])[0]
 
 
-def s3_filesystem_kwargs(
-    params: dict[str, list[str]], connector: str = "S3"
-) -> dict[str, Any]:
-    """Translate S3 URI parameters into ``s3fs`` arguments."""
+def query_option_names(query: str) -> frozenset[str]:
+    """Return every option a raw URI query names, including those with blank values.
+
+    ``parse_qs`` drops a blank value, so ``access_key_id=`` and no ``access_key_id``
+    at all read the same once parsed. A caller that may leave credentials to the
+    SDK's default chain passes these names alongside the parsed options, so a key
+    the URI names but leaves blank is still refused rather than replaced by the
+    environment's credentials.
+    """
+    return frozenset(key for key, _ in parse_qsl(query, keep_blank_values=True))
+
+
+def s3_static_keys(
+    params: dict[str, list[str]],
+    connector: str = "S3",
+    *,
+    named_options: Optional[AbstractSet[str]] = None,
+) -> Optional[tuple[str, str]]:
+    """Return the static S3 key pair a URI carries, or ``None`` for the default chain.
+
+    ``named_options`` is the set :func:`query_option_names` returns for the raw
+    query. ``None`` means the caller offers no such set, which keeps the strict
+    rule: both keys are required. With a set, a query that names neither key
+    returns ``None``, and the client resolves credentials as the AWS SDKs do (the
+    environment, including a session token, then shared config, then container or
+    instance roles). A key that is named, even blank, or present in ``params``
+    makes the pair required, so half a credential is still refused.
+    """
     access_key_id = _first(params, "access_key_id")
+    secret_access_key = _first(params, "secret_access_key")
+    if (
+        named_options is not None
+        and not (S3_KEY_OPTIONS & named_options)
+        and access_key_id is None
+        and secret_access_key is None
+    ):
+        return None
     if not access_key_id:
         raise MissingConnectorOption("access_key_id", connector)
-
-    secret_access_key = _first(params, "secret_access_key")
     if not secret_access_key:
         raise MissingConnectorOption("secret_access_key", connector)
+    return access_key_id, secret_access_key
 
+
+def s3_filesystem_kwargs(
+    params: dict[str, list[str]],
+    connector: str = "S3",
+    *,
+    named_options: Optional[AbstractSet[str]] = None,
+) -> dict[str, Any]:
+    """Translate S3 URI parameters into ``s3fs`` arguments.
+
+    See :func:`s3_static_keys` for when the keys may be left out.
+    """
     kwargs: dict[str, Any] = {
-        "key": access_key_id,
-        "secret": secret_access_key,
         # S3FileSystem caches directory listings by default. Disable the cache so
         # long-lived processes see objects created between incremental runs.
         "use_listings_cache": False,
     }
+    keys = s3_static_keys(params, connector, named_options=named_options)
+    if keys is not None:
+        kwargs["key"], kwargs["secret"] = keys
     endpoint_url = _first(params, "endpoint_url")
     if endpoint_url:
         kwargs["endpoint_url"] = endpoint_url
@@ -46,21 +91,21 @@ def s3_filesystem_kwargs(
 
 
 def s3_arrow_filesystem_kwargs(
-    params: dict[str, list[str]], connector: str = "S3"
+    params: dict[str, list[str]],
+    connector: str = "S3",
+    *,
+    named_options: Optional[AbstractSet[str]] = None,
 ) -> dict[str, Any]:
-    """Translate S3 URI parameters into ``pyarrow.fs`` arguments."""
-    access_key_id = _first(params, "access_key_id")
-    if not access_key_id:
-        raise MissingConnectorOption("access_key_id", connector)
+    """Translate S3 URI parameters into ``pyarrow.fs`` arguments.
 
-    secret_access_key = _first(params, "secret_access_key")
-    if not secret_access_key:
-        raise MissingConnectorOption("secret_access_key", connector)
-
-    kwargs: dict[str, Any] = {
-        "access_key": access_key_id,
-        "secret_key": secret_access_key,
-    }
+    See :func:`s3_static_keys` for when the keys may be left out. Arrow reads no
+    endpoint from the environment (``AWS_ENDPOINT_URL`` is ignored), so an
+    S3-compatible service needs ``endpoint_url`` in the URI either way.
+    """
+    kwargs: dict[str, Any] = {}
+    keys = s3_static_keys(params, connector, named_options=named_options)
+    if keys is not None:
+        kwargs["access_key"], kwargs["secret_key"] = keys
 
     endpoint_url = _first(params, "endpoint_url")
     if endpoint_url:

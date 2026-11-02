@@ -4,6 +4,7 @@ from urllib.parse import quote, urlparse
 
 import pytest
 
+from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.fsspec.r2 import R2Source
@@ -376,6 +377,73 @@ def test_s3_source_rejects_endpoint_without_http_scheme():
             "&endpoint_url=localhost:9000",
             "",
         )
+
+
+def _arrow_kwargs_for(source, uri: str) -> list[dict]:
+    """Build ``source`` from ``uri`` and return the kwargs Arrow's S3 client got."""
+    captured_kwargs: list[dict] = []
+
+    def build_filesystem(**kwargs):
+        captured_kwargs.append(kwargs)
+        return FakeArrowS3Filesystem()
+
+    with (
+        patch("pyarrow.fs.S3FileSystem", side_effect=build_filesystem),
+        patch("dlt_filesystem.source.core.resource_for_reader"),
+    ):
+        source.dlt_source(uri, "")
+    return captured_kwargs
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("", {}),
+        ("?region=eu-west-1", {"region": "eu-west-1"}),
+        (
+            "?endpoint_url=http://localhost:9000&region=eu-west-1",
+            {
+                "scheme": "http",
+                "endpoint_override": "localhost:9000",
+                "region": "eu-west-1",
+            },
+        ),
+    ],
+)
+def test_s3_source_leaves_the_keys_to_the_default_chain_when_none_is_named(
+    query, expected
+):
+    """No key in the URI: Arrow resolves credentials, session token included."""
+    assert _arrow_kwargs_for(S3Source(), f"s3://bucket/data.csv{query}") == [expected]
+
+
+@pytest.mark.parametrize(
+    ("query", "missing"),
+    [
+        ("access_key_id=", "access_key_id"),
+        ("access_key_id=&secret_access_key=", "access_key_id"),
+        ("access_key_id=&endpoint_url=http://localhost:9000", "access_key_id"),
+        ("secret_access_key=&region=eu-west-1", "access_key_id"),
+        ("access_key_id=KEY", "secret_access_key"),
+        ("access_key_id=KEY&secret_access_key=", "secret_access_key"),
+        (
+            "secret_access_key=SECRET&endpoint_url=http://localhost:9000",
+            "access_key_id",
+        ),
+    ],
+)
+def test_s3_source_refuses_a_named_key_that_is_blank_or_alone(query, missing):
+    with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
+        S3Source().dlt_source(f"s3://bucket/data.csv?{query}", "")
+
+
+@pytest.mark.parametrize(
+    "query", ["", "?endpoint_url=https://account.r2.cloudflarestorage.com"]
+)
+def test_r2_source_still_requires_both_keys(query):
+    """The AWS default chain finds AWS credentials, which R2 does not accept."""
+    with pytest.raises(MissingConnectorOption, match="^access_key_id is required"):
+        R2Source().dlt_source(f"r2://bucket/data.csv{query}", "")
 
 
 def test_s3_source_rejects_endpoint_with_path_prefix():

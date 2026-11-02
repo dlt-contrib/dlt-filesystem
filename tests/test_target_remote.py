@@ -10,6 +10,7 @@ import base64
 import inspect
 import io
 import json
+from functools import partial
 from pathlib import Path
 from urllib.parse import parse_qs, quote
 
@@ -34,6 +35,7 @@ from dlt_filesystem.target.remote import (
     S3Destination,
     blob_destination_options,
 )
+from dlt_filesystem.util.auth import query_option_names
 
 ROWS = [{"id": 1, "name": "Ada"}, {"id": 2, "name": "Bob"}, {"id": 3, "name": "Cy"}]
 
@@ -283,6 +285,116 @@ def test_s3_write_through(capturing_backend, tmp_path):
         (kwargs.get("key"), kwargs.get("secret"), kwargs.get("endpoint_url"))
         for kwargs in captured
     } == {("KEY", "SECRET", "http://localhost:9000")}
+
+
+def test_s3_credentials_map_the_region():
+    credentials = S3Destination().credentials(parse_qs(f"{S3_AUTH}&region=eu-west-1"))
+    assert isinstance(credentials, AwsCredentials)
+    assert credentials.region_name == "eu-west-1"
+    assert credentials.aws_access_key_id == "KEY"
+
+
+@pytest.mark.parametrize(
+    ("query", "endpoint_url", "region"),
+    [
+        ("endpoint_url=http://localhost:9000", "http://localhost:9000", None),
+        ("region=eu-west-1", None, "eu-west-1"),
+        (
+            "endpoint_url=http://localhost:9000&region=eu-west-1&layout=x",
+            "http://localhost:9000",
+            "eu-west-1",
+        ),
+    ],
+)
+def test_dlt_dest_leaves_the_keys_to_the_default_chain_when_none_is_named(
+    query, endpoint_url, region
+):
+    dest = S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
+    credentials = dest.config_params["credentials"]
+    assert isinstance(credentials, AwsCredentials)
+    assert credentials.aws_access_key_id is None
+    assert credentials.aws_secret_access_key is None
+    assert credentials.endpoint_url == endpoint_url
+    assert credentials.region_name == region
+
+
+def test_s3_write_through_leaves_the_keys_to_the_backend(
+    capturing_backend, tmp_path, monkeypatch
+):
+    """A URI naming no key reaches the backend with its endpoint and region only.
+
+    No key, secret or token is passed, exactly as for a bare ``s3://``, so s3fs
+    resolves credentials through botocore's default chain when it connects: the
+    execution-role case, where temporary credentials and their session token
+    arrive through the environment. The environment is set here to show dlt does
+    not copy it into the constructor arguments either.
+    """
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ENVKEY")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ENVSECRET")
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "ENVTOKEN")
+    written, captured = write_through(
+        capturing_backend,
+        tmp_path,
+        S3Destination(),
+        "s3",
+        "endpoint_url=http://localhost:9000&region=eu-west-1",
+        "bucket/out/people",
+    )
+    assert user_columns(read_parquet(written)) == ROWS
+    assert {
+        (
+            kwargs.get("key"),
+            kwargs.get("secret"),
+            kwargs.get("token"),
+            kwargs.get("endpoint_url"),
+            kwargs.get("client_kwargs", {}).get("region_name"),
+        )
+        for kwargs in captured
+    } == {(None, None, None, "http://localhost:9000", "eu-west-1")}
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "access_key_id=&endpoint_url=http://localhost:9000",
+        "secret_access_key=&region=eu-west-1",
+        "access_key_id=KEY&endpoint_url=http://localhost:9000",
+        "secret_access_key=SECRET&region=eu-west-1",
+    ],
+)
+def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query):
+    with pytest.raises(MissingConnectorOption):
+        S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
+
+
+def test_blob_destination_options_stays_strict_without_named_options():
+    """A caller holding only parsed params keeps the old rule for S3."""
+    with pytest.raises(MissingConnectorOption, match="^access_key_id"):
+        blob_destination_options("s3", parse_qs("endpoint_url=http://localhost:9000"))
+
+
+@pytest.mark.parametrize(
+    ("query", "refused"),
+    [
+        ("endpoint_url=http://localhost:9000", False),
+        ("access_key_id=&endpoint_url=http://localhost:9000", True),
+        ("access_key_id=", True),
+    ],
+)
+def test_blob_destination_options_follows_dlt_dest_with_the_raw_query(query, refused):
+    named_options = query_option_names(query)
+    call = partial(
+        blob_destination_options,
+        "s3",
+        parse_qs(query),
+        named=any(key != "layout" for key in named_options),
+        named_options=named_options,
+    )
+    if refused:
+        with pytest.raises(MissingConnectorOption):
+            call()
+    else:
+        assert call()["credentials"].aws_access_key_id is None
 
 
 # --- GCS ---------------------------------------------------------------------------

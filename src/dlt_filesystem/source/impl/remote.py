@@ -19,6 +19,7 @@ from dlt_filesystem.util.auth import (
     azure_arrow_filesystem_kwargs,
     gcs_filesystem_kwargs,
     parse_azure_blob_auth,
+    query_option_names,
     s3_arrow_filesystem_kwargs,
 )
 from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper
@@ -138,6 +139,11 @@ class GCSSource(FilesystemSource):
 class S3CompatibleSource(FilesystemSource):
     """Access S3 and compatible filesystems through ``pyarrow.fs``."""
 
+    #: Whether a URI that names no key leaves credentials to the AWS SDK's default
+    #: chain. Only AWS S3 itself: the chain finds AWS credentials, which no other
+    #: S3-compatible service accepts, so those keep requiring both keys.
+    allows_default_credentials: bool = False
+
     @property
     @abstractmethod
     def fs_name(self) -> str:
@@ -174,7 +180,15 @@ class S3CompatibleSource(FilesystemSource):
     ):
         parsed_uri = urlparse(uri)
         source_fields = parse_qs(parsed_uri.query)
-        fs_kwargs = s3_arrow_filesystem_kwargs(source_fields, self.fs_name)
+        fs_kwargs = s3_arrow_filesystem_kwargs(
+            source_fields,
+            self.fs_name,
+            named_options=(
+                query_option_names(parsed_uri.query)
+                if self.allows_default_credentials
+                else None
+            ),
+        )
         bucket_name, path_to_file = parse_uri(parsed_uri, table)
         if not bucket_name or not path_to_file:
             raise InvalidBlobTableError(self.fs_name)
@@ -213,6 +227,8 @@ class S3CompatibleSource(FilesystemSource):
 
 
 class S3Source(S3CompatibleSource):
+    allows_default_credentials = True
+
     @property
     def fs_name(self) -> str:
         return "S3"
