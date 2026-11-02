@@ -12,6 +12,15 @@ AZURE_BLOB_LABEL = ".blob."
 AZURE_DFS_LABEL = ".dfs."
 #: The two URI options that make up a static S3 credential.
 S3_KEY_OPTIONS = frozenset({"access_key_id", "secret_access_key"})
+#: Spellings that also name a key, though the URI does not take them: dlt's own
+#: credential field names, and a session token. Naming one keeps the strict rule, so
+#: the URI fails rather than silently using the environment's credentials.
+S3_KEY_ALIASES = frozenset(
+    {"aws_access_key_id", "aws_secret_access_key", "aws_session_token", "session_token"}
+)
+#: Options that still apply without keys, and so must not be named blank there: an
+#: empty endpoint would otherwise send the request to AWS itself.
+S3_KEYLESS_OPTIONS = ("endpoint_url", "region")
 
 
 def _first(params: dict[str, list[str]], key: str) -> Optional[str]:
@@ -42,19 +51,24 @@ def s3_static_keys(
     ``named_options`` is the set :func:`query_option_names` returns for the raw
     query. ``None`` means the caller offers no such set, which keeps the strict
     rule: both keys are required. With a set, a query that names neither key
-    returns ``None``, and the client resolves credentials as the AWS SDKs do (the
-    environment, including a session token, then shared config, then container or
-    instance roles). A key that is named, even blank, or present in ``params``
-    makes the pair required, so half a credential is still refused.
+    returns ``None``, and the client resolves credentials through the AWS SDK's
+    default chain, which starts with the environment (session token included). A
+    key that is named, even blank, under its own name or an alias in
+    ``S3_KEY_ALIASES``, or present in ``params``, makes the pair required, so half
+    a credential is still refused. Without keys, a named but blank ``endpoint_url``
+    or ``region`` is refused too.
     """
     access_key_id = _first(params, "access_key_id")
     secret_access_key = _first(params, "secret_access_key")
     if (
         named_options is not None
-        and not (S3_KEY_OPTIONS & named_options)
+        and not ((S3_KEY_OPTIONS | S3_KEY_ALIASES) & named_options)
         and access_key_id is None
         and secret_access_key is None
     ):
+        for option in S3_KEYLESS_OPTIONS:
+            if option in named_options and not _first(params, option):
+                raise MissingConnectorOption(option, connector)
         return None
     if not access_key_id:
         raise MissingConnectorOption("access_key_id", connector)

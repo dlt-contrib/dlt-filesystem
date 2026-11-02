@@ -112,6 +112,9 @@ def test_filesystem_for_leaves_s3_keys_to_the_default_chain(mocker, query, expec
         "s3://bucket/path/database.duckdb"
         "?access_key_id=&endpoint_url=http://localhost:9000",
         "s3://bucket/path/database.duckdb?access_key_id=KEY",
+        "s3://bucket/path/database.duckdb?endpoint_url=",
+        "s3://bucket/path/database.duckdb"
+        "?aws_access_key_id=KEY&aws_secret_access_key=SECRET",
         "r2://bucket/path/database.duckdb",
         "r2://bucket/path/database.duckdb"
         "?endpoint_url=https://account.r2.cloudflarestorage.com",

@@ -27,7 +27,7 @@ from dlt_filesystem.source.router import (
     source_selects_single_file,
     split_format_hint,
 )
-from dlt_filesystem.util.auth import parse_azure_blob_auth
+from dlt_filesystem.util.auth import parse_azure_blob_auth, s3_static_keys
 
 
 @dataclass
@@ -430,11 +430,23 @@ def test_s3_source_leaves_the_keys_to_the_default_chain_when_none_is_named(
             "secret_access_key=SECRET&endpoint_url=http://localhost:9000",
             "access_key_id",
         ),
+        ("aws_access_key_id=KEY&aws_secret_access_key=SECRET", "access_key_id"),
+        ("session_token=TOKEN", "access_key_id"),
+        ("endpoint_url=", "endpoint_url"),
+        ("endpoint_url=&region=eu-west-1", "endpoint_url"),
+        ("endpoint_url=http://localhost:9000&region=", "region"),
     ],
 )
 def test_s3_source_refuses_a_named_key_that_is_blank_or_alone(query, missing):
     with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
         S3Source().dlt_source(f"s3://bucket/data.csv?{query}", "")
+
+
+def test_s3_static_keys_validates_keys_a_caller_passes_without_naming_them():
+    """A caller whose names disagree with its params still gets the pair checked."""
+    assert s3_static_keys({}, named_options=frozenset()) is None
+    with pytest.raises(MissingConnectorOption, match="^secret_access_key is required"):
+        s3_static_keys({"access_key_id": ["KEY"]}, named_options=frozenset())
 
 
 @pytest.mark.parametrize(

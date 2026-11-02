@@ -326,8 +326,8 @@ def test_s3_write_through_leaves_the_keys_to_the_backend(
     No key, secret or token is passed, exactly as for a bare ``s3://``, so s3fs
     resolves credentials through botocore's default chain when it connects: the
     execution-role case, where temporary credentials and their session token
-    arrive through the environment. The environment is set here to show dlt does
-    not copy it into the constructor arguments either.
+    arrive through the environment. The environment is set here to show that the
+    installed dlt does not copy it into the constructor arguments either.
     """
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "ENVKEY")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "ENVSECRET")
@@ -401,6 +401,9 @@ def test_s3_write_through_fills_keys_from_dlt_config_like_a_bare_uri(
         "secret_access_key=&region=eu-west-1",
         "access_key_id=KEY&endpoint_url=http://localhost:9000",
         "secret_access_key=SECRET&region=eu-west-1",
+        "endpoint_url=",
+        "region=&layout=x",
+        "aws_access_key_id=KEY&aws_secret_access_key=SECRET",
     ],
 )
 def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query):

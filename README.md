@@ -162,11 +162,15 @@ the keys to the AWS SDK's default credential chain, which starts with the
 variables. That is how an AWS Lambda function receives its execution role's
 temporary credentials. `endpoint_url` and `region` still apply, so
 `s3://?endpoint_url=http://localhost:4566` reaches an emulator with credentials from
-the environment. Arrow, which serves S3 reads, ignores `AWS_ENDPOINT_URL`, so an
-S3-compatible endpoint belongs in the URI.
+the environment. Arrow, which serves S3 reads, ignores `AWS_ENDPOINT_URL`, while
+botocore, behind the destination and object staging, honours it. Put an
+S3-compatible endpoint in the URI so reads and writes reach the same service.
 
 Naming a key, even with a blank value, requires both, so `access_key_id=` is an
-error rather than a fallback to the environment. This applies to the S3 source,
+error rather than a fallback to the environment. So do dlt's own spellings
+(`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) and
+`session_token`, which the URI does not take. Without keys, a blank
+`endpoint_url=` or `region=` is an error too. This applies to the S3 source,
 destination and object staging. `r2://` keeps requiring both keys, since the AWS
 default chain does not hold R2 credentials.
 
