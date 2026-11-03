@@ -15,6 +15,7 @@ from dlt_filesystem.util.auth import (
     azure_blob_filesystem_kwargs,
     gcs_filesystem_kwargs,
     parse_azure_blob_auth,
+    query_option_names,
     s3_filesystem_kwargs,
 )
 
@@ -56,6 +57,10 @@ class RemoteObject:
     path: str
     safe_location: str
     storage_options: dict[str, list[str]] = field(repr=False)
+    #: Every option the raw query names, blank ones included, when this object may
+    #: leave its credentials to the SDK's default chain; ``None`` keeps the backend's
+    #: strict rule. Set for ``s3://`` only, the same scope as the S3 source.
+    named_options: frozenset[str] | None = field(default=None, repr=False)
 
     @classmethod
     def from_uri(cls, uri: str) -> RemoteObject:
@@ -98,6 +103,7 @@ class RemoteObject:
             path=path,
             safe_location=safe_location,
             storage_options=parse_qs(parsed.query),
+            named_options=query_option_names(parsed.query) if scheme == "s3" else None,
         )
 
 
@@ -106,7 +112,11 @@ def _filesystem_for(remote: RemoteObject) -> AbstractFileSystem:
     if remote.backend == "s3":
         from s3fs import S3FileSystem
 
-        return S3FileSystem(**s3_filesystem_kwargs(remote.storage_options))
+        return S3FileSystem(
+            **s3_filesystem_kwargs(
+                remote.storage_options, named_options=remote.named_options
+            )
+        )
     if remote.backend == "gs":
         from gcsfs import GCSFileSystem
 
