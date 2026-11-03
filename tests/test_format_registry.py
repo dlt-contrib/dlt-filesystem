@@ -103,17 +103,10 @@ def test_generated_read_csv_matches_literal_transformer_metadata():
     assert inspect.signature(generated_dynamic._pipe.gen) == inspect.signature(
         literal_dynamic._pipe.gen
     )
-    assert (
-        generated_dynamic.__SPEC__.__module__,
-        generated_dynamic.__SPEC__.__qualname__,
-        generated_dynamic.__SPEC__.__annotations__,
-        inspect.signature(generated_dynamic.__SPEC__),
-    ) == (
-        literal_dynamic.__SPEC__.__module__,
-        literal_dynamic.__SPEC__.__qualname__,
-        literal_dynamic.__SPEC__.__annotations__,
-        inspect.signature(literal_dynamic.__SPEC__),
-    )
+    # The literal transformer's spec is synthesised from the reader signature; the
+    # generated one deliberately resolves nothing, so reader arguments never come from
+    # dlt config.
+    assert generated_dynamic.__SPEC__.get_resolvable_fields() == {}
     assert tuple(source.with_resources("read_csv").selected_resources) == ("read_csv",)
 
 
