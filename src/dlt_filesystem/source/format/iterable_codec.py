@@ -362,7 +362,7 @@ def _xml_eager_decode(data: bytes, options: dict) -> Iterator[Any]:
     if not data.strip():
         return
 
-    from lxml import etree  # ty: ignore[unresolved-import]
+    from lxml import etree  # ty: ignore[import-not-found]
 
     matcher = (tagname, "{*}" + tagname)
     context = etree.iterparse(
