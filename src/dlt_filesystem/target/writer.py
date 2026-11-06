@@ -716,8 +716,8 @@ def write_vortex(path: str, rows: list[dict]) -> None:
     """
     try:
         import pyarrow as pa
-        import vortex as vx  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
-        import vortex.io as vxio  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+        import vortex as vx  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
+        import vortex.io as vxio  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
     except ImportError as e:
         raise MissingDecoderError(
             "Writing Vortex files needs the vortex-data package, which requires "
@@ -811,7 +811,7 @@ def _vortex_writes_zone(name: str) -> bool:
     """
     import zoneinfo
 
-    import vortex as vx  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+    import vortex as vx  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
 
     probe = [{"t": datetime.datetime(2000, 1, 1, tzinfo=zoneinfo.ZoneInfo(name))}]
     try:

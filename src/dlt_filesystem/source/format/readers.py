@@ -1006,7 +1006,7 @@ def _import_duckdb() -> Any:
 def _import_vortex(action: str) -> Any:
     """Import ``vortex``, or raise the install hint the other optional formats give."""
     try:
-        import vortex  # ty: ignore[unresolved-import,unused-ignore-comment,unused-ignore-comment]
+        import vortex  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
     except ImportError as e:
         raise MissingDecoderError(
             f"{action} Vortex files needs the vortex-data package, which requires "
