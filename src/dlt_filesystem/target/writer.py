@@ -710,9 +710,10 @@ def write_vortex(path: str, rows: list[dict]) -> None:
     a schema from an empty list. A datetime is written in its own zone only when that
     is an IANA zone matching its offset and one Vortex's compiled-in zone database
     carries; anything else, such as a fixed offset, is written as the same instant in
-    UTC. Vortex resolves a timezone by name, has no entry for ``+12:00``, and aborts
-    with a Rust panic that ``except Exception`` does not catch, after truncating the
-    destination.
+    UTC. Vortex resolves a timezone by name and has no entry for ``+12:00``. Before
+    vortex-data 0.91 that aborted with a Rust panic that ``except Exception`` does not
+    catch, after truncating the destination; from 0.91 ``vortex.array`` raises a
+    ``RuntimeError`` before anything is written.
     """
     try:
         import pyarrow as pa
@@ -733,7 +734,8 @@ def _utc_unnamed_zones(value, _cache: dict | None = None):
     """Return ``value`` with every datetime Vortex cannot name converted to UTC.
 
     Vortex looks a timestamp's zone up by the name Arrow gives its ``tzinfo``, and
-    panics when that is not a zone it knows: a fixed offset (``+12:00``, from
+    fails when that is not a zone it knows (a Rust panic before vortex-data 0.91, a
+    ``RuntimeError`` since): a fixed offset (``+12:00``, from
     ``datetime.timezone``, dateutil's ``tzoffset`` or pendulum's ``FixedTimezone``), a
     custom name, a system-only zone, a zone newer than Vortex's own zone database, or
     a ``tzinfo`` Arrow cannot name at all. So a zone is kept only when its Arrow name
@@ -800,14 +802,22 @@ def _available_zone_names() -> frozenset:
     return frozenset(zoneinfo.available_timezones())
 
 
+#: How Vortex words a zone missing from its compiled-in database. The text is the
+#: Jiff library's, observed in both the pre-0.91 panic and the 0.91+ ``RuntimeError``;
+#: it is upstream wording, not a documented interface.
+_VORTEX_UNKNOWN_ZONE = "failed to find time zone"
+
+
 @functools.cache
 def _vortex_writes_zone(name: str) -> bool:
     """Whether Vortex writes a timestamp in zone ``name``, tried in memory.
 
-    Vortex fails on an unknown zone with a Rust panic, which surfaces as
+    Up to vortex-data 0.90 an unknown zone fails in ``compress`` (the step
+    ``vortex.io.write`` runs) with a Rust panic, which surfaces as
     ``pyo3_runtime.PanicException`` and derives from ``BaseException``, so it is
-    caught by type name; anything else propagates. ``compress`` is the step that
-    ``vortex.io.write`` runs, and where an unknown zone name fails.
+    caught by type name. From 0.91 ``vortex.array`` raises a ``RuntimeError`` naming
+    the zone instead, recognised by its message. The probe runs both steps, so
+    either version is covered; any other failure propagates and nothing is cached.
     """
     import zoneinfo
 
@@ -818,6 +828,8 @@ def _vortex_writes_zone(name: str) -> bool:
         vx.compress(vx.array(probe))
     except BaseException as e:
         if type(e).__name__ == "PanicException":
+            return False
+        if isinstance(e, RuntimeError) and _VORTEX_UNKNOWN_ZONE in str(e):
             return False
         raise
     return True
