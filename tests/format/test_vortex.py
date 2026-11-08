@@ -301,7 +301,7 @@ def test_read_adversarial_values_are_normalized(tmp_path, tz):
 
     A fixed offset is the case that matters: Vortex looks a timezone up by name, has
     none for `+12:00`, a custom name or a system-only zone such as `right/UTC`, and
-    panics, so the writer stores the same instant in UTC. A named zone keeps its zone.
+    fails, so the writer stores the same instant in UTC. A named zone keeps its zone.
     """
     doc = {
         "when": datetime.datetime(2020, 1, 2, 3, 4, 5, tzinfo=tz),
@@ -332,7 +332,7 @@ def test_a_zone_the_host_knows_but_vortex_does_not_is_written_as_utc(
     tmp_path, monkeypatch
 ):
     """The host's zone list and Vortex's compiled-in one can disagree: a zone newer than
-    Vortex's copy is on the list and panics on write. `right/UTC` stands in for one,
+    Vortex's copy is on the list and fails on write. `right/UTC` stands in for one,
     listed here as available, since Vortex rejects it the same way."""
     import dlt_filesystem.target.writer as writer
 
@@ -352,8 +352,9 @@ def test_a_zone_the_host_knows_but_vortex_does_not_is_written_as_utc(
 
 
 def test_a_failed_zone_probe_propagates_and_is_not_cached(monkeypatch):
-    """Only Vortex's panic means "unknown zone". Any other failure is raised, and
-    leaves nothing cached that would demote the zone to UTC for the rest of the run."""
+    """Only Vortex's unknown-zone failure means "unknown zone". Any other failure is
+    raised, and leaves nothing cached that would demote the zone to UTC for the rest of
+    the run."""
     import vortex as vx  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
 
     import dlt_filesystem.target.writer as writer
@@ -369,6 +370,43 @@ def test_a_failed_zone_probe_propagates_and_is_not_cached(monkeypatch):
         writer._vortex_writes_zone("Pacific/Auckland")
     monkeypatch.setattr(vx, "compress", real_compress)
     assert writer._vortex_writes_zone("Pacific/Auckland") is True
+
+
+def test_the_runtime_error_vortex_raises_for_an_unknown_zone_means_unknown(monkeypatch):
+    """From vortex-data 0.91 an unknown zone is a `RuntimeError` from `vortex.array`
+    rather than a panic. Simulated, so it holds whichever Vortex is installed."""
+    import vortex as vx  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
+
+    import dlt_filesystem.target.writer as writer
+
+    def unknown_zone(*args, **kwargs):
+        raise RuntimeError(
+            "failed to find time zone `Pacific/Auckland` in time zone database"
+        )
+
+    writer._vortex_writes_zone.cache_clear()
+    monkeypatch.setattr(vx, "array", unknown_zone)
+    assert writer._vortex_writes_zone("Pacific/Auckland") is False
+    writer._vortex_writes_zone.cache_clear()
+
+
+def test_an_unrelated_runtime_error_propagates_and_is_not_cached(monkeypatch):
+    import vortex as vx  # ty: ignore[import-not-found,unused-ignore-comment,unused-ignore-comment]
+
+    import dlt_filesystem.target.writer as writer
+
+    writer._vortex_writes_zone.cache_clear()
+    real_array = vx.array
+
+    def failing_array(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(vx, "array", failing_array)
+    with pytest.raises(RuntimeError, match="boom"):
+        writer._vortex_writes_zone("Pacific/Auckland")
+    monkeypatch.setattr(vx, "array", real_array)
+    assert writer._vortex_writes_zone("Pacific/Auckland") is True
+    writer._vortex_writes_zone.cache_clear()
 
 
 def test_fixed_offsets_are_converted_inside_nested_values():
