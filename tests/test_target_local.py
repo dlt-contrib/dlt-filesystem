@@ -435,13 +435,15 @@ def test_an_export_keeps_a_hard_link_linked(tmp_path, monkeypatch):
     assert path.read_text().startswith("id,name,score")
 
 
-def test_a_destination_ending_in_a_separator_is_refused_by_its_own_name(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("tail", ["trail/", "trail/.", "trail/.."])
+def test_a_destination_naming_a_directory_is_refused_by_its_own_name(
+    tmp_path, monkeypatch, tail
 ):
-    """A path ending in a separator names a directory, and the error says which one:
-    the user's path, not the temp directory a staged write would have been given."""
+    """A path ending in a separator, ``.`` or ``..`` names a directory, and the error
+    says which one: the user's path, not the temp directory a staged write would have
+    been given."""
     destination = LocalFilesystemDestination()
-    destination.dlt_dest(f"file://{tmp_path}/trail/#json")
+    destination.dlt_dest(f"file://{tmp_path}/{tail}#json")
     destination.dataset_name, destination.table_name = "public", "rows"
     monkeypatch.setattr(
         local_module, "load_dlt_file", lambda _path: iter(list(_GOOD_ROWS))
