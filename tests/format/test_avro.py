@@ -807,6 +807,9 @@ WRITTEN_AND_READ_BACK = {
     "a list of structs": ([{"a": 1}, {"a": 2}], [{"a": 1}, {"a": 2}]),
     "an aware datetime in a struct": ({"at": AWARE}, {"at": WALL_TIME_IN_UTC}),
     "an aware datetime in a list": ([AWARE], [WALL_TIME_IN_UTC]),
+    # A load hands lists, but a direct caller may hand a tuple, which Polars reads as a
+    # list: the preparation pass walks it too.
+    "an aware datetime in a tuple": ((AWARE,), [WALL_TIME_IN_UTC]),
     "a time of day in a list": ([datetime.time(3, 4)], ["03:04:00"]),
 }
 
@@ -965,16 +968,16 @@ def test_a_panic_inside_polars_is_an_ordinary_exception(tmp_path, monkeypatch):
 
 
 @needs_the_writer
-def test_a_polars_error_keeps_the_file_already_there(tmp_path, monkeypatch):
-    def fail(self, *args, **kwargs):
-        raise pl.exceptions.ComputeError("not yet implemented: write X to avro")
-
-    monkeypatch.setattr(pl.DataFrame, "write_avro", fail)
+def test_a_polars_error_keeps_the_file_already_there(tmp_path):
+    """A real failure inside Polars, not a stub: a `bytearray` passes the preparation
+    pass and becomes an `Object` column, which `write_avro` refuses only once it is
+    encoding. The file is untouched because the encode goes to memory first; writing
+    straight to the path would leave it truncated."""
     path = tmp_path / "out.avro"
     path.write_bytes(b"already here")
 
-    with pytest.raises(pl.exceptions.ComputeError):
-        _write(path, [{"id": 1}])
+    with pytest.raises(pl.exceptions.ComputeError, match="Object"):
+        _write(path, [{"id": 1, "v": bytearray(b"x")}])
 
     assert path.read_bytes() == b"already here"
 
