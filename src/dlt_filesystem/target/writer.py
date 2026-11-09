@@ -10,6 +10,7 @@ import collections.abc
 import datetime
 import decimal
 import functools
+import io
 import logging
 import math
 import re
@@ -270,6 +271,168 @@ def _spell_rows_flat(rows: list[dict]) -> list[dict]:
         }
         for row in rows
     ]
+
+
+#: The first Polars release whose ``DataFrame.write_avro`` frames a list column holding
+#: an empty list before a non-empty one correctly (pola-rs/polars#30061). Every earlier
+#: release writes the list items without their block headers, so the record overruns
+#: its block: the file fails to read, or reads back with wrong values beside the list.
+_POLARS_AVRO_WRITER_FLOOR = "2.1"
+
+#: Avro's ``long``, which is what Polars writes an integer column as. A column holding a
+#: larger integer is inferred as ``Int128``, which Polars has no Avro mapping for.
+_AVRO_LONG_MIN = -(2**63)
+_AVRO_LONG_MAX = 2**63 - 1
+
+
+def write_avro(path: str, rows: list[dict]) -> None:
+    """Write rows as an Avro object container file with Polars.
+
+    Needs Polars 2.1 or later, which in turn needs Python 3.11. On an earlier Polars
+    the writer refuses with ``MissingDecoderError`` before anything is written, because
+    those releases write a corrupt file for a list column holding an empty list before a
+    non-empty one, which is an ordinary JSON shape. The writer is registered on every
+    Python all the same, so ``file://out.avro`` resolves everywhere and the refusal says
+    why, rather than the format reading as unsupported.
+
+    Polars has no Avro mapping for a timestamp with a zone, a time of day or a duration,
+    so the rows are prepared first, at any depth:
+
+    - An aware ``datetime`` is converted to UTC and written without its zone, as Avro's
+      ``local-timestamp-micros``. It reads back as a naive datetime holding the UTC wall
+      time: the instant is kept, the fact that it is UTC is not.
+    - A ``time`` is spelled the way ``write_json`` spells it, so its column is a string
+      column.
+
+    Refused, naming the column, before the file is opened: an integer outside Avro's
+    signed 64-bit ``long``, a ``timedelta``, a ``Decimal`` NaN or infinity, an aware
+    ``datetime`` outside the range of one in UTC, and rows that carry no column at all,
+    whose count the file could not keep. A column Polars types as null (every value
+    null, or every list empty) is written as a nullable string column, since Polars
+    aborts on the null type. The whole file is encoded in memory first, so neither a
+    refusal nor a Polars error leaves a truncated file at the path.
+    """
+    import polars as pl
+    from verlib2 import Version
+
+    if Version(pl.__version__) < Version(_POLARS_AVRO_WRITER_FLOOR):
+        raise MissingDecoderError(
+            f"Writing Avro files needs Polars {_POLARS_AVRO_WRITER_FLOOR} or later, "
+            f"and this environment has Polars {pl.__version__}. Earlier releases "
+            "write a corrupt file for a list column holding an empty list before a "
+            "non-empty one (pola-rs/polars#30061). Polars 2.1 requires Python 3.11 or "
+            "newer. "
+            "Upgrade with: pip install 'polars>=2.1'"
+        )
+    if rows and not any(rows):
+        raise ValueError("Avro output requires at least one column for nonempty rows")
+
+    prepared = [_prepared_for_avro(None, row) for row in rows]
+    buffer = io.BytesIO()
+    try:
+        frame = _frame(prepared)
+        frame = frame.cast(
+            {name: _null_as_string(dtype) for name, dtype in frame.schema.items()}
+        )
+        # Polars names the record "" by default, which the Avro specification does not
+        # allow; nothing reads the name back.
+        frame.write_avro(buffer, name="root")
+    except pl.exceptions.PanicException as e:
+        # A Rust panic derives from `BaseException`, so dlt's extract step would not
+        # catch it and the load would end in a backtrace naming no file and no column.
+        detail = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
+        raise ValueError(f"Writing Avro aborted inside Polars: {detail}") from e
+    with open(path, "wb") as handle:
+        handle.write(buffer.getvalue())
+
+
+def _null_as_string(dtype):
+    """The same dtype with every ``Null`` replaced by ``String``, at any depth.
+
+    Polars panics writing the null type to Avro (``Null -> Union([Null, Null]) not
+    supported``): a column of only nulls, a list column whose every list is empty, and a
+    struct field that is null in every row. Every value such a type holds is null, so
+    giving it a type changes the schema and no value.
+    """
+    import polars as pl
+
+    if dtype == pl.Null:
+        return pl.String
+    if isinstance(dtype, pl.Struct):
+        return pl.Struct(
+            {field.name: _null_as_string(field.dtype) for field in dtype.fields}
+        )
+    if isinstance(dtype, pl.List):
+        return pl.List(_null_as_string(dtype.inner))
+    return dtype
+
+
+def _prepared_for_avro(column: str | None, value):
+    """Return ``value`` as ``write_avro`` hands it to Polars, refusing what it cannot.
+
+    Walks dicts, lists and tuples, building new ones rather than changing the caller's
+    rows. ``column`` is the top-level column a nested value sits in, for the refusals to
+    name.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _prepared_for_avro(key if column is None else column, item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_prepared_for_avro(column, item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_prepared_for_avro(column, item) for item in value)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        if not _AVRO_LONG_MIN <= value <= _AVRO_LONG_MAX:
+            raise ValueError(
+                f"Column '{column}' carries the number {value}, which Avro cannot "
+                "hold: its integers are signed 64-bit. Write this load to "
+                f"{_keeps_the_number(value)} the number as itself."
+            )
+        return value
+    if isinstance(value, decimal.Decimal) and not value.is_finite():
+        raise ValueError(
+            f"Column '{column}' carries the decimal {value}, which Avro's decimal type "
+            "has no value for. Write this load to a JSON, JSONL or YAML destination, "
+            "which spell it."
+        )
+    if isinstance(value, datetime.datetime):
+        if value.utcoffset() is None:
+            return value
+        # Rebuilt as the standard type first, as `_prepared_for_msgpack` does: a
+        # subclass's own arithmetic need not return a standard datetime.
+        standard = datetime.datetime(
+            value.year,
+            value.month,
+            value.day,
+            value.hour,
+            value.minute,
+            value.second,
+            value.microsecond,
+            value.tzinfo,
+            fold=value.fold,
+        )
+        try:
+            in_utc = standard.astimezone(datetime.timezone.utc)
+        except OverflowError as e:
+            raise ValueError(
+                f"Column '{column}' carries {value}, which is outside the range of a "
+                "datetime in UTC: Avro is written with every timestamp in UTC, so it "
+                "has no value for this one."
+            ) from e
+        return in_utc.replace(tzinfo=None)
+    if isinstance(value, datetime.time):
+        return _json_spelling(value)
+    if isinstance(value, datetime.timedelta):
+        raise ValueError(
+            f"Column '{column}' carries the duration {value}, which Polars has no Avro "
+            "type for, and dlt's JSON has no spelling for it either. Convert it to a "
+            "number of seconds or to a string before writing it."
+        )
+    return value
 
 
 def write_cbor(path: str, rows: list[dict]) -> None:

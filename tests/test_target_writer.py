@@ -170,6 +170,7 @@ def test_writers_emit_utf8_whatever_the_locale(tmp_path):
     # XLSX is a zip container, so it has no text encoding to get wrong at this level.
     binary_formats = {
         "arrow",
+        "avro",
         "cbor",
         "feather",
         "ipc",
