@@ -106,22 +106,31 @@ def test_filesystem_for_leaves_s3_keys_to_the_default_chain(mocker, query, expec
 
 
 @pytest.mark.parametrize(
-    "uri",
+    ("uri", "missing"),
     [
-        "s3://bucket/path/database.duckdb?access_key_id=",
-        "s3://bucket/path/database.duckdb"
-        "?access_key_id=&endpoint_url=http://localhost:9000",
-        "s3://bucket/path/database.duckdb?access_key_id=KEY",
-        "s3://bucket/path/database.duckdb?endpoint_url=",
-        "s3://bucket/path/database.duckdb"
-        "?aws_access_key_id=KEY&aws_secret_access_key=SECRET",
-        "r2://bucket/path/database.duckdb",
-        "r2://bucket/path/database.duckdb"
-        "?endpoint_url=https://account.r2.cloudflarestorage.com",
+        ("s3://bucket/path/database.duckdb?access_key_id=", "access_key_id"),
+        (
+            "s3://bucket/path/database.duckdb"
+            "?access_key_id=&endpoint_url=http://localhost:9000",
+            "access_key_id",
+        ),
+        ("s3://bucket/path/database.duckdb?access_key_id=KEY", "secret_access_key"),
+        ("s3://bucket/path/database.duckdb?endpoint_url=", "endpoint_url"),
+        (
+            "s3://bucket/path/database.duckdb"
+            "?aws_access_key_id=KEY&aws_secret_access_key=SECRET",
+            "access_key_id",
+        ),
+        ("r2://bucket/path/database.duckdb", "access_key_id"),
+        (
+            "r2://bucket/path/database.duckdb"
+            "?endpoint_url=https://account.r2.cloudflarestorage.com",
+            "access_key_id",
+        ),
     ],
 )
-def test_filesystem_for_refuses_blank_partial_and_keyless_r2_credentials(uri):
-    with pytest.raises(MissingConnectorOption):
+def test_filesystem_for_refuses_blank_partial_and_keyless_r2_credentials(uri, missing):
+    with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
         _filesystem_for(RemoteObject.from_uri(uri))
 
 

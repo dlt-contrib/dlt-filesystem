@@ -31,10 +31,10 @@ class BlobStorageDestination(abc.ABC):
     ) -> FileSystemCredentials:
         """Build credentials for the blob storage destination.
 
-        ``named_options`` is every option the raw query names, blank ones included
-        (see ``query_option_names``), or ``None`` when the caller has only the
-        parsed ``params``. A protocol that can tell a missing key from a blank one
-        uses it; the others ignore it.
+        ``named_options`` is every storage option the raw query names, blank ones
+        included (see ``query_option_names``), without ``layout``, or ``None`` when
+        the caller has only the parsed ``params``. A protocol that can tell a missing
+        key from a blank one uses it; the others ignore it.
         """
         pass
 
@@ -50,10 +50,9 @@ class BlobStorageDestination(abc.ABC):
         # layout shapes the written paths, not the credentials, so a query carrying
         # only a layout still leaves the credentials to dlt.
         layout = params.pop("layout", [None])[0]
-        # parse_qs drops blank values, so `access_key_id=` would read as no query at
-        # all. layout is read above and is no storage option, so it is left out.
-        named_options = query_option_names(parsed_uri.query) - {"layout"}
-        named = bool(named_options)
+        # parse_qs drops blank values, so `access_key_id=` would read as no query at all
+        named_options = query_option_names(parsed_uri.query)
+        named = any(key != "layout" for key in named_options)
 
         dest_table = kwargs["dest_table"]
 
@@ -118,8 +117,9 @@ class BlobStorageDestination(abc.ABC):
         value (``access_key_id=``). It is built strictly too, so the blank option is
         reported missing rather than replaced by the environment's credentials.
 
-        ``named_options`` is every storage option the raw query names, blank ones
-        included, and without ``layout``. With it, S3 tells a query that names no key
+        ``named_options`` is every option the raw query names, blank ones included.
+        ``layout`` is dropped from it here, since it shapes the written paths rather
+        than the storage connection. With it, S3 tells a query that names no key
         (``s3://?endpoint_url=...``, ``s3://?region=...``) from one that names a
         blank key: the first builds credentials that carry the endpoint and region
         and leave the keys to the default chain, the second is refused, and so is a
@@ -129,6 +129,8 @@ class BlobStorageDestination(abc.ABC):
         if not params and not named:
             return {}
 
+        if named_options is not None:
+            named_options = frozenset(named_options) - {"layout"}
         options: dict = {
             "credentials": self.credentials(params, named_options=named_options)
         }
@@ -318,8 +320,8 @@ def blob_destination_options(
     values from ``params``, so without ``named`` and ``named_options`` a query whose
     options are all blank (``access_key_id=``) reads here as an empty query and
     returns no options, and a non-empty S3 query needs both keys. A caller holding
-    the raw query passes both, computed as ``dlt_dest`` does (``layout`` left out
-    of ``named_options``), to get the same behaviour as ``dlt_dest``.
+    the raw query passes both, computed as ``dlt_dest`` does, to get the same
+    behaviour as ``dlt_dest``.
     """
     builder_class = _CREDENTIAL_BUILDERS.get(protocol)
     if builder_class is None:

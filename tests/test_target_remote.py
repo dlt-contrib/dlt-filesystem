@@ -395,19 +395,19 @@ def test_s3_write_through_fills_keys_from_dlt_config_like_a_bare_uri(
 
 
 @pytest.mark.parametrize(
-    "query",
+    ("query", "missing"),
     [
-        "access_key_id=&endpoint_url=http://localhost:9000",
-        "secret_access_key=&region=eu-west-1",
-        "access_key_id=KEY&endpoint_url=http://localhost:9000",
-        "secret_access_key=SECRET&region=eu-west-1",
-        "endpoint_url=",
-        "region=&layout=x",
-        "aws_access_key_id=KEY&aws_secret_access_key=SECRET",
+        ("access_key_id=&endpoint_url=http://localhost:9000", "access_key_id"),
+        ("secret_access_key=&region=eu-west-1", "access_key_id"),
+        ("access_key_id=KEY&endpoint_url=http://localhost:9000", "secret_access_key"),
+        ("secret_access_key=SECRET&region=eu-west-1", "access_key_id"),
+        ("endpoint_url=", "endpoint_url"),
+        ("region=&layout=x", "region"),
+        ("aws_access_key_id=KEY&aws_secret_access_key=SECRET", "access_key_id"),
     ],
 )
-def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query):
-    with pytest.raises(MissingConnectorOption):
+def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query, missing):
+    with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
         S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
 
 
@@ -426,6 +426,17 @@ def test_dlt_dest_refuses_an_unknown_option_without_keys(query, unknown):
         S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
 
 
+def test_blob_destination_options_leaves_layout_out_of_the_option_check():
+    """A caller passing the raw query's names, layout included, is not refused."""
+    query = "endpoint_url=http://localhost:9000&layout=x"
+    params = parse_qs(query)
+    params.pop("layout")
+    options = blob_destination_options(
+        "s3", params, named=True, named_options=query_option_names(query)
+    )
+    assert options["credentials"].endpoint_url == "http://localhost:9000"
+
+
 def test_blob_destination_options_stays_strict_without_named_options():
     """A caller holding only parsed params keeps the old rule for S3."""
     with pytest.raises(MissingConnectorOption, match="^access_key_id"):
@@ -441,12 +452,12 @@ def test_blob_destination_options_stays_strict_without_named_options():
     ],
 )
 def test_blob_destination_options_follows_dlt_dest_with_the_raw_query(query, refused):
-    named_options = query_option_names(query) - {"layout"}
+    named_options = query_option_names(query)
     call = partial(
         blob_destination_options,
         "s3",
         parse_qs(query),
-        named=bool(named_options),
+        named=any(key != "layout" for key in named_options),
         named_options=named_options,
     )
     if refused:
