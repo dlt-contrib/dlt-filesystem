@@ -123,3 +123,7 @@ def test_webhdfs_discovers_and_reads_from_the_namespace_root(
 )
 def test_webhdfs_paths_are_rooted(path, expected):
     assert WebHDFSFileSystem._strip_protocol(path) == expected
+
+
+def test_webhdfs_parent_of_a_top_level_path_is_the_root():
+    assert WebHDFSFileSystem._parent("/path") == "/"
