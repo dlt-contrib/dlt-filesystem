@@ -19,12 +19,12 @@ class WebHDFSFileSystem(WebHDFS):
     """Address every WebHDFS path from the root of the HDFS namespace.
 
     The REST API takes absolute paths only (`/webhdfs/v1/<PATH>`), and fsspec's
-    client appends a path to `/webhdfs/v1` exactly as it receives it. A URI with a
-    path strips to an absolute one, but a bare `webhdfs://host:port` strips to an
-    empty root, so the lister's glob, joined onto that root, reached the server
-    as `/webhdfs/v1path/to/data.parquet` and discovery found nothing. Rooting the
-    stripped path at `/` makes the URI form and the split form address the same
-    file.
+    client appends a path to `/webhdfs/v1` exactly as it receives it. The lister
+    strips the bucket URL, which names only the host, to an empty root and joins
+    the glob onto it, so every request reached the server as
+    `/webhdfs/v1path/to/data.parquet` whichever form carried the path, and
+    discovery found nothing. Rooting the stripped path at `/` sends it as
+    `/webhdfs/v1/path/to/data.parquet`.
     """
 
     root_marker = "/"
