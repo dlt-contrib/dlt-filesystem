@@ -15,7 +15,9 @@ dlt's filesystem destination writes a directory layout
 loads into a temp directory and, in ``post_load()``, reads the produced data back
 through the format-agnostic ``load_dlt_file`` helper and re-emits it as one clean file
 at the requested path (dropping dlt's bookkeeping ``_dlt_*`` columns). A load dlt split
-across several files is read in full, in a stable filename order.
+across several files is read in full, in a stable filename order. The output file is
+written in the temp directory first and copied to the requested path once it is
+complete, so a write that fails leaves the destination as it was.
 
 A consumer's CSV-only destination (omniload's ``csv://`` scheme) is this class with
 ``pinned_output_format`` set to ``csv``; it contributes only that restriction and its own
@@ -156,15 +158,30 @@ class LocalFilesystemDestination:
                             _strip_dlt_columns(row) for row in load_dlt_file(data_file)
                         )
 
-            out_dir = os.path.dirname(self.output_path)
-            if out_dir:
-                os.makedirs(out_dir, exist_ok=True)
-
+            # The writer writes into the temp directory, never the destination. The
+            # library under a writer may open its path before the load is fully encoded
+            # (a streaming JSON dump, a CSV header, Polars scheduling the Parquet sink), so
+            # an encoding failure there would truncate an earlier export, or leave a
+            # partial file that reads back as a finished one. The destination is opened
+            # only once the file is complete, and the bytes are copied through it rather
+            # than renamed over it, so an existing file keeps its inode: permissions,
+            # owner, a symlink and a hard link all survive. A fresh subdirectory keeps the
+            # staged name clear of dlt's layout, and the basename keeps its extension.
             registration = registration_for_format(self.output_format)
             kwargs = (
                 {"table_name": self.table_name} if registration.takes_table_name else {}
             )
-            registration.writer(self.output_path, rows, **kwargs)
+            staged = os.path.join(
+                tempfile.mkdtemp(dir=self.temp_path),
+                os.path.basename(self.output_path),
+            )
+            registration.writer(staged, rows, **kwargs)
+
+            out_dir = os.path.dirname(self.output_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(staged, "rb") as source, open(self.output_path, "wb") as target:
+                shutil.copyfileobj(source, target)
         finally:
             # Always clear the temp bucket, even if reading or writing failed partway.
             shutil.rmtree(self.temp_path, ignore_errors=True)

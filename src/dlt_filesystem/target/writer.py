@@ -1001,7 +1001,9 @@ def write_xlsx(path: str, rows: list[dict], *, table_name: str | None = None) ->
     NaN or infinity, a string past 32 767 characters, a date before March 1900, a time
     of day that rounds to midnight, and a load past a worksheet's rows or columns. A
     refusal leaves no file behind, because xlsxwriter writes the path only when the
-    workbook is closed. Two losses are Excel's
+    workbook is closed. An encoding error inside that close (a lone surrogate in a
+    string) can still leave a partial file at the path this is given, which is why the
+    local destination writes into a temp directory first. Two losses are Excel's
     own precision and are not refused: a float needing 17 significant digits is written
     to 16, and readers round a time to the millisecond.
     """
