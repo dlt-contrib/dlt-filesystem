@@ -24,6 +24,7 @@ A consumer's CSV-only destination (omniload's ``csv://`` scheme) is this class w
 table-name parser.
 """
 
+import errno
 import os
 import shutil
 import tempfile
@@ -167,6 +168,13 @@ class LocalFilesystemDestination:
             # than renamed over it, so an existing file keeps its inode: permissions,
             # owner, a symlink and a hard link all survive. A fresh subdirectory keeps the
             # staged name clear of dlt's layout, and the basename keeps its extension.
+            # A path ending in a separator names a directory. Refused here, naming the
+            # user's path, because staging under an empty basename would hand the writer
+            # the temp directory itself and the error would name a path already deleted.
+            if not os.path.basename(self.output_path):
+                raise IsADirectoryError(
+                    errno.EISDIR, os.strerror(errno.EISDIR), self.output_path
+                )
             registration = registration_for_format(self.output_format)
             kwargs = (
                 {"table_name": self.table_name} if registration.takes_table_name else {}

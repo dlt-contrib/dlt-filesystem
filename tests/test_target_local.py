@@ -444,6 +444,26 @@ def test_an_export_keeps_a_hard_link_linked(tmp_path, monkeypatch):
     assert path.read_text().startswith("id,name,score")
 
 
+def test_a_destination_ending_in_a_separator_is_refused_by_its_own_name(
+    tmp_path, monkeypatch
+):
+    """A path ending in a separator names a directory, and the error says which one:
+    the user's path, not the temp directory a staged write would have been given."""
+    destination = LocalFilesystemDestination()
+    destination.dlt_dest(f"file://{tmp_path}/trail/#json")
+    destination.dataset_name, destination.table_name = "public", "rows"
+    monkeypatch.setattr(
+        local_module, "load_dlt_file", lambda _path: iter(list(_GOOD_ROWS))
+    )
+
+    with pytest.raises(IsADirectoryError) as raised:
+        destination.post_load()
+
+    assert raised.value.filename == destination.output_path
+    assert not (tmp_path / "trail").exists()
+    assert not os.path.exists(destination.temp_path)
+
+
 def test_temp_directory_is_cleared_when_a_real_writer_fails(tmp_path, monkeypatch):
     path = tmp_path / "out.json"
     destination = _destination(path)
