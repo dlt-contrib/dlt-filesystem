@@ -322,20 +322,11 @@ def test_a_failed_export_keeps_the_file_already_there(
 
 @pytest.mark.parametrize(("fmt", "rows", "error"), _FAILURE_CASES)
 def test_a_failed_export_leaves_no_file(tmp_path, monkeypatch, fmt, rows, error):
-    path = tmp_path / f"out.{fmt}"
+    """Nor a new parent directory: that is created only once the file is complete."""
+    path = tmp_path / "new" / "sub" / f"out.{fmt}"
 
     with pytest.raises(error):
         _export(monkeypatch, path, rows)
-
-    assert not path.exists()
-
-
-def test_a_failed_export_leaves_no_new_parent_directory(tmp_path, monkeypatch):
-    """The destination's directory is created only once the file is complete."""
-    path = tmp_path / "new" / "sub" / "out.json"
-
-    with pytest.raises(TypeError):
-        _export(monkeypatch, path, _UNENCODABLE)
 
     assert not (tmp_path / "new").exists()
 
