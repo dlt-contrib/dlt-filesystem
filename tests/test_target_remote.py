@@ -26,7 +26,7 @@ from fsspec.implementations.memory import MemoryFileSystem
 from fsspec.registry import _registry
 from pyarrow import parquet
 
-from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 from dlt_filesystem.target.remote import (
     AzureDestination,
     BlobFS,
@@ -411,6 +411,21 @@ def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query):
         S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
 
 
+@pytest.mark.parametrize(
+    ("query", "unknown"),
+    [
+        ("endpont_url=http://localhost:4566", "endpont_url"),
+        ("account_name=x", "account_name"),
+        ("regoin=eu-west-1&layout=x", "regoin"),
+        ("endpoint_url=http://localhost:9000&endpoint=http://x:1", "endpoint"),
+    ],
+)
+def test_dlt_dest_refuses_an_unknown_option_without_keys(query, unknown):
+    """layout is the destination's own option, so it is never the one named."""
+    with pytest.raises(UnknownConnectorOption, match=rf"option\(s\) {unknown}\. "):
+        S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
+
+
 def test_blob_destination_options_stays_strict_without_named_options():
     """A caller holding only parsed params keeps the old rule for S3."""
     with pytest.raises(MissingConnectorOption, match="^access_key_id"):
@@ -426,12 +441,12 @@ def test_blob_destination_options_stays_strict_without_named_options():
     ],
 )
 def test_blob_destination_options_follows_dlt_dest_with_the_raw_query(query, refused):
-    named_options = query_option_names(query)
+    named_options = query_option_names(query) - {"layout"}
     call = partial(
         blob_destination_options,
         "s3",
         parse_qs(query),
-        named=any(key != "layout" for key in named_options),
+        named=bool(named_options),
         named_options=named_options,
     )
     if refused:

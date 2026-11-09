@@ -4,7 +4,7 @@ from urllib.parse import quote
 import pytest
 from fsspec.implementations.memory import MemoryFileSystem
 
-from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 from dlt_filesystem.staging import (
     RemoteObject,
     RemoteObjectNotFoundError,
@@ -123,6 +123,20 @@ def test_filesystem_for_leaves_s3_keys_to_the_default_chain(mocker, query, expec
 def test_filesystem_for_refuses_blank_partial_and_keyless_r2_credentials(uri):
     with pytest.raises(MissingConnectorOption):
         _filesystem_for(RemoteObject.from_uri(uri))
+
+
+@pytest.mark.parametrize(
+    ("query", "unknown"),
+    [
+        ("endpont_url=http://localhost:4566", "endpont_url"),
+        ("region=eu-west-1&regoin=eu-west-1", "regoin"),
+    ],
+)
+def test_filesystem_for_refuses_an_unknown_s3_option_without_keys(query, unknown):
+    with pytest.raises(UnknownConnectorOption, match=rf"option\(s\) {unknown}\. "):
+        _filesystem_for(
+            RemoteObject.from_uri(f"s3://bucket/path/database.duckdb?{query}")
+        )
 
 
 def test_remote_object_records_named_options_for_s3_only():

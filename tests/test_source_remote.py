@@ -4,7 +4,7 @@ from urllib.parse import quote, urlparse
 
 import pytest
 
-from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
 from dlt_filesystem.source.fsspec.r2 import R2Source
@@ -443,6 +443,33 @@ def test_s3_source_leaves_the_keys_to_the_default_chain_when_none_is_named(
 def test_s3_source_refuses_a_named_key_that_is_blank_or_alone(query, missing):
     with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
         S3Source().dlt_source(f"s3://bucket/data.csv?{query}", "")
+
+
+@pytest.mark.parametrize(
+    ("query", "unknown"),
+    [
+        ("endpont_url=http://localhost:4566", "endpont_url"),
+        ("endpoint=http://localhost:4566", "endpoint"),
+        ("regoin=eu-west-1", "regoin"),
+        ("regoin=", "regoin"),
+        ("endpoint_url=http://localhost:9000&Region=eu-west-1", "Region"),
+        ("access_key=KEY&secret_key=SECRET", "access_key, secret_key"),
+        ("endpoint_url=&layout=x", "layout"),
+    ],
+)
+def test_s3_source_refuses_an_unknown_option_without_keys(query, unknown):
+    """Without keys the default chain supplies them, so a misspelled option would
+    otherwise be dropped and the read run against AWS's own endpoint and region."""
+    with pytest.raises(
+        UnknownConnectorOption,
+        match=rf"^S3 does not recognise the URI option\(s\) {unknown}\. ",
+    ):
+        S3Source().dlt_source(f"s3://bucket/data.csv?{query}", "")
+
+
+def test_unknown_connector_option_is_a_missing_connector_option():
+    """Callers that handle an unusable set of URI options catch both refusals."""
+    assert issubclass(UnknownConnectorOption, MissingConnectorOption)
 
 
 def test_s3_static_keys_validates_keys_a_caller_passes_without_naming_them():

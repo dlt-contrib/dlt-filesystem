@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import AbstractSet, Any, Optional
 from urllib.parse import parse_qsl, urlparse, urlsplit
 
-from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 
 AZURE_SERVICE_PRINCIPAL_FIELDS = ("tenant_id", "client_id", "client_secret")
 #: The service labels an Azure endpoint suffix carries, which arrow keeps apart.
@@ -18,8 +18,10 @@ S3_KEY_OPTIONS = frozenset({"access_key_id", "secret_access_key"})
 S3_KEY_ALIASES = frozenset(
     {"aws_access_key_id", "aws_secret_access_key", "aws_session_token", "session_token"}
 )
-#: Options that still apply without keys, and so must not be named blank there: an
-#: empty endpoint would otherwise send the request to AWS itself.
+#: The only options a URI without keys may name. Any other is refused, so a
+#: misspelled option cannot leave the default endpoint, region or credentials in
+#: place unnoticed. Neither may be named blank: an empty endpoint would otherwise
+#: send the request to AWS itself.
 S3_KEYLESS_OPTIONS = ("endpoint_url", "region")
 
 
@@ -55,8 +57,10 @@ def s3_static_keys(
     default chain, which starts with the environment (session token included). A
     key that is named, even blank, under its own name or an alias in
     ``S3_KEY_ALIASES``, or present in ``params``, makes the pair required, so half
-    a credential is still refused. Without keys, a named but blank ``endpoint_url``
-    or ``region`` is refused too.
+    a credential is still refused. Without keys, ``named_options`` may hold only
+    ``S3_KEYLESS_OPTIONS``: any other option is refused by name with
+    :class:`~dlt_filesystem.error.UnknownConnectorOption`, and a named but blank
+    ``endpoint_url`` or ``region`` is refused too.
     """
     access_key_id = _first(params, "access_key_id")
     secret_access_key = _first(params, "secret_access_key")
@@ -66,6 +70,14 @@ def s3_static_keys(
         and access_key_id is None
         and secret_access_key is None
     ):
+        unknown = sorted(set(named_options) - set(S3_KEYLESS_OPTIONS))
+        if unknown:
+            raise UnknownConnectorOption(
+                unknown,
+                connector,
+                f"Without keys it reads only {', '.join(S3_KEYLESS_OPTIONS)}; "
+                "with keys, name both access_key_id and secret_access_key.",
+            )
         for option in S3_KEYLESS_OPTIONS:
             if option in named_options and not _first(params, option):
                 raise MissingConnectorOption(option, connector)
