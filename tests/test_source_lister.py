@@ -22,8 +22,9 @@ class StubFilesystem(AbstractFileSystem):
         super().__init__()
         self.file_info = file_info
 
-    def _strip_protocol(self, url: str) -> str:  # ty: ignore[invalid-method-override]
-        return url.split("://", 1)[-1].rstrip("/")
+    @classmethod
+    def _strip_protocol(cls, path: str) -> str:
+        return path.split("://", 1)[-1].rstrip("/")
 
     def glob(self, path, maxdepth=None, **kwargs) -> dict:
         return {"bucket/data/report.csv": self.file_info}

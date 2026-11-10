@@ -203,7 +203,7 @@ def filesystem(
         # for it; the default stays lazy.
         file_models = sorted(
             file_models,
-            key=lambda listed: listed[incremental.cursor_path],  # ty: ignore[invalid-key]
+            key=lambda listed: listed[incremental.cursor_path],  # ty: ignore[non-literal-typed-dict-key]
             reverse=reverse,
         )
 

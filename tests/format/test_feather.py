@@ -213,7 +213,7 @@ def test_a_batch_is_only_read_when_its_rows_are_wanted(tmp_path, recording_open_
     assert recording_open_file[0].requested == [0]
     # Closing the abandoned generator runs its `finally`, so the file handle is released
     # here rather than whenever the object is collected.
-    chunks.close()  # ty: ignore[unresolved-attribute]
+    chunks.close()  # ty: ignore[missing-attribute]
 
 
 def test_physical_batches_and_chunksize_are_separate(tmp_path):

@@ -35,7 +35,7 @@ class ReadIntoArrowFSMixin:
     def _open(self, path: str, mode: str = "rb", *args: Any, **kwargs: Any) -> Any:
         """Return an Arrow handle, `readinto` included when the handle is readable."""
         # A mixin has no `_open` on its own MRO; the filesystem it composes with does.
-        handle = super()._open(path, mode, *args, **kwargs)  # ty: ignore[unresolved-attribute]
+        handle = super()._open(path, mode, *args, **kwargs)  # ty: ignore[missing-attribute]
         # The `"r" in mode` gate is what leaves write handles untouched. `hasattr` never
         # made that distinction: measured on a plain `ArrowFile`, it answers False for
         # both modes below fsspec 2026.9.0 and True for both from it. It is here to
