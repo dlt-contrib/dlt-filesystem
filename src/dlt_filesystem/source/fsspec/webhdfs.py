@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional, Type
 
 from fsspec import AbstractFileSystem
+from fsspec.implementations.webhdfs import WebHDFS
 
 from dlt_filesystem.error import MissingConnectorOption
 from dlt_filesystem.source.base import FilesystemSource
@@ -14,6 +15,25 @@ from dlt_filesystem.util.python import (
 )
 
 
+class WebHDFSFileSystem(WebHDFS):
+    """Address every WebHDFS path from the root of the HDFS namespace.
+
+    The REST API takes absolute paths only (`/webhdfs/v1/<PATH>`), and fsspec's
+    client appends a path to `/webhdfs/v1` exactly as it receives it. The lister
+    strips the bucket URL, which names only the host, to an empty root and joins
+    the glob onto it, so every request reached the server as
+    `/webhdfs/v1path/to/data.parquet` whichever form carried the path, and
+    discovery found nothing. Rooting the stripped path at `/` sends it as
+    `/webhdfs/v1/path/to/data.parquet`.
+    """
+
+    root_marker = "/"
+
+    @classmethod
+    def _strip_protocol(cls, path):
+        return "/" + super()._strip_protocol(path).lstrip("/")
+
+
 class WebHDFSSource(FilesystemSource):
     """
     Access files on WebHDFS.
@@ -21,10 +41,7 @@ class WebHDFSSource(FilesystemSource):
 
     @property
     def fs_class(self) -> Type["AbstractFileSystem"]:
-
-        from fsspec.implementations.webhdfs import WebHDFS
-
-        return WebHDFS
+        return WebHDFSFileSystem
 
     def dlt_source(
         self,
