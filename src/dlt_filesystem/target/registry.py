@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from dlt_filesystem.target.writer import (
+    write_avro,
     write_cbor,
     write_csv,
     write_feather,
@@ -42,13 +43,17 @@ class WriterRegistration:
 #
 # The write side registers fewer formats than the read side. `csv_headless` is a
 # read-only concept (parsing a header-less CSV; writing always emits a header), and
-# `csv_duckdb` is a reader choice for the same bytes CSV already writes. `avro` is
-# read-only until Polars fixes its writer: `DataFrame.write_avro` mis-frames a list
-# column holding an empty list before a non-empty one, and the file then fails to read
-# or reads back wrong values (`tests/format/test_avro.py` pins it). `ods` needs a
+# `csv_duckdb` is a reader choice for the same bytes CSV already writes. `ods` needs a
 # writer the `spreadsheet` extra does not carry: fastexcel only reads it, and the
 # extra's xlsxwriter writes only XLSX. `bson` and `xml` writers are not scoped.
 WRITER_REGISTRATIONS: tuple[WriterRegistration, ...] = (
+    # Registered on every Python, although it writes only on Polars 2.1 and later, which
+    # needs Python 3.11: before 2.1, `DataFrame.write_avro` mis-frames a list column
+    # holding an empty list before a non-empty one, and the file fails to read or reads
+    # back wrong values. `write_avro` refuses on those releases, naming the version, so
+    # the destination resolves everywhere and the error says why, as `vortex` does on
+    # a Python its package does not support.
+    WriterRegistration(write_avro, ("avro",)),
     # Registered unconditionally, like `msgpack` below: `write_cbor` names the
     # `iterable` extra if cbor2 is missing.
     WriterRegistration(write_cbor, ("cbor",)),

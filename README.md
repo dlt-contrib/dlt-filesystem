@@ -83,7 +83,7 @@ format, so `events.csv.gz` reads as CSV.
 | JSON Lines             | `jsonl`                   | yes  | yes   |               |
 | Parquet                | `parquet`                 | yes  | yes   |               |
 | ORC                    | `orc`                     | yes  | yes   |               |
-| Avro                   | `avro`                    | yes  | no    |               |
+| Avro                   | `avro`                    | yes  | yes   |               |
 | Feather V2 (Arrow IPC) | `feather`, `arrow`, `ipc` | yes  | yes   |               |
 | Vortex                 | `vortex`                  | yes  | yes   | `vortex`      |
 | Excel                  | `xlsx`                    | yes  | yes   | `spreadsheet` |
@@ -96,6 +96,13 @@ format, so `events.csv.gz` reads as CSV.
 
 The Write column is what the `file://` destination writes. The bucket destinations
 write dlt's own file formats.
+
+Writing Avro needs Polars 2.1 or later, and so Python 3.11 or newer. On an earlier
+Polars the destination refuses when it writes, naming the version, because those
+releases write a corrupt file for a list column holding an empty list before a
+non-empty one. Avro through Polars has no timestamp with a zone and no time of day: a
+timestamp with a zone is written as the same instant in UTC without the zone, and reads
+back as that UTC wall time, and a time of day is written as text.
 
 ## Sources
 
