@@ -26,7 +26,7 @@ from fsspec.implementations.memory import MemoryFileSystem
 from fsspec.registry import _registry
 from pyarrow import parquet
 
-from dlt_filesystem.error import MissingConnectorOption
+from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 from dlt_filesystem.target.remote import (
     AzureDestination,
     BlobFS,
@@ -395,20 +395,46 @@ def test_s3_write_through_fills_keys_from_dlt_config_like_a_bare_uri(
 
 
 @pytest.mark.parametrize(
-    "query",
+    ("query", "missing"),
     [
-        "access_key_id=&endpoint_url=http://localhost:9000",
-        "secret_access_key=&region=eu-west-1",
-        "access_key_id=KEY&endpoint_url=http://localhost:9000",
-        "secret_access_key=SECRET&region=eu-west-1",
-        "endpoint_url=",
-        "region=&layout=x",
-        "aws_access_key_id=KEY&aws_secret_access_key=SECRET",
+        ("access_key_id=&endpoint_url=http://localhost:9000", "access_key_id"),
+        ("secret_access_key=&region=eu-west-1", "access_key_id"),
+        ("access_key_id=KEY&endpoint_url=http://localhost:9000", "secret_access_key"),
+        ("secret_access_key=SECRET&region=eu-west-1", "access_key_id"),
+        ("endpoint_url=", "endpoint_url"),
+        ("region=&layout=x", "region"),
+        ("aws_access_key_id=KEY&aws_secret_access_key=SECRET", "access_key_id"),
     ],
 )
-def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query):
-    with pytest.raises(MissingConnectorOption):
+def test_dlt_dest_refuses_a_named_key_beside_an_endpoint_or_region(query, missing):
+    with pytest.raises(MissingConnectorOption, match=f"^{missing} is required"):
         S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
+
+
+@pytest.mark.parametrize(
+    ("query", "unknown"),
+    [
+        ("endpont_url=http://localhost:4566", "endpont_url"),
+        ("account_name=x", "account_name"),
+        ("regoin=eu-west-1&layout=x", "regoin"),
+        ("endpoint_url=http://localhost:9000&endpoint=http://x:1", "endpoint"),
+    ],
+)
+def test_dlt_dest_refuses_an_unknown_option_without_keys(query, unknown):
+    """layout is the destination's own option, so it is never the one named."""
+    with pytest.raises(UnknownConnectorOption, match=rf"option\(s\) {unknown}\. "):
+        S3Destination().dlt_dest(f"s3://?{query}", dest_table="bucket/table")
+
+
+def test_blob_destination_options_leaves_layout_out_of_the_option_check():
+    """A caller passing the raw query's names, layout included, is not refused."""
+    query = "endpoint_url=http://localhost:9000&layout=x"
+    params = parse_qs(query)
+    params.pop("layout")
+    options = blob_destination_options(
+        "s3", params, named=True, named_options=query_option_names(query)
+    )
+    assert options["credentials"].endpoint_url == "http://localhost:9000"
 
 
 def test_blob_destination_options_stays_strict_without_named_options():

@@ -176,8 +176,11 @@ S3-compatible endpoint in the URI so reads and writes reach the same service.
 Naming a key, even with a blank value, requires both, so `access_key_id=` is an
 error rather than a fallback to the environment. So do dlt's own spellings
 (`aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`) and
-`session_token`, which the URI does not take. Without keys, a blank
-`endpoint_url=` or `region=` is an error too. This applies to the S3 source,
+`session_token`, which the URI does not take. Without keys, the URI may name only
+`endpoint_url` and `region` (and `layout` on the destination). Any other option is
+an error naming it, so a misspelled `endpont_url` or `regoin` does not run the job
+against AWS's default endpoint and region. A blank `endpoint_url=` or `region=` is
+an error too. This applies to the S3 source,
 destination and object staging. `r2://` keeps requiring both keys, since the AWS
 default chain does not hold R2 credentials.
 

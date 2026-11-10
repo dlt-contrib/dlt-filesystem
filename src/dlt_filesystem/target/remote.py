@@ -31,10 +31,10 @@ class BlobStorageDestination(abc.ABC):
     ) -> FileSystemCredentials:
         """Build credentials for the blob storage destination.
 
-        ``named_options`` is every option the raw query names, blank ones included
-        (see ``query_option_names``), or ``None`` when the caller has only the
-        parsed ``params``. A protocol that can tell a missing key from a blank one
-        uses it; the others ignore it.
+        ``named_options`` is every storage option the raw query names, blank ones
+        included (see ``query_option_names``), without ``layout``, or ``None`` when
+        the caller has only the parsed ``params``. A protocol that can tell a missing
+        key from a blank one uses it; the others ignore it.
         """
         pass
 
@@ -118,15 +118,19 @@ class BlobStorageDestination(abc.ABC):
         reported missing rather than replaced by the environment's credentials.
 
         ``named_options`` is every option the raw query names, blank ones included.
-        With it, S3 tells a query that names no key (``s3://?endpoint_url=...``,
-        ``s3://?region=...``) from one that names a blank key: the first builds
-        credentials that carry the endpoint and region and leave the keys to the
-        default chain, the second is refused. Without it (``None``) a non-empty S3
-        query needs both keys, as it always has.
+        ``layout`` is dropped from it here, since it shapes the written paths rather
+        than the storage connection. With it, S3 tells a query that names no key
+        (``s3://?endpoint_url=...``, ``s3://?region=...``) from one that names a
+        blank key: the first builds credentials that carry the endpoint and region
+        and leave the keys to the default chain, the second is refused, and so is a
+        query without keys that names any other option. Without it (``None``) a
+        non-empty S3 query needs both keys, as it always has.
         """
         if not params and not named:
             return {}
 
+        if named_options is not None:
+            named_options = frozenset(named_options) - {"layout"}
         options: dict = {
             "credentials": self.credentials(params, named_options=named_options)
         }
