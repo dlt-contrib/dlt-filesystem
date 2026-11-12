@@ -2,8 +2,8 @@
 
 Polars before 2.1 mis-frames a list column holding an empty list before a non-empty
 one, so the Avro writer refuses on it, and Polars 2.1 needs Python 3.11. A test that
-writes Avro runs only where the writer writes; CI's 3.10 leg resolves Polars 2.0 and
-proves the refusal instead.
+needs the Avro writer to succeed runs only where it writes; CI's 3.10 leg resolves
+Polars 2.0 and proves the refusal instead. Hand-built Avro fixtures need no gate.
 """
 
 import polars as pl
