@@ -26,7 +26,7 @@ class FilesystemConfigurationResource(FilesystemConfiguration):
     @resolve_type("credentials")
     def resolve_credentials_type(self) -> Type[CredentialsConfiguration]:
         # use known credentials or empty credentials for unknown protocol
-        return Union[  # ty: ignore[invalid-return-type]
+        return Union[  # ty: ignore[invalid-explicit-return]
             self.PROTOCOL_CREDENTIALS.get(self.protocol)  # ty: ignore[invalid-type-form]
             or Optional[CredentialsConfiguration],
             AbstractFileSystem,
