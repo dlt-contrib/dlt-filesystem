@@ -1,5 +1,6 @@
 """Exercise the real WebDAV filesystem with an offline HTTP transport."""
 
+import base64
 from datetime import datetime, timezone
 from unittest.mock import patch
 from urllib.parse import quote
@@ -219,3 +220,87 @@ def test_webdav_directory_whitespace_is_preserved(split, directory):
     assert ref.fs.ls(encoded_directory, detail=False) == [encoded_file]
     with pytest.raises(FileNotFoundError):
         ref.fs.ls("/p/missing")
+
+
+_ONE_FILE_LISTING = """<D:multistatus xmlns:D="DAV:">
+<D:response><D:href>/p/</D:href><D:propstat>
+<D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+<D:response><D:href>/p/x.csv</D:href><D:propstat>
+<D:prop><D:resourcetype/><D:getcontentlength>4</D:getcontentlength>
+<D:getlastmodified>Wed, 01 Jan 2025 00:00:00 GMT</D:getlastmodified></D:prop>
+<D:status>HTTP/1.1 200 OK</D:status></D:propstat></D:response>
+</D:multistatus>"""
+
+
+def _list_one_file(uri: str, table: str = "", **kwargs):
+    """Build a WebDAV source over a one-file listing, list it, return what was sent."""
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(207, text=_ONE_FILE_LISTING)
+
+    with patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref):
+        ref = WebdavSource().dlt_source(
+            uri, table, transport=httpx.MockTransport(respond), **kwargs
+        )
+    items = list(glob_files(ref.fs, ref.bucket_url, ref.file_glob))
+    assert [item["relative_path"] for item in items] == ["p/x.csv"]
+    assert requests
+    return ref, requests
+
+
+def _basic(username: str, password: str) -> str:
+    return "Basic " + base64.b64encode(f"{username}:{password}".encode()).decode()
+
+
+@pytest.mark.parametrize(
+    ("userinfo", "username", "password"),
+    [
+        ("user%40corp:p%2Fw%40rd", "user@corp", "p/w@rd"),
+        # `%2540` is an encoded `%40`: decoded once, the server gets `%40`.
+        ("u:p%2540", "u", "p%40"),
+    ],
+)
+def test_webdav_sends_the_decoded_uri_credentials(userinfo, username, password):
+    """A credential holding `@` or `/` has to be percent-encoded to survive a URI."""
+    _, requests = _list_one_file(f"https+webdav://{userinfo}@example.test/p/x.csv")
+
+    for request in requests:
+        assert request.headers["Authorization"] == _basic(username, password)
+
+
+def test_webdav_query_credentials_are_decoded_by_the_query_parse_alone():
+    """The query has its own decode; userinfo decoding must not add a second one."""
+    _, requests = _list_one_file(
+        "https+webdav://example.test/p/x.csv?username=u&password=p%2540"
+    )
+
+    for request in requests:
+        assert request.headers["Authorization"] == _basic("u", "p%40")
+
+
+def test_webdav_lists_a_portless_ipv6_host():
+    first, requests = _list_one_file("https+webdav://[2001:db8::1]/p/x.csv")
+    second, _ = _list_one_file("https+webdav://[2001:db8::2]/p/x.csv")
+
+    assert first.bucket_url == "https://[2001:db8::1]"
+    assert second.bucket_url == "https://[2001:db8::2]"
+    assert first.incremental_resource_name != second.incremental_resource_name
+    assert {request.url.host for request in requests} == {"2001:db8::1"}
+
+
+def test_webdav_ipv6_host_with_port_keeps_its_identity():
+    """An explicit port parsed correctly already, so its state key must not move."""
+    with patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref):
+        ref = WebdavSource().dlt_source(
+            "https+webdav://alice:pw@[2001:db8::1]:8443", "dir/x.csv"
+        )
+
+    assert ref.bucket_url == "https://[2001:db8::1]:8443"
+    assert ref.storage_namespace == "filesystem"
+    assert ref.file_glob == "dir/x.csv"
+    assert (
+        ref.incremental_resource_name == "filesystem_6176580eac7d7e4495e0817acace5c8c"
+    )

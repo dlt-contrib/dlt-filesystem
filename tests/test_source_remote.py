@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from urllib.parse import quote, urlparse
 
 import pytest
@@ -7,10 +7,13 @@ import pytest
 from dlt_filesystem.error import MissingConnectorOption, UnknownConnectorOption
 from dlt_filesystem.source.error import UnsupportedEndpointError
 from dlt_filesystem.source.format.registry import supported_file_format_message
+from dlt_filesystem.source.fsspec.databricks import DatabricksSource
+from dlt_filesystem.source.fsspec.ftp import FTPSource
 from dlt_filesystem.source.fsspec.r2 import R2Source
 from dlt_filesystem.source.impl.remote import (
     AzureSource,
     S3Source,
+    SFTPSource,
     _AzureArrowFSWrapper,
     _R2ArrowFSWrapper,
     _S3CompatibleArrowFSWrapper,
@@ -970,3 +973,90 @@ def test_azure_connection_string_dfs_endpoint_is_validated_by_name():
             f"az://?connection_string={quote(connection_string, safe='')}",
             "container/*.csv",
         )
+
+
+def test_ftp_receives_the_decoded_uri_credentials():
+    with (
+        patch("fsspec.implementations.ftp.FTPFileSystem") as ftp,
+        patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref),
+    ):
+        FTPSource().dlt_source("ftp://user%40corp:p%2Fw@host/x.csv", "")
+
+    ftp.assert_called_once()
+    assert ftp.call_args.kwargs["username"] == "user@corp"
+    assert ftp.call_args.kwargs["password"] == "p/w"  # noqa: S105
+
+
+def _sftp_connection(uri: str) -> dict:
+    with (
+        patch("fsspec.filesystem") as filesystem,
+        patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref),
+    ):
+        SFTPSource().dlt_source(uri, "/*.csv")
+    filesystem.assert_called_once()
+    return dict(filesystem.call_args.kwargs)
+
+
+def test_sftp_receives_the_decoded_uri_credentials():
+    received = _sftp_connection("sftp://user%40corp:p%2Fw%40rd@sftp.example:22")
+
+    assert received["username"] == "user@corp"
+    assert received["password"] == "p/w@rd"  # noqa: S105
+
+
+@pytest.mark.parametrize(
+    ("uri", "username", "password"),
+    [
+        ("sftp://sftp.example:22", None, None),
+        ("sftp://alice@sftp.example:22", "alice", None),
+        ("sftp://alice:@sftp.example:22", "alice", ""),
+    ],
+)
+def test_sftp_absent_credentials_stay_absent(uri, username, password):
+    received = _sftp_connection(uri)
+
+    assert received["username"] == username
+    assert received["password"] == password
+
+
+def _databricks_reference(uri: str, table: str = "dir/x.csv", **kwargs):
+    spy = MagicMock()
+    with (
+        patch.object(DatabricksSource, "fs_class", property(lambda self: spy)),
+        patch("dlt_filesystem.source.core.resource_for_reader", lambda ref: ref),
+    ):
+        ref = DatabricksSource().dlt_source(uri, table, **kwargs)
+    spy.assert_called_once()
+    return ref, spy
+
+
+def test_databricks_builds_on_a_portless_ipv6_host():
+    ref, _ = _databricks_reference("dbfs://[2001:db8::1]")
+
+    assert ref.storage_namespace == "databricks:host:[2001:db8::1]"
+
+
+def test_databricks_receives_the_decoded_uri_password():
+    _, spy = _databricks_reference("dbfs://alice:p%40ss@host.example")
+
+    assert spy.call_args.kwargs["password"] == "p@ss"  # noqa: S105
+
+
+def test_databricks_encoded_password_keeps_its_identity():
+    """The raw netloc is in `file_glob`; decoding must not change what it hashes."""
+    ref, _ = _databricks_reference("dbfs://alice:p%40ss@host.example")
+
+    assert ref.file_glob == "alice:p%40ss@host.example/dir/x.csv"
+    assert (
+        ref.incremental_resource_name == "filesystem_2ef26a1d258abd3ad0f559c8ab218ed4"
+    )
+
+
+def test_databricks_keyword_keeps_a_literal_percent_and_the_identity():
+    """The migration path for a literal `%`: keep the URI, pass the keyword."""
+    ref, spy = _databricks_reference("dbfs://a%40b:pw@host.example", username="a%40b")
+
+    assert spy.call_args.kwargs["username"] == "a%40b"
+    assert (
+        ref.incremental_resource_name == "filesystem_1414d17094f07f34ce4fb107cb2f141f"
+    )

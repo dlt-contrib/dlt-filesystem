@@ -3,6 +3,7 @@ import re
 from typing import Any
 from unittest.mock import patch
 
+import pytest
 from dlt.extract.incremental import Incremental, IncrementalResourceWrapper
 from dlt.sources.filesystem import FileItemDict
 from fsspec import AbstractFileSystem
@@ -318,3 +319,88 @@ def test_auth_rotation_does_not_change_incremental_resource_names(mocker):
         _captured_reference(first_build).incremental_resource_name
         == _captured_reference(second_build).incremental_resource_name
     )
+
+
+SFTP_BUCKET_URL = "sftp://sftp.example:22"
+
+
+def _sftp_reference(userinfo: str) -> FilesystemReference:
+    with (
+        patch("dlt_filesystem.source.core.resource_for_reader") as build,
+        patch("fsspec.filesystem"),
+    ):
+        SFTPSource().dlt_source(
+            f"sftp://{userinfo}@sftp.example:22",
+            "/*.csv",
+            filesystem_incremental=True,
+        )
+    reference = _captured_reference(build)
+    assert reference.bucket_url == SFTP_BUCKET_URL
+    return reference
+
+
+def _key_for_namespace(reference: FilesystemReference, namespace: str) -> str:
+    """The state key the same selection gets under `namespace`."""
+    return FilesystemReference(
+        fs=reference.fs,
+        bucket_url=SFTP_BUCKET_URL,
+        file_glob=reference.file_glob,
+        reader_name=reference.reader_name,
+        storage_namespace=namespace,
+    ).incremental_resource_name
+
+
+def test_sftp_namespace_carries_the_decoded_username():
+    """A username whose escapes decode is a different name, so a different key."""
+    reference = _sftp_reference("a%40b:pw")
+
+    assert reference.storage_namespace == "sftp:sftp.example:22:a@b"
+    assert reference.incremental_resource_name != _key_for_namespace(
+        reference, "sftp:sftp.example:22:a%40b"
+    )
+
+
+def test_sftp_reencoded_username_keeps_the_previous_key():
+    """`a%2540b` decodes to `a%40b`: the namespace and key `a%40b` had before."""
+    reference = _sftp_reference("a%2540b:pw")
+
+    assert reference.storage_namespace == "sftp:sftp.example:22:a%40b"
+    assert reference.incremental_resource_name == _key_for_namespace(
+        reference, "sftp:sftp.example:22:a%40b"
+    )
+
+
+def test_sftp_username_that_decodes_to_another_shares_its_key():
+    encoded = _sftp_reference("%61lice:pw")
+    plain = _sftp_reference("alice:pw")
+
+    assert encoded.storage_namespace == "sftp:sftp.example:22:alice"
+    assert encoded.incremental_resource_name == plain.incremental_resource_name
+
+
+@pytest.mark.parametrize(
+    ("userinfo", "namespace"),
+    [
+        ("alice:pw", "sftp:sftp.example:22:alice"),
+        ("al+ce:pw", "sftp:sftp.example:22:al+ce"),
+        ("a%zzb:pw", "sftp:sftp.example:22:a%zzb"),
+        # Invalid UTF-8 keeps the whole username raw, the valid escape included.
+        ("a%40%ffb:pw", "sftp:sftp.example:22:a%40%ffb"),
+    ],
+)
+def test_sftp_username_that_decoding_leaves_alone_keeps_its_key(userinfo, namespace):
+    reference = _sftp_reference(userinfo)
+
+    assert reference.storage_namespace == namespace
+    assert reference.incremental_resource_name == _key_for_namespace(
+        reference, namespace
+    )
+
+
+def test_sftp_password_never_reaches_the_key():
+    keys = {
+        _sftp_reference(userinfo).incremental_resource_name
+        for userinfo in ("alice:pw", "alice:p%40ss", "alice:other%2Fpw")
+    }
+
+    assert len(keys) == 1
