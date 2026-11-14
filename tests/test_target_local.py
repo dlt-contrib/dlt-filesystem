@@ -11,6 +11,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from avro_gate import needs_the_writer
 
 import dlt_filesystem.target.local as local_module
 from dlt_filesystem.error import MissingConnectorOption
@@ -265,8 +266,16 @@ _REGISTRATIONS = {
     registration.format_keys[0]: registration for registration in WRITER_REGISTRATIONS
 }
 
+
+def _gated(fmt: str) -> tuple:
+    """The writer's own gate, for a format whose writer refuses on this Polars."""
+    return (needs_the_writer,) if fmt == "avro" else ()
+
+
 _FAILURE_CASES = [
-    pytest.param(fmt, _UNENCODABLE, Exception, id=f"{fmt}-unencodable")
+    pytest.param(
+        fmt, _UNENCODABLE, Exception, id=f"{fmt}-unencodable", marks=_gated(fmt)
+    )
     for fmt in _REGISTRATIONS
 ] + [
     pytest.param(fmt, rows, error, id=f"{fmt}-late")
@@ -342,7 +351,9 @@ def _xlsx_members(path: Path) -> dict[str, bytes]:
         }
 
 
-@pytest.mark.parametrize("fmt", list(_REGISTRATIONS))
+@pytest.mark.parametrize(
+    "fmt", [pytest.param(fmt, marks=_gated(fmt)) for fmt in _REGISTRATIONS]
+)
 def test_an_export_matches_the_writer_output(tmp_path, monkeypatch, fmt):
     """Staging changes where a file is written, never what it holds."""
     path = tmp_path / "staged" / f"out.{fmt}"

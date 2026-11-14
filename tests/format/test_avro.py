@@ -25,9 +25,9 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from avro_gate import POLARS_WRITES_AVRO, needs_an_early_polars, needs_the_writer
 from dlt.common.pendulum import pendulum
 from dlt.extract.exceptions import ResourceExtractionError
-from verlib2 import Version
 
 from dlt_filesystem.source.error import MissingDecoderError
 from dlt_filesystem.source.format.readers import read_avro
@@ -561,17 +561,6 @@ def test_a_container_with_no_records_yields_no_rows(tmp_path):
 
 # --- writing ---
 
-#: Polars 2.1 fixed the list framing (pola-rs/polars#30061), and the writer refuses below it.
-_POLARS_WRITES_AVRO = Version(pl.__version__) >= Version("2.1")
-needs_the_writer = pytest.mark.skipif(
-    not _POLARS_WRITES_AVRO,
-    reason=f"Polars {pl.__version__} predates 2.1, where the writer refuses",
-)
-needs_an_early_polars = pytest.mark.skipif(
-    _POLARS_WRITES_AVRO,
-    reason=f"Polars {pl.__version__} writes Avro; the refusal is for releases before 2.1",
-)
-
 
 def _write(path, rows):
     writer_for_format("avro")(str(path), rows)
@@ -754,7 +743,7 @@ def test_the_ci_matrix_still_runs_both_sides_of_the_version_gate():
     """The tests above split by the installed Polars, so a matrix that stopped resolving
     one side would skip that half and stay green. Python 3.10 resolves Polars 2.0 because
     2.1 needs 3.11; every later leg resolves 2.1 or newer."""
-    assert _POLARS_WRITES_AVRO == (sys.version_info >= (3, 11))
+    assert POLARS_WRITES_AVRO == (sys.version_info >= (3, 11))
 
 
 def test_an_avro_destination_resolves(tmp_path):
