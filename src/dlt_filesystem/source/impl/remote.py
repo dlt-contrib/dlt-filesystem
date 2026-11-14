@@ -22,7 +22,7 @@ from dlt_filesystem.util.auth import (
     query_option_names,
     s3_arrow_filesystem_kwargs,
 )
-from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper
+from dlt_filesystem.util.fsspec import ReadIntoArrowFSWrapper, unquote_userinfo
 
 if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
@@ -325,8 +325,14 @@ class SFTPSource(FilesystemSource):
         if not host:
             raise MissingConnectorOption("host", "SFTP")
         port = parsed_uri.port or 22
+        # Decoded as the shared URI parse decodes userinfo; `None` (absent) stays
+        # apart from an empty password.
         username = parsed_uri.username
+        if username is not None:
+            username = unquote_userinfo(username)
         password = parsed_uri.password
+        if password is not None:
+            password = unquote_userinfo(password)
 
         params: Dict[str, Any] = {
             "host": host,
@@ -364,6 +370,8 @@ class SFTPSource(FilesystemSource):
         from dlt_filesystem.source.core import resource_for_reader
         from dlt_filesystem.source.model import FilesystemReference
 
+        # The namespace names the decoded username, the account the server sees.
+        # A literal `%` in a username is written `%25` in the URI.
         return resource_for_reader(
             FilesystemReference(
                 fs=fs,

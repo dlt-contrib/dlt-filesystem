@@ -1,6 +1,6 @@
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from fsspec.implementations.arrow import ArrowFSWrapper
 from fsspec.utils import update_storage_options
@@ -50,18 +50,38 @@ class ReadIntoArrowFSWrapper(ReadIntoArrowFSMixin, ArrowFSWrapper):
     """The generic Arrow filesystem wrapper, with `readinto` on its read handles."""
 
 
+def unquote_userinfo(value: str) -> str:
+    """Percent-decode a URI's username or password, all or nothing.
+
+    Mirrors `fsspec.utils._unquote_userinfo` (fsspec/filesystem_spec#2114): a value
+    whose escapes do not decode to valid UTF-8 is returned raw, rather than with
+    U+FFFD in place of the bytes that failed.
+    """
+    try:
+        return unquote(value, errors="strict")
+    except UnicodeDecodeError:
+        return value
+
+
 def infer_storage_options(
     urlpath: str, inherit_storage_options: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """Infer storage options from URL path and merge it with existing storage
     options.
 
-    TODO: This is a copy of `fsspec.utils.infer_storage_options` with two
-          adjustments. If this can land upstream, let's remove the function
-          again.
-          - The regex: r"^[a-zA-Z0-9+]+://".
-            https://github.com/fsspec/filesystem_spec/pull/2085
-          - Don't suppress parsing http/https urls.
+    TODO: This is a copy of `fsspec.utils.infer_storage_options` with these
+          adjustments:
+          - It parses http/https URLs, which fsspec returns unparsed. The
+            WebDAV connector needs the parse.
+          - The URI regex accepts `+`, `.` and `-` in a scheme. Upstream since
+            fsspec 2026.7.0 (fsspec/filesystem_spec#2085); kept while the
+            floor is `>=2024.6`.
+          - Userinfo is percent-decoded (fsspec/filesystem_spec#2114) and an
+            IPv6 host keeps its brackets and colons
+            (fsspec/filesystem_spec#2170), both ported ahead of a fsspec
+            release that carries them.
+          Remove once the floor reaches a tag carrying both ported fixes and
+          http/https parsing is no longer needed.
 
     Parameters
     ----------
@@ -130,7 +150,13 @@ def infer_storage_options(
         # Parse `hostname` from netloc manually because `parsed_path.hostname`
         # lowercases the hostname which is not always desirable (e.g. in S3):
         # https://github.com/dask/dask/issues/1417
-        options["host"] = parsed_path.netloc.rsplit("@", 1)[-1].rsplit(":", 1)[0]
+        host = parsed_path.netloc.rsplit("@", 1)[-1]
+        if host.startswith("[") and "]" in host:
+            # An IPv6 literal carries colons of its own, so only a colon after
+            # the closing bracket separates the port.
+            options["host"] = host[: host.index("]") + 1]
+        else:
+            options["host"] = host.rsplit(":", 1)[0]
 
         if protocol in ("s3", "s3a", "gcs", "gs"):
             options["path"] = options["host"] + options["path"]
@@ -139,9 +165,9 @@ def infer_storage_options(
         if parsed_path.port:
             options["port"] = parsed_path.port
         if parsed_path.username:
-            options["username"] = parsed_path.username
+            options["username"] = unquote_userinfo(parsed_path.username)
         if parsed_path.password:
-            options["password"] = parsed_path.password
+            options["password"] = unquote_userinfo(parsed_path.password)
 
     if parsed_path.query:
         options["url_query"] = parsed_path.query

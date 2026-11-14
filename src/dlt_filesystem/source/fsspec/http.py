@@ -25,7 +25,7 @@ requested, and that object is built by `HTTPFileSystem`, not here.
 import io
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, Optional, Tuple, Type
-from urllib.parse import unquote, urlsplit, urlunsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from fsspec import AbstractFileSystem
 from fsspec.asyn import sync
@@ -350,17 +350,16 @@ class HttpFilesystemSource(FilesystemSource):
 
     @staticmethod
     def _credentials(fs_kwargs: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-        """Take the URL's userinfo out of the connector arguments, decoded.
+        """Take the credentials out of the connector arguments.
 
-        A password has to be percent-encoded to survive a URI at all (`@` would end
-        the userinfo, `/` the netloc), and the parser hands back the raw substring,
-        so forwarding it unchanged authenticates as the wrong user.
+        Userinfo from the URL arrives already percent-decoded by the URI parse. A
+        `username=` or `password=` keyword is used exactly as written.
         """
         username = fs_kwargs.pop("username", None)
         password = fs_kwargs.pop("password", None)
         if not username:
             return None
-        return unquote(username), unquote(password or "")
+        return username, password or ""
 
     @staticmethod
     def _apply_network_defaults(

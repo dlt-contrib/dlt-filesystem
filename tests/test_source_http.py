@@ -18,6 +18,7 @@ Every server is a local `http.server` thread: no Docker, no credentials, no
 network.
 """
 
+import base64
 import ssl
 import urllib.error
 import urllib.request
@@ -741,6 +742,33 @@ def test_credentials_do_not_reach_the_bucket_url_or_the_identity(auth_server):
     assert AUTH_USERNAME not in reference.bucket_url
     assert AUTH_PASSWORD_ENCODED not in reference.bucket_url
     assert AUTH_USERNAME not in reference.incremental_resource_name
+
+
+def _sent_credentials(received: dict) -> str:
+    authorization = received["client_kwargs"]["headers"]["Authorization"]
+    scheme, _, encoded = authorization.partition(" ")
+    assert scheme == "Basic"
+    return base64.b64decode(encoded).decode("latin-1")
+
+
+def test_credential_keywords_are_sent_as_written():
+    """Only URI userinfo is percent-decoded; a keyword is already the real value."""
+    with constructor_spy() as calls:
+        build_reference(
+            "https://example.test/people.csv",
+            username="u%40",
+            password="p%40",  # noqa: S106
+        )
+
+    assert _sent_credentials(calls[-1]) == "u%40:p%40"
+
+
+def test_userinfo_with_invalid_utf8_is_sent_raw():
+    """Decoding is all-or-nothing, so nothing is replaced with U+FFFD."""
+    with constructor_spy() as calls:
+        build_reference("https://a%40%ffb:p%40%ff@example.test/people.csv")
+
+    assert _sent_credentials(calls[-1]) == "a%40%ffb:p%40%ff"
 
 
 def test_identity_is_derived_from_the_query_free_url(range_server):
