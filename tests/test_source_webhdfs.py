@@ -113,7 +113,12 @@ def test_webhdfs_discovers_and_reads_from_the_namespace_root(
 @pytest.mark.parametrize("host", ["host", "other-host", "[::1]"])
 @pytest.mark.parametrize("port", [None, 9870])
 @pytest.mark.parametrize("userinfo", ["", "user:password@"])
-def test_webhdfs_listed_file_url_keeps_the_namenode(namenode, host, port, userinfo):
+@pytest.mark.parametrize(
+    ("bucket_path", "file_glob"), [("", "path/to/*.csv"), ("/path", "to/*.csv")]
+)
+def test_webhdfs_listed_file_url_keeps_the_namenode(
+    namenode, host, port, userinfo, bucket_path, file_glob
+):
     from dlt_filesystem.source.adapter import filesystem
 
     authority = host if port is None else f"{host}:{port}"
@@ -122,9 +127,9 @@ def test_webhdfs_listed_file_url_keeps_the_namenode(namenode, host, port, userin
     )
     files = list(
         filesystem(
-            bucket_url=f"webhdfs://{userinfo}{authority}",
+            bucket_url=f"webhdfs://{userinfo}{authority}{bucket_path}",
             credentials=fs,
-            file_glob="path/to/*.csv",
+            file_glob=file_glob,
         )
     )
 
