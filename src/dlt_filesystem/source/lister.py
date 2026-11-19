@@ -223,7 +223,7 @@ def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
     if bucket_url == f"{scheme}:/" and fs_path.startswith("/"):
         return f"{scheme}:{fs_path}"
     if scheme == "webhdfs":
-        authority = urlparse(bucket_url).netloc
+        authority = urlparse(bucket_url).netloc.rpartition("@")[2]
         return f"{scheme}://{authority}/{fs_path.lstrip('/')}"
     return make_fsspec_url(scheme, fs_path, bucket_url)
 
