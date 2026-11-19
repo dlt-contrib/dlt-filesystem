@@ -214,12 +214,17 @@ def file_url_for(scheme: str, fs_path: str, bucket_url: str) -> str:
     A root-addressed filesystem (``bucket_url`` of ``<scheme>:/``, as Databricks
     is) lists absolute paths, which the fallback turns into ``dbfs:///Volumes/...``
     and its client rejects, so those compose as ``<scheme>:<path>``.
+    WebHDFS lists namespace paths without the namenode authority, so its URLs
+    take the host and optional port from ``bucket_url``.
     Every other case is left to dlt, so no scheme it does know changes shape.
     """
     if fs_path.startswith(f"{scheme}://"):
         return fs_path
     if bucket_url == f"{scheme}:/" and fs_path.startswith("/"):
         return f"{scheme}:{fs_path}"
+    if scheme == "webhdfs":
+        authority = urlparse(bucket_url).netloc
+        return f"{scheme}://{authority}/{fs_path.lstrip('/')}"
     return make_fsspec_url(scheme, fs_path, bucket_url)
 
 
