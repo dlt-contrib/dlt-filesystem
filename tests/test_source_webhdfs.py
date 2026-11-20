@@ -110,6 +110,34 @@ def test_webhdfs_discovers_and_reads_from_the_namespace_root(
     assert all(path.startswith(PREFIX + "/") for path in namenode), namenode
 
 
+@pytest.mark.parametrize("host", ["host", "other-host", "[::1]"])
+@pytest.mark.parametrize("port", [None, 9870])
+@pytest.mark.parametrize("userinfo", ["", "user:password@"])
+@pytest.mark.parametrize(
+    ("bucket_path", "file_glob"), [("", "path/to/*.csv"), ("/path", "to/*.csv")]
+)
+def test_webhdfs_listed_file_url_keeps_the_namenode(
+    namenode, host, port, userinfo, bucket_path, file_glob
+):
+    from dlt_filesystem.source.adapter import filesystem
+
+    authority = host if port is None else f"{host}:{port}"
+    fs = WebHDFSFileSystem(
+        host=host.strip("[]"), port=port or 50070, skip_instance_cache=True
+    )
+    files = list(
+        filesystem(
+            bucket_url=f"webhdfs://{userinfo}{authority}{bucket_path}",
+            credentials=fs,
+            file_glob=file_glob,
+        )
+    )
+
+    assert len(files) == 1
+    assert files[0]["file_url"] == f"webhdfs://{authority}/path/to/data.csv"
+    assert files[0].read_bytes() == FILES["/path/to/data.csv"]
+
+
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
