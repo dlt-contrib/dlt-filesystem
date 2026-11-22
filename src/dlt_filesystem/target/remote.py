@@ -119,16 +119,17 @@ class BlobStorageDestination(abc.ABC):
         service-principal triplet. A value given in a form this cannot use fails here
         too, for instance conflicting Azure credentials (two auth modes at once, such
         as ``account_key`` beside ``sas_token``, or a ``connection_string`` beside
-        any other Azure option), a ``connection_string`` Azure cannot parse, or an S3
-        ``endpoint_url`` without a scheme or host, which raise ``ValueError``, and
-        GCS credentials that cannot be read or decoded, which raise the underlying
-        read or decode error.
+        any account or credential option, though ``api_version`` may accompany it),
+        a ``connection_string`` Azure cannot parse, or an S3 ``endpoint_url`` whose
+        scheme or network location parses empty, which raise ``ValueError``, and GCS
+        credentials that cannot be read or decoded, which raise the underlying read
+        or decode error.
 
-        Fields the URI leaves unset are not checked. The credentials this builds are
-        left for dlt to resolve, so such a field (an S3 session token or region, an
-        Azure account host, a field the decoded GCS JSON lacks) is still filled from
-        the same config section, and a value the URI sets wins over a configured
-        one. Decoded GCS JSON that the config does not complete falls back to
+        Other fields the URI leaves unset are not checked. The credentials this
+        builds are left for dlt to resolve, so such a field (an S3 session token or
+        region, an Azure account host, a field the decoded GCS JSON lacks) is still
+        filled from the same config section, and a value the URI sets wins over a
+        configured one. Decoded GCS JSON that the config does not complete falls back to
         Google's Application Default Credentials, and only without those does dlt
         raise its own missing-configuration error, when the load resolves the
         destination. An Azure ``connection_string`` is the exception: it is forwarded
