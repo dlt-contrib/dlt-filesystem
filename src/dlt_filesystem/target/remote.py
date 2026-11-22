@@ -108,13 +108,27 @@ class BlobStorageDestination(abc.ABC):
         is ``destination.BlobFS`` (``[destination.BlobFS.credentials]`` in TOML, where
         the case matters, or ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the
         environment); for ``dlt.destinations.filesystem`` it is
-        ``destination.filesystem``. A non-empty query is built strictly instead: a
-        partial credential set raises
-        ``MissingConnectorOption`` naming the missing option, because a URI that
-        carries half a credential asked for that credential to be used.
+        ``destination.filesystem``. A non-empty query is checked instead for the URI
+        options its protocol requires, and a missing one raises
+        ``MissingConnectorOption`` naming it, because a URI that carries half a
+        credential asked for that credential to be used. S3 needs both keys once
+        either is named (``named_options`` below has the rest), GCS needs
+        ``credentials_path`` or ``credentials_base64``, and Azure needs a
+        ``connection_string``, or ``account_name`` with ``account_key``,
+        ``sas_token`` or the whole service-principal triplet.
+
+        The check stops at those options. The credentials it builds are left for dlt
+        to resolve, so a field the URI leaves unset (an S3 session token or region, an
+        Azure account host, a field the decoded GCS JSON lacks) is still filled from
+        the same config section, and a value the URI gives wins over a configured
+        one. Decoded GCS JSON that the config does not complete falls back to
+        Google's Application Default Credentials, and only without those does dlt
+        raise its own missing-configuration error, when the load resolves the
+        destination. An Azure ``connection_string`` is the exception: its
+        credentials are resolved here, so nothing is filled in.
 
         ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
-        value (``access_key_id=``). It is built strictly too, so the blank option is
+        value (``access_key_id=``). It is checked the same way, so the blank option is
         reported missing rather than replaced by the environment's credentials.
 
         ``named_options`` is every option the raw query names, blank ones included.
