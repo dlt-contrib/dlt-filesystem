@@ -116,21 +116,24 @@ class BlobStorageDestination(abc.ABC):
         a query without keys), GCS needs ``credentials_path`` or
         ``credentials_base64``, and Azure needs a ``connection_string``, or
         ``account_name`` with ``account_key``, ``sas_token`` or the whole
-        service-principal triplet. A few more mistakes fail here too: conflicting
-        Azure credentials (two auth modes at once, such as ``account_key`` beside
-        ``sas_token``, or a ``connection_string`` beside any account option) and a
-        malformed S3 ``endpoint_url`` raise ``ValueError``, and a GCS credentials
-        file or value that cannot be read or decoded raises the error reading it.
+        service-principal triplet. A value given in a form this cannot use fails here
+        too, for instance conflicting Azure credentials (two auth modes at once, such
+        as ``account_key`` beside ``sas_token``, or a ``connection_string`` beside
+        any other Azure option), a ``connection_string`` Azure cannot parse, or an S3
+        ``endpoint_url`` without a scheme or host, which raise ``ValueError``, and
+        GCS credentials that cannot be read or decoded, which raise the underlying
+        read or decode error.
 
-        Nothing else is checked here. The credentials this builds are left for dlt
-        to resolve, so a field the URI leaves unset (an S3 session token or region, an
+        Fields the URI leaves unset are not checked. The credentials this builds are
+        left for dlt to resolve, so such a field (an S3 session token or region, an
         Azure account host, a field the decoded GCS JSON lacks) is still filled from
         the same config section, and a value the URI sets wins over a configured
         one. Decoded GCS JSON that the config does not complete falls back to
         Google's Application Default Credentials, and only without those does dlt
         raise its own missing-configuration error, when the load resolves the
-        destination. An Azure ``connection_string`` is the exception: its
-        credentials are resolved here, so nothing is filled in.
+        destination. An Azure ``connection_string`` is the exception: it is forwarded
+        to the filesystem as given, and the credentials dlt receives for it are
+        already marked resolved, so dlt fills in nothing.
 
         ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
         value (``access_key_id=``). It is checked the same way, so a blank required
