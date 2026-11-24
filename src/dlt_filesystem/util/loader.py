@@ -55,14 +55,10 @@ def factory(filepath: str):
             f"so this is not a file dlt wrote"
         )
 
-    if file_format == "jsonl":
-        return jsonlfile(filepath, compressed)
-    elif file_format == "csv":
-        return csvfile(filepath, compressed)
-    elif file_format == "parquet":
-        return parquetfile(filepath, compressed)
-    else:
+    reader = _READERS.get(file_format)
+    if reader is None:
         raise UnsupportedLoaderFileFormat(file_format)
+    return reader(filepath, compressed)
 
 
 @contextmanager
@@ -121,3 +117,15 @@ def parquetfile(filepath: str, compressed: bool = False):
 
     with (gzip.open if compressed else open)(filepath, "rb") as fd:
         yield reader(ParquetFile(fd))
+
+
+_READERS = {
+    "csv": csvfile,
+    "jsonl": jsonlfile,
+    "parquet": parquetfile,
+}
+
+#: The dlt loader file formats ``load_dlt_file`` reads back, in sorted order. A
+#: destination that re-reads its staged files declares this set to dlt, so a format
+#: outside it is refused before the load instead of after it.
+READ_BACK_FORMATS: tuple[str, ...] = tuple(sorted(_READERS))

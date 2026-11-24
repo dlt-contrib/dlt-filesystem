@@ -186,7 +186,8 @@ default chain does not hold R2 credentials.
 
 The destination classes are adapters rather than dlt destination factories. They
 expose `dlt_dest`, `dlt_run_params` and `post_load`, the interface omniload calls,
-and `dlt_dest` returns the dlt destination to load into.
+and `dlt_dest` returns the dlt destination to load into. The local destination also
+has `close`, which removes its staging directory when a run ends before `post_load`.
 
 ## Comparison with dlt
 

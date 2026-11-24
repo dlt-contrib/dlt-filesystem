@@ -22,6 +22,11 @@ from dlt_filesystem.target.registry import (
     WRITER_REGISTRATIONS,
 )
 from dlt_filesystem.target.util import _resolve_output_target
+from dlt_filesystem.util.loader import (
+    READ_BACK_FORMATS,
+    UnsupportedLoaderFileFormat,
+    factory,
+)
 
 # Asserted against the registry rather than typed out, so registering a writer cannot
 # leave these three expectations naming a set the code no longer has.
@@ -498,4 +503,116 @@ def test_a_failure_during_the_copy_truncates_the_destination(tmp_path, monkeypat
         destination.post_load()
 
     assert path.read_bytes() == b""
+    assert not os.path.exists(destination.temp_path)
+
+
+# The loader file formats the destination accepts are the ones post_load() can read
+# back. dlt's filesystem destination writes more, and one it cannot read back used to
+# run the whole load before post_load() refused it.
+
+
+def _staged_files(destination):
+    """The data files dlt staged for the destination table, which post_load() reads."""
+    table_dir = Path(destination.temp_path) / "public" / "rows"
+    return (
+        sorted(path.name for path in table_dir.iterdir()) if table_dir.is_dir() else []
+    )
+
+
+def test_destination_declares_only_the_formats_it_reads_back(tmp_path):
+    destination = LocalFilesystemDestination()
+    capabilities = destination.dlt_dest(f"file://{tmp_path / 'out.csv'}").capabilities()
+    destination.close()
+
+    # Asserted on the resolved capabilities rather than the constructor argument: dlt
+    # drops an argument it does not recognise with only a warning.
+    assert sorted(capabilities.supported_loader_file_formats) == sorted(
+        [*READ_BACK_FORMATS, "reference"]
+    )
+    assert "insert_values" not in capabilities.supported_loader_file_formats
+
+
+def test_the_declared_formats_are_the_ones_the_reader_dispatches(tmp_path):
+    """Adding a reader widens the declared set and removing one narrows it, with no
+    second list to keep in step."""
+    from typing import get_args
+
+    from dlt.common.data_writers.writers import TLoaderFileFormat
+
+    for file_format in get_args(TLoaderFileFormat):
+        path = str(tmp_path / f"load.{file_format}")
+        if file_format in READ_BACK_FORMATS:
+            factory(path)
+        else:
+            with pytest.raises(UnsupportedLoaderFileFormat):
+                factory(path)
+
+
+def test_dlt_refuses_an_unreadable_loader_format_before_extracting(tmp_path):
+    import dlt
+    from dlt.common.destination.exceptions import (
+        DestinationIncompatibleLoaderFileFormatException,
+    )
+
+    destination = LocalFilesystemDestination()
+    destination.dataset_name, destination.table_name = "public", "rows"
+    pipeline = dlt.pipeline(
+        pipeline_name="refuse_insert_values",
+        destination=destination.dlt_dest(f"file://{tmp_path / 'out.csv'}"),
+        pipelines_dir=str(tmp_path / "pipelines"),
+        dataset_name="public",
+    )
+
+    with pytest.raises(DestinationIncompatibleLoaderFileFormatException):
+        pipeline.run([{"id": 1}], table_name="rows", loader_file_format="insert_values")
+
+    assert _staged_files(destination) == []
+    destination.close()
+    assert not (tmp_path / "out.csv").exists()
+
+
+def test_a_resource_hinting_an_unreadable_format_loads_in_a_readable_one(tmp_path):
+    """dlt does not refuse a resource's own ``file_format`` hint: normalize picks a
+    supported format instead, so the load completes and post_load() can read it."""
+    import dlt
+
+    output_path = tmp_path / "out.csv"
+    destination = LocalFilesystemDestination()
+    destination.dataset_name, destination.table_name = "public", "rows"
+    pipeline = dlt.pipeline(
+        pipeline_name="hinted_insert_values",
+        destination=destination.dlt_dest(f"file://{output_path}"),
+        pipelines_dir=str(tmp_path / "pipelines"),
+        dataset_name="public",
+    )
+
+    pipeline.run(
+        dlt.resource([{"id": 1}, {"id": 2}], name="rows", file_format="insert_values")
+    )
+    staged = _staged_files(destination)
+    assert staged
+    assert not any("insert_values" in name for name in staged)
+
+    destination.post_load()
+    assert output_path.read_text().splitlines() == ["id", "1", "2"]
+
+
+def test_close_removes_a_staging_directory_post_load_never_cleared(tmp_path):
+    """A dry run or an option refused after ``dlt_dest()`` ends the run before
+    ``post_load()``, which is the only other place the directory is removed."""
+    destination = LocalFilesystemDestination()
+    destination.dlt_dest(f"file://{tmp_path / 'out.csv'}")
+    assert os.path.isdir(destination.temp_path)
+
+    destination.close()
+    assert not os.path.exists(destination.temp_path)
+    destination.close()
+
+
+def test_close_is_harmless_before_dlt_dest_and_after_post_load(tmp_path):
+    LocalFilesystemDestination().close()
+
+    destination = _destination(tmp_path / "out.csv")
+    destination.post_load()
+    destination.close()
     assert not os.path.exists(destination.temp_path)
