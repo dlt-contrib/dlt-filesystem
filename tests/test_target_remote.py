@@ -394,6 +394,37 @@ def test_s3_write_through_fills_keys_from_dlt_config_like_a_bare_uri(
     } == {("CFGKEY", "CFGSECRET", "CFGTOKEN", endpoint_url, region)}
 
 
+def test_s3_keyed_uri_leaves_unset_fields_to_dlt_config(
+    capturing_backend, tmp_path, monkeypatch
+):
+    """Both keys in the URI still leave a session token and region to dlt config.
+
+    The URI's endpoint wins over the configured one.
+    """
+    prefix = "DESTINATION__BLOBFS__CREDENTIALS__"
+    monkeypatch.setenv(prefix + "AWS_SESSION_TOKEN", "CFGTOKEN")
+    monkeypatch.setenv(prefix + "REGION_NAME", "ap-southeast-2")
+    monkeypatch.setenv(prefix + "ENDPOINT_URL", "http://configured:1")
+    written, captured = write_through(
+        capturing_backend,
+        tmp_path,
+        S3Destination(),
+        "s3",
+        "access_key_id=K&secret_access_key=S&endpoint_url=http://localhost:9000",
+        "bucket/out/people",
+    )
+    assert user_columns(read_parquet(written)) == ROWS
+    assert {
+        (
+            kwargs.get("key"),
+            kwargs.get("token"),
+            kwargs.get("endpoint_url"),
+            kwargs.get("client_kwargs", {}).get("region_name"),
+        )
+        for kwargs in captured
+    } == {("K", "CFGTOKEN", "http://localhost:9000", "ap-southeast-2")}
+
+
 @pytest.mark.parametrize(
     ("query", "missing"),
     [
@@ -592,6 +623,29 @@ def test_azure_connection_string_write_through(capturing_backend, tmp_path):
         assert kwargs["connection_string"] == connection_string
         assert "api_version" not in kwargs
         assert "account_key" not in kwargs
+
+
+def test_azure_connection_string_takes_nothing_from_dlt_config(
+    capturing_backend, tmp_path, monkeypatch
+):
+    """A connection string reaches dlt already resolved, so config fills nothing."""
+    monkeypatch.setenv(
+        "DESTINATION__BLOBFS__CREDENTIALS__AZURE_STORAGE_ACCOUNT_NAME", "cfgacct"
+    )
+    connection_string = (
+        "DefaultEndpointsProtocol=http;AccountName=acct;AccountKey=a2V5;"
+        "BlobEndpoint=http://127.0.0.1:10000/acct;"
+    )
+    _, captured = write_through(
+        capturing_backend,
+        tmp_path,
+        AzureDestination(),
+        "az",
+        f"connection_string={quote(connection_string, safe='')}",
+        "container/out",
+    )
+    assert captured
+    assert all(kwargs.get("account_name") != "cfgacct" for kwargs in captured)
 
 
 def test_a_bare_azure_uri_reads_dlt_config_under_blobfs(

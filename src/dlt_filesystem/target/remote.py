@@ -108,14 +108,45 @@ class BlobStorageDestination(abc.ABC):
         is ``destination.BlobFS`` (``[destination.BlobFS.credentials]`` in TOML, where
         the case matters, or ``DESTINATION__BLOBFS__CREDENTIALS__...`` in the
         environment); for ``dlt.destinations.filesystem`` it is
-        ``destination.filesystem``. A non-empty query is built strictly instead: a
-        partial credential set raises
-        ``MissingConnectorOption`` naming the missing option, because a URI that
-        carries half a credential asked for that credential to be used.
+        ``destination.filesystem``. A non-empty query is checked instead for the URI
+        options its protocol requires, and a missing one raises
+        ``MissingConnectorOption`` naming it or its alternatives, because a URI that
+        carries half a credential asked for that credential to be used. S3 needs
+        both keys once either is named, or once any spelling the URI does not take
+        is (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+        ``session_token``). It never reads a session token from the URI: one given
+        beside both keys is ignored. The ``named_options`` paragraph below covers a
+        query that names no key. GCS needs ``credentials_path`` or
+        ``credentials_base64``, and Azure needs a ``connection_string``, or
+        ``account_name`` with ``account_key``, ``sas_token`` or the whole
+        service-principal triplet. A value given in a form this cannot use fails here
+        too, for instance conflicting Azure credentials (both ``account_key`` and
+        ``sas_token``, either of them beside a service-principal field, or a
+        ``connection_string`` beside
+        any account or credential option, though ``api_version`` may accompany it),
+        a ``connection_string`` Azure cannot parse, or an S3 ``endpoint_url`` whose
+        scheme or network location parses empty, which raise ``ValueError``, and GCS
+        credentials that cannot be read or decoded, which raise the underlying read
+        or decode error.
+
+        Other fields the URI leaves unset are not checked. The credentials this
+        builds are left for dlt to resolve, so such a field (an S3 session token or
+        region, an Azure account host, a field the decoded GCS JSON lacks) is still
+        filled from the same config section, and a value the URI sets wins over a
+        configured one. Decoded GCS JSON that the config does not complete falls back to
+        Google's Application Default Credentials, and only without those does dlt
+        raise its own missing-configuration error, when the load resolves the
+        destination. An Azure ``connection_string`` is the exception: it is forwarded
+        to the filesystem as given, and the credentials dlt receives for it are
+        already marked resolved, so dlt fills in nothing.
 
         ``named`` marks a query that named an option ``parse_qs`` dropped for its blank
-        value (``access_key_id=``). It is built strictly too, so the blank option is
-        reported missing rather than replaced by the environment's credentials.
+        value (``access_key_id=``). It is checked the same way, so a blank required
+        option is reported missing rather than replaced by the environment's
+        credentials. A blank optional one counts as unset, as ``region=`` beside both
+        S3 keys or ``account_host=`` does, and a blank alternative beside a given one
+        (``credentials_path=`` with ``credentials_base64``) is ignored. On an S3
+        query without keys a blank ``endpoint_url`` or ``region`` is refused instead.
 
         ``named_options`` is every option the raw query names, blank ones included.
         ``layout`` is dropped from it here, since it shapes the written paths rather
