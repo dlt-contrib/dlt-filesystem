@@ -96,7 +96,8 @@ class LocalFilesystemDestination:
         # filesystem destination writes more (insert_values, model), and accepting one
         # let the whole load run before post_load() refused it. Declared as a capability,
         # a caller checking capabilities, and dlt's own extract-time check, refuse it
-        # before anything is read. `reference` is not a staged data file: it is the job
+        # before the source is extracted. The order is dlt's preference order and is
+        # kept: it decides that Arrow data stages as Parquet rather than CSV. `reference` is not a staged data file: it is the job
         # dlt queues to commit a Delta or Iceberg table, which still needs it.
         return dlt.destinations.filesystem(
             bucket_url=Path(self.temp_path).as_uri(),

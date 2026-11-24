@@ -524,11 +524,19 @@ def test_destination_declares_only_the_formats_it_reads_back(tmp_path):
     capabilities = destination.dlt_dest(f"file://{tmp_path / 'out.csv'}").capabilities()
     destination.close()
 
+    import dlt
+
+    stock = dlt.destinations.filesystem(bucket_url=tmp_path.as_uri()).capabilities()
+
     # Asserted on the resolved capabilities rather than the constructor argument: dlt
-    # drops an argument it does not recognise with only a warning.
-    assert sorted(capabilities.supported_loader_file_formats) == sorted(
-        [*READ_BACK_FORMATS, "reference"]
-    )
+    # drops an argument it does not recognise with only a warning. Compared as a list,
+    # not a set: dlt picks an item's staging format from the first supported format
+    # whose writer takes it, so the stock order has to survive the narrowing.
+    assert capabilities.supported_loader_file_formats == [
+        file_format
+        for file_format in stock.supported_loader_file_formats
+        if file_format in READ_BACK_FORMATS or file_format == "reference"
+    ]
     assert "insert_values" not in capabilities.supported_loader_file_formats
 
 
@@ -616,3 +624,38 @@ def test_close_is_harmless_before_dlt_dest_and_after_post_load(tmp_path):
     destination.post_load()
     destination.close()
     assert not os.path.exists(destination.temp_path)
+
+
+def test_arrow_data_still_stages_as_parquet(tmp_path):
+    """With no loader format asked for, dlt stages an Arrow table in the first declared
+    format whose writer takes Arrow. Parquet keeps the column types; a CSV intermediate
+    would turn every value into text and refuse a binary column."""
+    import dlt
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    output_path = tmp_path / "out.parquet"
+    destination = LocalFilesystemDestination()
+    destination.dataset_name, destination.table_name = "public", "rows"
+    pipeline = dlt.pipeline(
+        pipeline_name="arrow_staging",
+        destination=destination.dlt_dest(f"file://{output_path}"),
+        pipelines_dir=str(tmp_path / "pipelines"),
+        dataset_name="public",
+    )
+    table = pa.table(
+        {
+            "n": pa.array([1, None], pa.int64()),
+            "flag": pa.array([True, False]),
+            "blob": pa.array([b"\xff", b"\x00"]),
+        }
+    )
+
+    pipeline.run(dlt.resource(table, name="rows"))
+    assert [Path(name).suffix for name in _staged_files(destination)] == [".parquet"]
+
+    destination.post_load()
+    assert pq.read_table(output_path).select(["n", "flag", "blob"]).to_pylist() == [
+        {"n": 1, "flag": True, "blob": b"\xff"},
+        {"n": None, "flag": False, "blob": b"\x00"},
+    ]
