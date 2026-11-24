@@ -128,7 +128,7 @@ _READERS = {
     "csv": csvfile,
 }
 
-#: The dlt loader file formats ``load_dlt_file`` reads back, in dlt's preference order. A
-#: destination that re-reads its staged files declares this set to dlt, so a format
+#: The dlt loader file formats ``load_dlt_file`` reads back, in dlt's preference order.
+#: A destination that re-reads its staged files declares this set to dlt, so a format
 #: outside it is refused before the load instead of after it.
 READ_BACK_FORMATS: tuple[str, ...] = tuple(_READERS)
