@@ -112,11 +112,11 @@ class BlobStorageDestination(abc.ABC):
         options its protocol requires, and a missing one raises
         ``MissingConnectorOption`` naming it or its alternatives, because a URI that
         carries half a credential asked for that credential to be used. S3 needs
-        both keys once either is named, or once a key spelling the URI does not take
-        (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
-        ``session_token``) is (the ``named_options`` paragraph below covers a query
-        without keys), and it never reads a session token from the URI: one given
-        beside both keys is ignored. GCS needs ``credentials_path`` or
+        both keys once either is named, or once any spelling the URI does not take
+        is (``aws_access_key_id``, ``aws_secret_access_key``, ``aws_session_token``,
+        ``session_token``). It never reads a session token from the URI: one given
+        beside both keys is ignored. The ``named_options`` paragraph below covers a
+        query that names no key. GCS needs ``credentials_path`` or
         ``credentials_base64``, and Azure needs a ``connection_string``, or
         ``account_name`` with ``account_key``, ``sas_token`` or the whole
         service-principal triplet. A value given in a form this cannot use fails here
