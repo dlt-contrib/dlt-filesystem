@@ -17,7 +17,11 @@ through the format-agnostic ``load_dlt_file`` helper and re-emits it as one clea
 at the requested path (dropping dlt's bookkeeping ``_dlt_*`` columns). A load dlt split
 across several files is read in full, in a stable filename order. The output file is
 written in the temp directory first and copied to the requested path once it is
-complete, so a write that fails leaves the destination as it was.
+complete, so a write that fails leaves the destination as it was. ``close()`` removes the
+temp directory when a run ends before ``post_load()`` does.
+
+The destination declares to dlt only the loader file formats ``load_dlt_file`` reads
+back, so a format it could not reassemble is refused before the load runs.
 
 A consumer's CSV-only destination (omniload's ``csv://`` scheme) is this class with
 ``pinned_output_format`` set to ``csv``; it contributes only that restriction and its own
@@ -33,7 +37,7 @@ from pathlib import Path
 from dlt_filesystem.target.model import DEFAULT_DATASET_NAME
 from dlt_filesystem.target.registry import registration_for_format
 from dlt_filesystem.target.util import _resolve_output_target, _strip_dlt_columns
-from dlt_filesystem.util.loader import load_dlt_file
+from dlt_filesystem.util.loader import READ_BACK_FORMATS, load_dlt_file
 
 #: Layout for the private staging bucket below. ``post_load()`` reads those files back
 #: by the format in their name, so the name has to carry one; dlt resolves an unset
@@ -81,20 +85,37 @@ class LocalFilesystemDestination:
         )
         self.temp_path = tempfile.mkdtemp()
         # dlt writes its layout under this temp bucket; post_load() reassembles the single
-        # output file from it. Its own loader_file_format is irrelevant, load_dlt_file
-        # reads whatever dlt produced (gzip-jsonl by default, or csv/parquet). Path.as_uri()
-        # gives an RFC-correct file:// URL on every platform (file:///tmp/x on POSIX,
-        # file:///C:/... on Windows), avoiding the drive-as-host trap of a naive
-        # "file://" + path.
+        # output file from it. Path.as_uri() gives an RFC-correct file:// URL on every
+        # platform (file:///tmp/x on POSIX, file:///C:/... on Windows), avoiding the
+        # drive-as-host trap of a naive "file://" + path.
         # extra_placeholders is pinned for the same reason as the layout, and it is not
         # covered by pinning the layout: dlt resolves it from ambient configuration too
         # and applies its entries over the built-in ones, so an `ext` or `table_name`
         # entry rewrites a name this layout had already fixed.
+        # The loader file formats are narrowed to the ones post_load() reads back. dlt's
+        # filesystem destination writes more (insert_values, model), and accepting one
+        # let the whole load run before post_load() refused it. Declared as a capability,
+        # a caller checking capabilities, and dlt's own extract-time check, refuse it
+        # before the source is extracted. The order is dlt's preference order and is
+        # kept: it decides that Arrow data stages as Parquet rather than CSV. `reference` is not a staged data file: it is the job
+        # dlt queues to commit a Delta or Iceberg table, which still needs it.
         return dlt.destinations.filesystem(
             bucket_url=Path(self.temp_path).as_uri(),
             layout=STAGING_LAYOUT,
             extra_placeholders={},
+            supported_loader_file_formats=[*READ_BACK_FORMATS, "reference"],
         )
+
+    def close(self) -> None:
+        """Remove the staging directory, for a run that ended before ``post_load()``.
+
+        ``dlt_dest()`` creates it and only ``post_load()`` clears it, so a run that stops
+        between the two (a dry run, a refused option, a failed extract) would leave it in
+        the temp directory. Safe to call after ``post_load()``, and more than once.
+        """
+        temp_path = getattr(self, "temp_path", None)
+        if temp_path:
+            shutil.rmtree(temp_path, ignore_errors=True)
 
     def reject_reserved_table(self, table_name: str) -> None:
         """Refuse a destination table in dlt's own namespace.

@@ -55,14 +55,10 @@ def factory(filepath: str):
             f"so this is not a file dlt wrote"
         )
 
-    if file_format == "jsonl":
-        return jsonlfile(filepath, compressed)
-    elif file_format == "csv":
-        return csvfile(filepath, compressed)
-    elif file_format == "parquet":
-        return parquetfile(filepath, compressed)
-    else:
+    reader = _READERS.get(file_format)
+    if reader is None:
         raise UnsupportedLoaderFileFormat(file_format)
+    return reader(filepath, compressed)
 
 
 @contextmanager
@@ -121,3 +117,18 @@ def parquetfile(filepath: str, compressed: bool = False):
 
     with (gzip.open if compressed else open)(filepath, "rb") as fd:
         yield reader(ParquetFile(fd))
+
+
+# In the order dlt's filesystem destination lists them, which is not cosmetic: dlt picks
+# the staging format for an item from the first supported format whose writer takes it,
+# so Arrow tables stage as Parquet only while parquet comes before csv.
+_READERS = {
+    "jsonl": jsonlfile,
+    "parquet": parquetfile,
+    "csv": csvfile,
+}
+
+#: The dlt loader file formats ``load_dlt_file`` reads back, in dlt's preference order.
+#: A destination that re-reads its staged files declares this set to dlt, so a format
+#: outside it is refused before the load instead of after it.
+READ_BACK_FORMATS: tuple[str, ...] = tuple(_READERS)
