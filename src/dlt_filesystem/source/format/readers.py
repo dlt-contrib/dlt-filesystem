@@ -35,7 +35,7 @@ from typing import (
 
 import dlt
 from dlt.common import json
-from dlt.common.typing import copy_sig
+from dlt.common.typing import copy_sig_any
 from dlt.sources import DltResource, DltSource, TDataItems
 from dlt.sources.filesystem import FileItemDict
 
@@ -1096,71 +1096,71 @@ if TYPE_CHECKING:
     class ReadersSource(DltSource):
         """This is a typing stub that provides docstrings and signatures to the resources in `readers" source"""
 
-        @copy_sig(read_csv)
+        @copy_sig_any(read_csv)
         def read_csv(self) -> DltResource:
             """CSV reader resource (Polars)."""
 
-        @copy_sig(read_csv_headless)
+        @copy_sig_any(read_csv_headless)
         def read_csv_headless(self) -> DltResource:
             """Header-less CSV reader resource (Polars)."""
 
-        @copy_sig(read_excel)
+        @copy_sig_any(read_excel)
         def read_excel(self) -> DltResource:
             """XLSX reader resource (Polars)."""
 
-        @copy_sig(read_excel)
+        @copy_sig_any(read_excel)
         def read_ods(self) -> DltResource:
             """ODS reader resource (Polars)."""
 
-        @copy_sig(read_json)
+        @copy_sig_any(read_json)
         def read_json(self) -> DltResource:
             """JSON reader resource (whole document or line-delimited)."""
 
-        @copy_sig(read_jsonl)
+        @copy_sig_any(read_jsonl)
         def read_jsonl(self) -> DltResource:
             """JSONL reader resource."""
 
-        @copy_sig(read_bson)
+        @copy_sig_any(read_bson)
         def read_bson(self) -> DltResource:
             """BSON reader resource."""
 
-        @copy_sig(read_msgpack)
+        @copy_sig_any(read_msgpack)
         def read_msgpack(self) -> DltResource:
             """MessagePack reader resource."""
 
-        @copy_sig(read_orc)
+        @copy_sig_any(read_orc)
         def read_orc(self) -> DltResource:
             """ORC reader resource (pyarrow)."""
 
-        @copy_sig(read_feather)
+        @copy_sig_any(read_feather)
         def read_feather(self) -> DltResource:
             """Feather V2 / Arrow IPC reader resource (pyarrow)."""
 
-        @copy_sig(read_avro)
+        @copy_sig_any(read_avro)
         def read_avro(self) -> DltResource:
             """Apache Avro reader resource (Polars)."""
 
-        @copy_sig(read_cbor)
+        @copy_sig_any(read_cbor)
         def read_cbor(self) -> DltResource:
             """CBOR reader resource."""
 
-        @copy_sig(read_xml)
+        @copy_sig_any(read_xml)
         def read_xml(self) -> DltResource:
             """XML reader resource."""
 
-        @copy_sig(read_yaml)
+        @copy_sig_any(read_yaml)
         def read_yaml(self) -> DltResource:
             """YAML reader resource."""
 
-        @copy_sig(read_parquet)
+        @copy_sig_any(read_parquet)
         def read_parquet(self) -> DltResource:
             """Parquet reader resource (pyarrow)."""
 
-        @copy_sig(read_vortex)
+        @copy_sig_any(read_vortex)
         def read_vortex(self) -> DltResource:
             """Vortex reader resource (vortex-data)."""
 
-        @copy_sig(read_csv_duckdb)
+        @copy_sig_any(read_csv_duckdb)
         def read_csv_duckdb(self) -> DltResource:
             """CSV reader resource (DuckDB)."""
 
